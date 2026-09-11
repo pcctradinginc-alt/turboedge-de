@@ -1,0 +1,56 @@
+# TurboEdge-DE risk gates and integrity tolerances.
+# Consumed by ranking/gates.py (WATCH/REJECT/DATA_QUALITY) and pricing/integrity.py.
+# ACTIONABLE is never assigned in this milestone regardless of these values
+# (lcb_ev is None until the Phase 3/4 path model exists).
+
+# Maximum acceptable (ask - bid) / ask before a candidate is rejected.
+max_spread_pct: 0.03
+
+# Maximum acceptable age (seconds) of quote_timestamp before a quote is
+# considered stale.
+max_quote_age_s: 120
+
+# Leverage band. Products outside this band are rejected outright.
+min_leverage: 2.0
+max_leverage: 20.0
+
+# Minimum distance from spot to the knockout barrier, expressed in EWMA sigma
+# units of the underlying, below which a candidate is rejected as too close
+# to knockout.
+min_distance_to_barrier_sigma: 1.0
+
+integrity_tolerances:
+  # Band around 10^k (k != 0, |k| <= 3) within which implied_underlying /
+  # consensus is flagged as a probable ratio/Bezugsverhaltnis factor error.
+  ratio_factor_tolerance_pct: 0.02
+  # Floating point epsilon allowed before "bid <= ask" is treated as violated.
+  bid_ask_epsilon: 0.0005
+  # Day-over-day relative jump in financing_level treated as implausible data
+  # (separate from the financing-spread adjustment-suspected threshold below).
+  max_financing_level_jump_pct: 0.05
+  # Coarse (mid - intrinsic) / ask "raw premium" ratio above which
+  # pricing/integrity.check_product warns "premium_pct_high".
+  margin_warn_pct: 0.15
+
+# Reference trade notional (EUR) used by ranking/liquidity.py's
+# quote_size_coverage: how much of a position of this size the displayed ask
+# size could fill, as one of the four liquidity_factor sub-scores.
+required_notional_eur: 1000.0
+
+# Financing spread inference (pricing/financing.py, financing_spread_history):
+# implied_financing_spread() returns an ANNUALIZED spread (the day-over-day
+# financing-level change scaled by 360/dt, not the raw price jump itself).
+# This threshold is a plausibility band on that ANNUALIZED implied spread:
+# any consecutive-pair spread whose absolute value exceeds it is treated as a
+# dividend/roll adjustment ("adjustment_suspected") and excluded from the
+# spread history rather than used directly.
+financing_adjustment_jump_threshold_pct: 0.08
+
+# Fallback financing spread (decimal, e.g. 0.025 = 2.5%) used by
+# decompose_ask() when no clean financing-level history is available for an
+# ISIN.
+default_financing_spread: 0.025
+
+# Fallback reference rate (decimal) used when the ECB EST adapter is
+# unavailable and no config override applies.
+reference_rate_fallback: 0.03

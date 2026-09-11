@@ -1,0 +1,37 @@
+# Proprietary License
+
+Copyright (c) 2026 pccTradingINC. All rights reserved.
+
+## Terms and Conditions
+
+This software and all associated documentation (collectively, "Software") are proprietary and confidential. Unauthorized copying, modification, distribution, or use of any part of this Software without explicit written permission from pccTradingINC is strictly prohibited.
+
+### Permitted Use
+
+The Software may be used solely for internal research and evaluation purposes by authorized users of pccTradingINC, subject to the following conditions:
+
+1. **No Order Execution:** The Software shall not be modified, extended, or configured to execute trades, place orders, or transfer funds automatically. The final trading decision must remain under direct human control at all times.
+
+2. **No Broker Integration:** The Software contains no active connection to live trading systems, broker APIs, or order placement mechanisms. Any such integration is expressly prohibited.
+
+3. **No Redistribution:** The Software may not be redistributed, sublicensed, or made available to third parties without written consent from pccTradingINC.
+
+4. **Confidentiality:** All code, models, data structures, and trading logic remain confidential and proprietary.
+
+### Disclaimer
+
+**DISCLAIMER OF LIABILITY:** The Software is provided "as is" without warranty of any kind, express or implied, including but not limited to warranties of merchantability, fitness for a particular purpose, or non-infringement.
+
+**NO INVESTMENT ADVICE:** The Software does not constitute investment advice, financial advice, or a recommendation to buy or sell any financial instrument. TurboEdge-DE is a research system designed for analysis purposes only.
+
+**USER RESPONSIBILITY:** Users assume full responsibility for any decisions made based on output from the Software. pccTradingINC shall not be liable for any direct, indirect, incidental, special, consequential, or punitive damages arising from use of the Software, including but not limited to trading losses.
+
+**MARKET RISK:** All trading activities carry inherent risk of substantial or total loss. Past performance does not guarantee future results.
+
+### Governing Law
+
+This License is governed by the laws applicable to pccTradingINC's jurisdiction, without regard to its conflict of laws principles.
+
+---
+
+For questions regarding licensing or use, contact pccTradingINC.

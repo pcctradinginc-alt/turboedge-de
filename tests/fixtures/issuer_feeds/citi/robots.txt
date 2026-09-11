@@ -1,0 +1,20 @@
+User-agent: * 
+
+Allow: /citi/v1/*
+Disallow: /App_Data/
+Disallow: /bin/
+Disallow: /ClientResources/  
+Disallow: /lang/ 
+Disallow: /modules/ 
+Disallow: /Static/
+Disallow: /Views/
+Disallow: /citi/*
+Disallow: /citi/v1/theq/api/GlobalSearch/*
+Disallow: /citi/v1/theq/api/BestMatch/*
+Disallow: /citi/v1/theq/api/*/Excel
+Disallow: /citi/v1/theq/api/*Charts/*
+Disallow: /citi/v1/theq/api/ContentLikes/*
+Disallow: /watchlist/
+Disallow: /*/NewsletterSubscription/*
+Disallow: /*/NewsletterSubscription/*
+Disallow: /citi/v1/theq/api/Document/*/Factsheet/*

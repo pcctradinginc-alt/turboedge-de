@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual environments (.venv may be a symlink to .venv.nosync to keep it out of iCloud sync)
+.venv
+.venv/
+.venv.nosync/
+venv/
+
+# uv
+# uv.lock IS committed for reproducible installs - do not ignore it.
+
+# TurboEdge-DE local state (DuckDB + immutable snapshot archive)
+state/*.duckdb
+state/*.duckdb.wal
+state/*.duckdb.tmp
+state/snapshots/
+
+# User-supplied CSV product exports (local data, never committed)
+state/imports/products/*
+!state/imports/products/.gitkeep
+
+# Keep directory placeholders for state subfolders
+!state/registry/.gitkeep
+!state/ledger/.gitkeep
+!state/trials/.gitkeep
+
+# Generated reports (scan/health output) - keep the directory via .gitkeep
+reports/*.html
+reports/*.txt
+reports/*.json
+!reports/.gitkeep
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Caches
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.hypothesis/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp

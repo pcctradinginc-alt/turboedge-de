@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://derivate.bnpparibas.com/sitemap-index.xml

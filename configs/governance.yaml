@@ -1,0 +1,17 @@
+# TurboEdge-DE research governance (Master Spec Section 27, CLAUDE.md rules
+# 23-26). Not enforced by code in this milestone (no research/trials modules
+# yet); values are declared here so later milestones have a stable config
+# surface to read from.
+
+# Maximum number of adjustments/promotions research is allowed to make per
+# quarter (CLAUDE.md rule 24).
+research_adjustment_budget_per_quarter: 6
+
+# Minimum required out-of-sample improvement (decimal, e.g. 0.05 = 5%) for a
+# challenger to justify consuming one unit of the adaptation budget (ladder
+# rule, Master Spec Section 27.3).
+ladder_min_improvement: 0.05
+
+# Benjamini-Hochberg false discovery rate alpha applied to research trial
+# promotions (CLAUDE.md rule 25).
+fdr_alpha: 0.1

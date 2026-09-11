@@ -1,0 +1,45 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.ref }}-tests
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install Python 3.12
+        run: uv python install 3.12
+
+      - name: Install dependencies (with dev extras)
+        run: uv sync --extra dev --locked
+
+      - name: Lint with ruff
+        run: uv run ruff check .
+
+      - name: Format check with ruff
+        run: uv run ruff format --check .
+
+      - name: Type check with mypy
+        run: uv run mypy src
+
+      - name: Run tests with pytest
+        run: uv run pytest -q --cov=turboedge --cov-report=term-missing

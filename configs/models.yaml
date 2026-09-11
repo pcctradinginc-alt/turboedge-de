@@ -1,0 +1,12 @@
+# TurboEdge-DE model registry.
+# tsmom_horizon_norm_v1 is the Protected Baseline (Master Spec Section 7,
+# CLAUDE.md rule 10): never deleted, threshold versioned and never silently
+# re-optimized.
+
+tsmom_horizon_norm_v1:
+  signal_id: "tsmom_horizon_norm_v1"
+  lookbacks: [21, 63, 126]
+  ewma_lambda: 0.94
+  clip: 3.0
+  threshold: 0.5
+  version: "1"

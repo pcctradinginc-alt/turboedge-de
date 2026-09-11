@@ -1,0 +1,122 @@
+name: Scan Report
+
+on:
+  schedule:
+    # Mo–Fri 13:45 UTC (EU/US market overlap)
+    - cron: "45 13 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      underlying:
+        description: "Underlying to scan (e.g., DAX)"
+        required: false
+        default: "DAX"
+        type: string
+      top:
+        description: "Number of top candidates to return"
+        required: false
+        default: "20"
+        type: string
+      email:
+        description: "Send email report on completion"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: turboedge-state
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install Python 3.12
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Create directories
+        run: mkdir -p reports state
+
+      - name: Restore state cache
+        uses: actions/cache/restore@v4
+        with:
+          path: state/
+          key: turboedge-state-${{ github.run_id }}
+          restore-keys: |
+            turboedge-state-
+
+      - name: Determine scan parameters
+        id: params
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          IN_UNDERLYING: ${{ inputs.underlying }}
+          IN_TOP: ${{ inputs.top }}
+          IN_EMAIL: ${{ inputs.email }}
+        run: |
+          if [[ "$EVENT_NAME" == "schedule" ]]; then
+            underlying="DAX"; top="20"; send_email="false"
+          else
+            underlying="${IN_UNDERLYING:-DAX}"; top="${IN_TOP:-20}"; send_email="${IN_EMAIL:-false}"
+          fi
+          # Whitelist-validate inputs before they reach any shell command.
+          [[ "$underlying" =~ ^[A-Za-z0-9_]{1,20}$ ]] || { echo "::error::invalid underlying"; exit 2; }
+          [[ "$top" =~ ^[0-9]{1,3}$ ]] || { echo "::error::invalid top"; exit 2; }
+          {
+            echo "underlying=$underlying"
+            echo "top=$top"
+            echo "send_email=$send_email"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Fetch product universe
+        env:
+          UNDERLYING: ${{ steps.params.outputs.underlying }}
+        run: |
+          uv run turboedge --log-format json universe --underlying "$UNDERLYING"
+
+      - name: Run scan
+        env:
+          UNDERLYING: ${{ steps.params.outputs.underlying }}
+          TOP: ${{ steps.params.outputs.top }}
+          SEND_EMAIL: ${{ steps.params.outputs.send_email }}
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          TURBOEDGE_EMAIL_TO: ${{ secrets.TURBOEDGE_EMAIL_TO }}
+        run: |
+          args=(--underlying "$UNDERLYING" --top "$TOP" --report-out reports/scan.txt --json-out reports/scan.json)
+          if [[ "$SEND_EMAIL" == "true" ]]; then
+            args+=(--email)
+          fi
+          uv run turboedge --log-format json scan "${args[@]}"
+
+      - name: Display database info
+        run: uv run turboedge db info
+
+      - name: Save state cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: state/
+          key: turboedge-state-${{ github.run_id }}
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scan-report-${{ github.run_id }}
+          path: reports/
+          retention-days: 30

@@ -1,0 +1,23 @@
+# TurboEdge-DE - general execution defaults.
+# See CLAUDE.md rule 3: production output exclusively via Gmail/Reports, never
+# live execution.
+
+# Console log formatting used when TURBOEDGE_LOG_FORMAT is not set and stderr
+# is a TTY. "console" (human-readable) or "json" (structured, for aggregation).
+log_format: console
+
+# Default number of ranked candidates shown by `turboedge scan`.
+default_top: 20
+
+# Default forecast/cost horizon used by `turboedge scan` when --horizon is
+# omitted. One of "3d", "5d", "7d", "10d", "14d".
+default_horizon: "7d"
+
+# All persisted timestamps are UTC regardless of this value; this only affects
+# human-facing report rendering.
+timezone: "UTC"
+
+# Fallback HTTP client settings used by adapters that do not define their own
+# values in sources.yaml.
+http_default_timeout_s: 10.0
+http_default_user_agent: "TurboEdge-DE-Research/0.1 (+research-only; no-execution)"

@@ -1,0 +1,88 @@
+# TurboEdge-DE data source registry.
+# Every source is accessed exclusively through an adapter (CLAUDE.md rule 27).
+# `enabled: false` sources are skipped entirely by `sources health` and by the
+# scan pipeline's universe/underlying fetch steps.
+
+# Cloudflare bot-management blocks every request (including robots.txt) to an
+# honest, clearly-labeled non-browser UA -- confirmed live in the Round 1/2
+# data-source research (see docs/data_sources.md). No bypass attempted
+# (no headless-browser challenge solving, no TLS fingerprint spoofing).
+# Interface-only adapter: healthcheck() reports FAIL until a legitimate
+# access path exists (commercial license or user-provided export).
+deutsche_boerse:
+  enabled: false
+  base_url: "https://www.boerse-frankfurt.de"
+  timeout_s: 10.0
+  min_interval_s: 1.5
+  max_pages: 20
+  user_agent: "TurboEdge-DE-Research/0.1 (+research-only; no-execution)"
+
+# api.boerse-frankfurt.de requires a salted-hash request signature
+# (X-Client-TraceId/X-Security, computed from obfuscated JS) on top of an
+# API-gateway CORS check -- confirmed live in the Round 1/2 data-source
+# research (see docs/data_sources.md). Reproducing the hash/salt is out of
+# bounds per the research rules (no anti-bot token replication). Interface-
+# only adapter: healthcheck() reports FAIL until a legitimate access path
+# exists.
+boerse_stuttgart:
+  enabled: false
+  base_url: "https://www.boerse-stuttgart.de"
+  timeout_s: 10.0
+  min_interval_s: 1.5
+  max_pages: 20
+  user_agent: "TurboEdge-DE-Research/0.1 (+research-only; no-execution)"
+
+# BNP Paribas leverage-product feed (derivate.bnpparibas.com), confirmed
+# live/working in Round 2 data-source research (see docs/data_sources.md):
+# plain JSON REST, no auth, no anti-bot signature, robots.txt fully
+# permissive. Primary product source for this milestone.
+bnp_paribas:
+  enabled: true
+  base_url: "https://derivate.bnpparibas.com"
+  timeout_s: 20.0
+  min_interval_s: 1.5
+  max_pages: 20
+  user_agent: "TurboEdge-DE-Research/0.1 (+https://github.com/pcctradinginc-alt/turboedge-de)"
+
+# Citi / CitiFirst leverage-product feed (de.citifirst.com), confirmed
+# live/working in Round 2 data-source research (see docs/data_sources.md):
+# plain JSON REST, no auth, robots.txt explicitly permits /citi/v1/*.
+# Secondary/cross-validation product source; pagination capped at 25 rows
+# per underlying (structural, unresolved -- see healthcheck WARN).
+citi:
+  enabled: true
+  base_url: "https://de.citifirst.com"
+  timeout_s: 20.0
+  min_interval_s: 1.5
+  max_pages: 10
+  user_agent: "TurboEdge-DE-Research/0.1 (+https://github.com/pcctradinginc-alt/turboedge-de)"
+
+# ECB Data API - EUR short-term rate (EST/EU000A2X2A25), used as the risk-free
+# reference rate for financing spread inference.
+ecb:
+  enabled: true
+  base_url: "https://data-api.ecb.europa.eu"
+  timeout_s: 10.0
+  min_interval_s: 1.0
+  max_pages: 1
+  user_agent: "TurboEdge-DE-Research/0.1 (+research-only; no-execution)"
+
+# yfinance fallback for underlying daily OHLC bars.
+yfinance:
+  enabled: true
+  base_url: "https://query2.finance.yahoo.com"
+  timeout_s: 15.0
+  min_interval_s: 0.5
+  max_pages: 1
+  user_agent: "TurboEdge-DE-Research/0.1 (+research-only; no-execution)"
+
+# CSV import adapter for user-provided product lists.
+# base_url is the directory path where CSV files are imported (relative paths
+# are resolved relative to the working directory).
+csv_import:
+  enabled: true
+  base_url: "state/imports/products"
+  timeout_s: 5.0
+  min_interval_s: 0.0
+  max_pages: 1
+  user_agent: "TurboEdge-DE-Research/0.1 (+research-only; no-execution)"

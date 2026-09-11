@@ -1,0 +1,135 @@
+# TurboEdge-DE underlying universe (Master Spec Section 4).
+# `enabled: true` underlyings are in scope for `turboedge universe` / `scan`
+# in this milestone; the rest are declared for forward compatibility but
+# skipped. Metadata here must stay consistent with
+# src/turboedge/universe/underlying_map.py (covered by
+# tests/universe/test_underlying_map.py).
+
+underlyings:
+  - id: DAX
+    name: "DAX"
+    enabled: true
+    asset_class: index
+    cluster: de_equity
+    currency: EUR
+    yfinance_ticker: "^GDAXI"
+
+  - id: ESTX50
+    name: "Euro Stoxx 50"
+    enabled: false
+    asset_class: index
+    cluster: eu_equity
+    currency: EUR
+    yfinance_ticker: "^STOXX50E"
+
+  - id: SPX
+    name: "S&P 500"
+    enabled: false
+    asset_class: index
+    cluster: us_equity
+    currency: USD
+    yfinance_ticker: "^GSPC"
+
+  - id: NDX
+    name: "Nasdaq 100"
+    enabled: true
+    asset_class: index
+    cluster: us_equity
+    currency: USD
+    yfinance_ticker: "^NDX"
+
+  - id: NKY
+    name: "Nikkei 225"
+    enabled: false
+    asset_class: index
+    cluster: jp_equity
+    currency: JPY
+    yfinance_ticker: "^N225"
+
+  - id: UKX
+    name: "FTSE 100"
+    enabled: false
+    asset_class: index
+    cluster: uk_equity
+    currency: GBP
+    yfinance_ticker: "^FTSE"
+
+  - id: SMI
+    name: "SMI"
+    enabled: false
+    asset_class: index
+    cluster: ch_equity
+    currency: CHF
+    yfinance_ticker: "^SSMI"
+
+  - id: EURUSD
+    name: "EUR/USD"
+    enabled: true
+    asset_class: fx
+    cluster: fx_eur
+    currency: USD
+    yfinance_ticker: "EURUSD=X"
+
+  - id: USDJPY
+    name: "USD/JPY"
+    enabled: false
+    asset_class: fx
+    cluster: fx_jpy
+    currency: JPY
+    yfinance_ticker: "USDJPY=X"
+
+  - id: GBPUSD
+    name: "GBP/USD"
+    enabled: false
+    asset_class: fx
+    cluster: fx_gbp
+    currency: USD
+    yfinance_ticker: "GBPUSD=X"
+
+  - id: EURCHF
+    name: "EUR/CHF"
+    enabled: false
+    asset_class: fx
+    cluster: fx_chf
+    currency: CHF
+    yfinance_ticker: "EURCHF=X"
+
+  - id: XAU
+    name: "Gold"
+    enabled: true
+    asset_class: metal
+    cluster: metals
+    currency: USD
+    yfinance_ticker: "GC=F"
+
+  - id: XAG
+    name: "Silver"
+    enabled: false
+    asset_class: metal
+    cluster: metals
+    currency: USD
+    yfinance_ticker: "SI=F"
+
+  - id: BRENT
+    name: "Brent Crude"
+    enabled: false
+    asset_class: energy
+    cluster: energy
+    currency: USD
+    yfinance_ticker: "BZ=F"
+
+  - id: WTI
+    name: "WTI Crude"
+    enabled: false
+    asset_class: energy
+    cluster: energy
+    currency: USD
+    yfinance_ticker: "CL=F"
+
+  - id: NATGAS
+    name: "Natural Gas"
+    enabled: false
+    asset_class: energy
+    cluster: energy
+    currency: USD
+    yfinance_ticker: "NG=F"

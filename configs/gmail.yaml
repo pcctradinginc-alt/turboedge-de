@@ -1,0 +1,24 @@
+# TurboEdge-DE Gmail notifier configuration (non-secret settings only).
+# Credentials come exclusively from environment variables: GMAIL_USER,
+# GMAIL_APP_PASSWORD, TURBOEDGE_EMAIL_TO (see .env.example). If they are
+# missing, notifications/gmail.py runs in dry-run mode and logs instead of
+# sending.
+
+# Master switch. When false, `turboedge scan --email` and `sources health
+# --email-on-fail` skip sending entirely (still available via `notify test`
+# in dry-run for local verification).
+enabled: false
+
+smtp_host: "smtp.gmail.com"
+smtp_port: 465
+
+# Candidate categories that trigger an email from `turboedge scan --email`.
+# ACTIONABLE is listed for forward compatibility but cannot occur in this
+# milestone (lcb_ev is always None).
+send_on: ["ACTIONABLE"]
+
+subject_prefix: "[TurboEdge-DE]"
+
+# Single end-of-day summary instead of per-scan emails. Not implemented in
+# this milestone; reserved for Phase 5+.
+daily_digest: false

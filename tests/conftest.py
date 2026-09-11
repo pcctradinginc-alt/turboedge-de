@@ -64,6 +64,7 @@ def make_product_snapshot() -> Callable[..., ProductSnapshot]:
             trading_hours="09:00-22:00",
             product_age_days=120,
             underlying_price_ref=18500.0,
+            underlying_price_ref_timestamp=_utc(2026, 9, 10, 15, 30),
             raw_hash=hashlib.sha256(b"raw-record").hexdigest(),
             observation_time=_utc(2026, 9, 10, 15, 30),
             available_at=_utc(2026, 9, 10, 15, 30),

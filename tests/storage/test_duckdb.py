@@ -4,6 +4,7 @@ from collections.abc import Callable
 from datetime import UTC, date, datetime
 from pathlib import Path
 
+import duckdb
 import pytest
 
 from turboedge.storage.duckdb import Store, StoreError
@@ -373,3 +374,232 @@ def test_append_candidates_large_heterogeneous_batch(
     assert len(populated) == 4800
     assert populated[0].costs is not None
     assert populated[0].costs.ask == 4.86
+
+
+# --------------------------------------------------------------------------
+# Additive schema migration: `Store.init_schema()` must be able to bring a
+# DuckDB file created by an OLDER version of this codebase's DDL up to date
+# (the real-world trigger: `scan-report.yml` restores `state/turboedge.duckdb`
+# from the GitHub Actions cache across runs, so a file on disk can predate a
+# newly added, nullable ProductSnapshot field like
+# `underlying_price_ref_timestamp`) without dropping data or requiring a
+# fresh state dir.
+# --------------------------------------------------------------------------
+
+# The pre-migration `product_snapshots` DDL -- byte-for-byte the current one
+# in `storage/duckdb.py` minus the `underlying_price_ref_timestamp` column,
+# reproducing exactly the on-disk shape a DuckDB file cached from a run
+# before that field was added would have.
+_OLD_PRODUCT_SNAPSHOTS_DDL = """
+    CREATE TABLE product_snapshots (
+        isin VARCHAR NOT NULL,
+        wkn VARCHAR,
+        issuer VARCHAR NOT NULL,
+        venue VARCHAR NOT NULL,
+        underlying_raw VARCHAR NOT NULL,
+        underlying_id VARCHAR,
+        direction VARCHAR NOT NULL,
+        product_type VARCHAR NOT NULL,
+        financing_level DOUBLE,
+        knockout_barrier DOUBLE,
+        ratio DOUBLE NOT NULL,
+        currency VARCHAR NOT NULL,
+        underlying_currency VARCHAR,
+        quanto BOOLEAN,
+        open_end BOOLEAN NOT NULL,
+        maturity DATE,
+        first_trading_day DATE,
+        bid DOUBLE,
+        ask DOUBLE,
+        bid_size DOUBLE,
+        ask_size DOUBLE,
+        quote_timestamp TIMESTAMPTZ,
+        quote_presence BOOLEAN,
+        bid_only BOOLEAN NOT NULL,
+        knocked_out BOOLEAN NOT NULL,
+        trading_hours VARCHAR,
+        product_age_days INTEGER,
+        underlying_price_ref DOUBLE,
+        raw_hash VARCHAR NOT NULL,
+        observation_time TIMESTAMPTZ NOT NULL,
+        available_at TIMESTAMPTZ NOT NULL,
+        retrieved_at TIMESTAMPTZ NOT NULL,
+        source_timestamp TIMESTAMPTZ,
+        source VARCHAR NOT NULL,
+        schema_version VARCHAR NOT NULL,
+        parser_version VARCHAR NOT NULL,
+        is_stale BOOLEAN NOT NULL,
+        quality_score DOUBLE NOT NULL
+    )
+    """
+
+_OLD_ROW_TIMESTAMP = datetime(2026, 9, 1, 10, 0, tzinfo=UTC)
+
+
+def _seed_old_product_snapshots_db(path: Path) -> None:
+    """Create a DuckDB file at ``path`` with the pre-migration
+    ``product_snapshots`` schema (no ``underlying_price_ref_timestamp``) and
+    one row in it -- simulating exactly what CI restores from its cache."""
+    conn = duckdb.connect(str(path))
+    try:
+        conn.execute(_OLD_PRODUCT_SNAPSHOTS_DDL)
+        conn.execute(
+            """
+            INSERT INTO product_snapshots (
+                isin, wkn, issuer, venue, underlying_raw, underlying_id, direction,
+                product_type, financing_level, knockout_barrier, ratio, currency,
+                underlying_currency, quanto, open_end, maturity, first_trading_day,
+                bid, ask, bid_size, ask_size, quote_timestamp, quote_presence,
+                bid_only, knocked_out, trading_hours, product_age_days,
+                underlying_price_ref, raw_hash, observation_time, available_at,
+                retrieved_at, source_timestamp, source, schema_version,
+                parser_version, is_stale, quality_score
+            ) VALUES (
+                'DE000OLD0001', 'OLD001', 'TestBank', 'stuttgart', 'DAX', 'DAX',
+                'long', 'turbo_open_end', 18000.0, 18000.0, 0.01, 'EUR', 'EUR',
+                false, true, NULL, NULL, 4.80, 4.86, 1000.0, 1000.0, ?, true,
+                false, false, '09:00-22:00', 100, 18500.0, 'oldhash',
+                ?, ?, ?, ?, 'test_source', '1.0.0', '1', false, 0.9
+            )
+            """,
+            [
+                _OLD_ROW_TIMESTAMP,
+                _OLD_ROW_TIMESTAMP,
+                _OLD_ROW_TIMESTAMP,
+                _OLD_ROW_TIMESTAMP,
+                _OLD_ROW_TIMESTAMP,
+            ],
+        )
+    finally:
+        conn.close()
+
+
+def test_init_schema_adds_missing_column_to_old_product_snapshots_table(
+    tmp_path: Path,
+    make_product_snapshot: Callable[..., ProductSnapshot],
+) -> None:
+    db_path = tmp_path / "turboedge.duckdb"
+    _seed_old_product_snapshots_db(db_path)
+
+    with Store(db_path) as store:
+        store.init_schema()
+
+        # the missing column now exists, and the pre-existing row has NULL
+        # for it (never guessed/backfilled) rather than the insert failing
+        # or the column being silently skipped
+        row = store._conn.execute(
+            "SELECT isin, underlying_price_ref_timestamp FROM product_snapshots "
+            "WHERE isin = 'DE000OLD0001'"
+        ).fetchone()
+        assert row is not None
+        assert row[0] == "DE000OLD0001"
+        assert row[1] is None
+
+        # a fresh, fully-populated snapshot (with the new field set) can now
+        # be appended without error
+        new_snapshot = make_product_snapshot(isin="DE000NEW0001")
+        assert new_snapshot.underlying_price_ref_timestamp is not None
+        n = store.append_product_snapshots([new_snapshot])
+        assert n == 1
+        assert store.table_counts()["product_snapshots"] == 2
+
+        # the migration was logged
+        migrations = store.list_schema_migrations()
+        assert (
+            migrations[-1][1],
+            migrations[-1][2],
+            migrations[-1][3],
+        ) == ("product_snapshots", "underlying_price_ref_timestamp", "add_column")
+        migrations_after_first_call = len(migrations)
+
+        # a second init_schema() call is a no-op: the column already exists,
+        # so no new migration is logged
+        store.init_schema()
+        assert len(store.list_schema_migrations()) == migrations_after_first_call
+
+
+def test_init_schema_migration_check_runs_for_every_managed_table(
+    tmp_path: Path,
+) -> None:
+    """Not just `product_snapshots`: every table `Store` manages (e.g.
+    `candidate_sets`) goes through the same additive-migration check, so a
+    DuckDB file missing a column on any of them would be repaired the same
+    way."""
+    db_path = tmp_path / "turboedge.duckdb"
+    conn = duckdb.connect(str(db_path))
+    try:
+        # pre-migration `candidate_sets`, missing `cost_rank_score` (the
+        # last column in the current DDL).
+        conn.execute(
+            """
+            CREATE TABLE candidate_sets (
+                run_id VARCHAR NOT NULL,
+                candidate_id VARCHAR NOT NULL,
+                isin VARCHAR NOT NULL,
+                wkn VARCHAR,
+                issuer VARCHAR NOT NULL,
+                underlying_id VARCHAR NOT NULL,
+                direction VARCHAR NOT NULL,
+                category VARCHAR NOT NULL,
+                reasons VARCHAR NOT NULL,
+                leverage DOUBLE,
+                leverage_bucket VARCHAR,
+                distance_to_barrier_pct DOUBLE,
+                distance_to_barrier_sigma DOUBLE,
+                costs VARCHAR,
+                realized_financing_spread DOUBLE,
+                financing_cost_horizon_pct VARCHAR NOT NULL,
+                cross_issuer_residual_zscore DOUBLE,
+                issuer_markup_score DOUBLE,
+                quote_dislocation_score DOUBLE,
+                wrapper_edge DOUBLE,
+                liquidity_factor DOUBLE,
+                integrity_passed BOOLEAN NOT NULL,
+                lcb_ev DOUBLE,
+                PRIMARY KEY (run_id, candidate_id)
+            )
+            """
+        )
+    finally:
+        conn.close()
+
+    with Store(db_path) as store:
+        store.init_schema()
+        columns = {
+            row[1] for row in store._conn.execute("PRAGMA table_info(candidate_sets)").fetchall()
+        }
+        assert "cost_rank_score" in columns
+        migrations = store.list_schema_migrations()
+        assert ("candidate_sets", "cost_rank_score", "add_column") in [
+            (m[1], m[2], m[3]) for m in migrations
+        ]
+
+
+def test_init_schema_raises_on_incompatible_existing_column_type(tmp_path: Path) -> None:
+    """A column that exists in both the on-disk table and the current DDL,
+    but with a different type, is never auto-migrated -- that would risk
+    silently truncating/reinterpreting data. `init_schema()` must refuse
+    with a clear `StoreError` instead."""
+    db_path = tmp_path / "turboedge.duckdb"
+    conn = duckdb.connect(str(db_path))
+    try:
+        # `started_at` is TIMESTAMPTZ in the real DDL; here it is VARCHAR.
+        conn.execute(
+            """
+            CREATE TABLE runs (
+                run_id VARCHAR PRIMARY KEY,
+                started_at VARCHAR NOT NULL,
+                finished_at TIMESTAMPTZ,
+                command VARCHAR NOT NULL,
+                config_hash VARCHAR NOT NULL,
+                git_commit VARCHAR,
+                status VARCHAR NOT NULL,
+                error VARCHAR
+            )
+            """
+        )
+    finally:
+        conn.close()
+
+    with Store(db_path) as store, pytest.raises(StoreError, match=r"runs\.started_at"):
+        store.init_schema()

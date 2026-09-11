@@ -85,7 +85,21 @@ def check_product(
     # explicitly (reason "no_ask_quote") once bid/financing_level/ratio are
     # otherwise plausible; pipeline/scan.py skips every ask-dependent
     # pricing step (decompose_ask, leverage, spread) for them.
-    if p.bid is None:
+    #
+    # Symmetrically, a missing ``bid`` is NOT flagged here either when the
+    # source has explicitly told us there is no live two-way market at all
+    # (``bid`` AND ``ask`` both ``None`` and ``quote_presence is False`` --
+    # e.g. Citi's ``referencePriceMethod == "Closing Price"`` rows, see
+    # adapters/issuer_feeds.py). That is "source has no tradable quote for
+    # this product", not a data-quality violation -- master data (financing
+    # level, barrier, ISIN, underlying mapping, ...) is untouched and still
+    # validated by every other check in this function. ranking/gates.py
+    # rejects such products explicitly (reason "no_live_quote") once those
+    # other checks pass. A missing ``bid`` with ``quote_presence`` True or
+    # None (i.e. the source did NOT explicitly say "no live quote") remains
+    # an unexpected, genuine data-integrity failure.
+    no_live_quote = p.bid is None and p.ask is None and p.quote_presence is False
+    if p.bid is None and not no_live_quote:
         failures.append("missing_bid")
     if p.financing_level is None:
         failures.append("missing_financing_level")

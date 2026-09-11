@@ -38,6 +38,12 @@ class ScanReportRow:
     issuer_margin_pct: float | None
     financing_cost_7d_pct: float | None
     liquidity_factor: float | None
+    # "Cost per exposure (h)": total round-trip cost over the scan horizon as
+    # a % of underlying exposure (leverage-normalized), used to rank
+    # candidates within WATCH. See CandidateEvaluation.cost_rank_score
+    # (storage/schemas.py) and pipeline/scan.py for the formula (Build
+    # Contract BEFUND 2).
+    cost_rank_score: float | None
     reasons: list[str]
 
 
@@ -111,6 +117,7 @@ Summary:
    Distance to Barrier: {{ row.distance_to_barrier_pct | pct }}
    Issuer Margin: {{ row.issuer_margin_pct | pct }}
    Financing (7d): {{ row.financing_cost_7d_pct | pct }}
+   Cost per exposure (h): {{ row.cost_rank_score | pct }}
    Liquidity Factor: {{ row.liquidity_factor | num }}
    Reasons:
 {% for reason in row.reasons %}     - {{ reason }}

@@ -28,7 +28,13 @@ from turboedge.adapters.registry import (
 )
 from turboedge.config import ConfigError, config_hash, load_config
 from turboedge.logging import configure_logging
-from turboedge.monitoring.source_health import from_healthcheck, overall_status
+from turboedge.monitoring.source_health import (
+    OPTIONAL_SOURCES,
+    critical_failures,
+    from_healthcheck,
+    overall_status,
+)
+from turboedge.notifications.dedup import NotificationDeduplicator, notification_hash
 from turboedge.notifications.gmail import GmailCredentials, GmailNotifier
 from turboedge.pipeline.scan import ScanOptions, run_scan
 from turboedge.pipeline.universe import NoProductsError, run_universe
@@ -56,6 +62,12 @@ err_console = Console(stderr=True)
 
 _FOOTER = "Research system — manual execution only."
 _HORIZON_TO_DAYS: dict[str, int] = {"3d": 3, "5d": 5, "7d": 7, "10d": 10, "14d": 14}
+# Placeholder recipient used only when GmailCredentials.from_env() returns
+# None (dry-run: no GMAIL_USER/GMAIL_APP_PASSWORD/TURBOEDGE_EMAIL_TO set).
+# Must never be `cfg.gmail.subject_prefix` -- that was a copy/paste bug that
+# made dry-run "notification_dry_run" log lines report the subject prefix
+# (e.g. "[TurboEdge-DE]") as the recipient list instead of an actual address.
+_DRY_RUN_FALLBACK_RECIPIENT = "no-recipients-configured@example.invalid"
 
 
 class AppContext:
@@ -581,32 +593,73 @@ def sources_health(
             status="success" if overall == HealthStatus.PASS else "degraded",
         )
 
-        # Email on failure
-        if email_on_fail and overall != HealthStatus.PASS:
-            creds = GmailCredentials.from_env()
-            notifier = GmailNotifier(app_ctx.cfg.gmail, creds)
-            spec_body = f"Source health check: {overall.value}\n\nSources:\n"
-            for record in health_records:
-                spec_body += f"  {record.source}: {record.status.value} ({record.message})\n"
-            from turboedge.notifications.gmail import EmailMessageSpec
+        # Critical sources: every enabled product adapter except the
+        # OPTIONAL_SOURCES (currently just csv_import, a user-curated
+        # manual-fallback source whose everyday state is "nothing
+        # uploaded"), plus the two reference-rate sources scan pricing
+        # depends on. A FAIL from a non-critical/optional source must never
+        # trigger the email alert or --fail-on-error exit -- that was the
+        # cause of the daily false-alarm alert (csv_import FAIL on an empty
+        # CI runner). overall/overall_status above is still computed and
+        # persisted/displayed unchanged (used for the run's stored
+        # "success"/"degraded" status and the console table), only the
+        # alert/exit-code gating below is narrowed to critical sources.
+        critical_sources = {a.name for a in product_adapters if a.name not in OPTIONAL_SOURCES} | {
+            "yfinance",
+            "ecb_estr",
+        }
+        crit_fails = critical_failures(health_records, critical_sources)
 
-            spec = EmailMessageSpec(
-                subject="TurboEdge Source Health Alert",
-                body_text=spec_body,
-                to=creds.recipients if creds else [app_ctx.cfg.gmail.subject_prefix],
+        # Email on failure -- only for a critical-source FAIL, deduplicated
+        # per calendar day (UTC) so re-running the workflow, or a persisting
+        # failure across consecutive scheduled runs on the same day, does
+        # not re-send the identical alert.
+        if email_on_fail and crit_fails:
+            today = datetime.now(UTC).date().isoformat()
+            failing_sources = sorted(r.source for r in crit_fails)
+            dedup = NotificationDeduplicator(store)
+            n_hash = notification_hash(
+                None,
+                "SOURCE_HEALTH_ALERT",
+                {"date": today, "sources": ",".join(failing_sources)},
             )
-            try:
-                send_result = notifier.send(spec)
-                if send_result.sent:
-                    console.print("[green]Email sent[/green]")
-                else:
-                    console.print(f"[yellow]Dry-run: {send_result.message}[/yellow]")
-            except Exception as exc:
-                err_console.print(f"[red]Failed to send email: {exc}[/red]")
-                raise typer.Exit(code=1)  # noqa: B904
+            if not dedup.should_send(n_hash):
+                console.print(
+                    "[yellow]Source health alert already sent today for "
+                    f"{', '.join(failing_sources)}; skipping duplicate[/yellow]"
+                )
+            else:
+                creds = GmailCredentials.from_env()
+                notifier = GmailNotifier(app_ctx.cfg.gmail, creds)
+                spec_body = (
+                    f"Source health check: {overall.value}\n"
+                    f"Critical source failure(s): {', '.join(failing_sources)}\n\n"
+                    "Sources:\n"
+                )
+                for record in health_records:
+                    spec_body += f"  {record.source}: {record.status.value} ({record.message})\n"
+                from turboedge.notifications.gmail import EmailMessageSpec
 
-        # Exit code
-        if fail_on_error and overall == HealthStatus.FAIL:
+                spec = EmailMessageSpec(
+                    subject="TurboEdge Source Health Alert",
+                    body_text=spec_body,
+                    to=creds.recipients if creds else [_DRY_RUN_FALLBACK_RECIPIENT],
+                )
+                try:
+                    send_result = notifier.send(spec)
+                    if send_result.sent:
+                        console.print("[green]Email sent[/green]")
+                    else:
+                        console.print(f"[yellow]Dry-run: {send_result.message}[/yellow]")
+                    dedup.mark_sent(
+                        n_hash, None, "SOURCE_HEALTH_ALERT", spec.subject, sent_at=datetime.now(UTC)
+                    )
+                except Exception as exc:
+                    err_console.print(f"[red]Failed to send email: {exc}[/red]")
+                    raise typer.Exit(code=1)  # noqa: B904
+
+        # Exit code -- only for a critical-source FAIL (see above).
+        if fail_on_error and crit_fails:
             raise typer.Exit(code=4)
 
 

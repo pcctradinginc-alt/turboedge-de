@@ -190,6 +190,92 @@ def test_check_product_does_not_fail_on_missing_ask(
     assert report.failures == []
 
 
+def test_check_product_does_not_fail_on_no_live_quote(
+    make_product_snapshot: Callable[..., ProductSnapshot],
+) -> None:
+    """Bid AND ask both missing, with the source explicitly reporting no live
+    quote (``quote_presence=False``, e.g. Citi's ``referencePriceMethod ==
+    "Closing Price"`` rows -- adapters/issuer_feeds.py), is "no tradable
+    quote", not a data-integrity failure, provided master data (financing
+    level, barrier, underlying mapping, ...) is otherwise plausible --
+    ranking/gates.py rejects it explicitly ("no_live_quote").
+    """
+    product = make_product_snapshot(bid=None, ask=None, quote_presence=False)
+    report = check_product(
+        product,
+        consensus=18500.0,
+        now=_NOW,
+        max_quote_age_s=120.0,
+        known_issuers=None,
+        margin_warn_pct=0.5,
+    )
+    assert report.passed is True
+    assert "missing_bid" not in report.failures
+    assert report.failures == []
+
+
+def test_check_product_flags_missing_bid_when_quote_presence_true(
+    make_product_snapshot: Callable[..., ProductSnapshot],
+) -> None:
+    """A missing bid with ``quote_presence=True`` (unexpected: the source
+    claims a live quote exists but the bid field is empty) stays a genuine
+    data-integrity failure -- the no-live-quote exemption only applies when
+    the source explicitly says there is no live quote at all.
+    """
+    product = make_product_snapshot(bid=None, ask=None, quote_presence=True)
+    report = check_product(
+        product,
+        consensus=18500.0,
+        now=_NOW,
+        max_quote_age_s=120.0,
+        known_issuers=None,
+        margin_warn_pct=0.5,
+    )
+    assert report.passed is False
+    assert "missing_bid" in report.failures
+
+
+def test_check_product_flags_missing_bid_when_quote_presence_none(
+    make_product_snapshot: Callable[..., ProductSnapshot],
+) -> None:
+    """A missing bid with ``quote_presence=None`` (source did not say either
+    way) also stays a genuine data-integrity failure -- only an explicit
+    ``quote_presence=False`` (plus a missing ask) counts as "source says no
+    live quote".
+    """
+    product = make_product_snapshot(bid=None, ask=None, quote_presence=None)
+    report = check_product(
+        product,
+        consensus=18500.0,
+        now=_NOW,
+        max_quote_age_s=120.0,
+        known_issuers=None,
+        margin_warn_pct=0.5,
+    )
+    assert report.passed is False
+    assert "missing_bid" in report.failures
+
+
+def test_check_product_flags_missing_bid_when_ask_present(
+    make_product_snapshot: Callable[..., ProductSnapshot],
+) -> None:
+    """A missing bid with an ask still present is never "no live quote" (an
+    ask exists) -- stays a genuine data-integrity failure regardless of
+    ``quote_presence``.
+    """
+    product = make_product_snapshot(bid=None, quote_presence=False)
+    report = check_product(
+        product,
+        consensus=18500.0,
+        now=_NOW,
+        max_quote_age_s=120.0,
+        known_issuers=None,
+        margin_warn_pct=0.5,
+    )
+    assert report.passed is False
+    assert "missing_bid" in report.failures
+
+
 def test_check_product_flags_missing_financing_level(
     make_product_snapshot: Callable[..., ProductSnapshot],
 ) -> None:

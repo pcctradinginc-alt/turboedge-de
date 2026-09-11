@@ -185,16 +185,51 @@ class TestCsvImportAdapter:
         assert metadata.version == "1"
 
     def test_healthcheck_missing_directory(self) -> None:
+        # csv_import is an OPTIONAL, user-curated fallback source (see
+        # monitoring/source_health.OPTIONAL_SOURCES): a missing import
+        # directory is the everyday default state, not an operational
+        # failure -- WARN, never FAIL, so it can never trigger
+        # `sources health --email-on-fail`/`--fail-on-error` on its own.
         adapter = CsvProductImportAdapter(Path("/nonexistent/path/12345"))
         result = adapter.healthcheck()
-        assert result.status == HealthStatus.FAIL
-        assert not result.ok
+        assert result.status == HealthStatus.WARN
+        assert result.ok
+        assert "optional source" in result.message
 
     def test_healthcheck_empty_directory(self, tmp_path: Path) -> None:
+        # No CSV files present is likewise the everyday default (nobody
+        # uploaded a manual export today) -- WARN, not FAIL.
+        adapter = CsvProductImportAdapter(tmp_path, clock=lambda: TEST_NOW)
+        result = adapter.healthcheck()
+        assert result.status == HealthStatus.WARN
+        assert result.ok
+        assert "optional source" in result.message
+
+    def test_healthcheck_fail_when_every_row_fails_to_parse(self, tmp_path: Path) -> None:
+        # CSV files ARE present but every row is defective -- this is an
+        # actually broken source, unlike "nothing uploaded" above: FAIL.
+        csv_file = tmp_path / "broken.csv"
+        csv_file.write_text(
+            "isin;issuer;underlying;direction;financing_level;knockout_barrier;ratio;bid;ask;quote_timestamp\n"
+            "INVALID;Bank1;DAX;long;18000,00;18000,00;0,01;4,80;4,86;2026-09-11T12:00:00\n"
+        )
         adapter = CsvProductImportAdapter(tmp_path, clock=lambda: TEST_NOW)
         result = adapter.healthcheck()
         assert result.status == HealthStatus.FAIL
         assert not result.ok
+        assert "defective" in result.message
+
+    def test_healthcheck_fail_when_file_unreadable(self, tmp_path: Path) -> None:
+        # A CSV file that cannot even be decoded is likewise an actually
+        # broken source: FAIL, with the failure tracked separately from
+        # per-row parse errors via `last_file_errors`.
+        csv_file = tmp_path / "bad_encoding.csv"
+        csv_file.write_bytes(b"\xff\xfe\x00\x01not-valid-utf8\x80\x81")
+        adapter = CsvProductImportAdapter(tmp_path, clock=lambda: TEST_NOW)
+        result = adapter.healthcheck()
+        assert result.status == HealthStatus.FAIL
+        assert not result.ok
+        assert adapter.last_file_errors
 
     def test_healthcheck_valid_data(self, tmp_path: Path) -> None:
         # Create a minimal valid CSV

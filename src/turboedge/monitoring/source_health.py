@@ -12,6 +12,16 @@ from datetime import datetime
 from turboedge.adapters.base import HealthCheckResult
 from turboedge.storage.schemas import HealthStatus, SourceHealthRecord
 
+# Product sources that are optional/best-effort and must never, on their
+# own, be treated as a "critical" failure by `sources health
+# --email-on-fail`/`--fail-on-error` (see cli.py::sources_health). CSV
+# import is user-curated manual data: an absent/empty import directory is
+# the default, everyday state (see
+# adapters/csv_import.py::CsvProductImportAdapter.healthcheck, which reports
+# WARN rather than FAIL for exactly that reason), not an operational
+# incident worth a daily alert email or a nonzero CI exit code.
+OPTIONAL_SOURCES: frozenset[str] = frozenset({"csv_import"})
+
 
 def score_source(
     source: str,
@@ -123,23 +133,32 @@ def score_source(
 def from_healthcheck(result: HealthCheckResult) -> SourceHealthRecord:
     """Convert a HealthCheckResult into a SourceHealthRecord.
 
-    When ok=True (PASS):
-    - availability=1, freshness=1, missingness=0, schema_consistency=1
+    Branches on ``result.status`` (not just the ``ok`` boolean), so an
+    adapter-reported WARN is never silently promoted to PASS:
 
-    When ok=False (WARN or FAIL):
-    - availability=0, schema_consistency=0.5
+    - PASS: availability=1, freshness=1, missingness=0, schema_consistency=1
+    - WARN: partial-credit metrics (adapter is reachable/usable but degraded,
+      e.g. a partial-universe pull or a merely-empty optional source)
+    - FAIL: availability=0, schema_consistency=0.5
 
-    Metrics omitted (cross_source_agreement) are left None for weight redistribution.
+    Metrics omitted (cross_source_agreement) are left None for weight
+    redistribution. The resulting record's ``status`` is always forced back
+    to ``result.status`` after scoring -- ``score_source`` derives status
+    from the weighted score against fixed thresholds, and a WARN adapter
+    result's chosen metrics could otherwise score high enough to round back
+    up to PASS (this exact regression previously made a Citi
+    ``partial_universe`` WARN surface as PASS in ``sources health``, see
+    ``adapters/issuer_feeds.py::CitiFirstTurboAdapter.healthcheck``).
 
     Args:
         result: A HealthCheckResult from an adapter's healthcheck().
 
     Returns:
-        A SourceHealthRecord with inferred metrics.
+        A SourceHealthRecord with inferred metrics and ``status ==
+        result.status``.
     """
-    if result.ok:
-        # PASS: perfect metrics
-        return score_source(
+    if result.status == HealthStatus.PASS:
+        record = score_source(
             source=result.source,
             checked_at=result.checked_at,
             availability=1.0,
@@ -149,9 +168,22 @@ def from_healthcheck(result: HealthCheckResult) -> SourceHealthRecord:
             cross_source_agreement=None,
             message=result.message,
         )
+    elif result.status == HealthStatus.WARN:
+        # Reachable/usable but degraded -- partial credit, deliberately
+        # scored inside the WARN band ([fail_threshold, warn_threshold)).
+        record = score_source(
+            source=result.source,
+            checked_at=result.checked_at,
+            availability=0.6,
+            freshness=1.0,
+            missingness=0.0,
+            schema_consistency=0.6,
+            cross_source_agreement=None,
+            message=result.message,
+        )
     else:
-        # FAIL or WARN: degraded metrics
-        return score_source(
+        # FAIL: degraded metrics
+        record = score_source(
             source=result.source,
             checked_at=result.checked_at,
             availability=0.0,
@@ -161,6 +193,10 @@ def from_healthcheck(result: HealthCheckResult) -> SourceHealthRecord:
             cross_source_agreement=None,
             message=result.message,
         )
+
+    if record.status != result.status:
+        record = record.model_copy(update={"status": result.status})
+    return record
 
 
 def overall_status(records: list[SourceHealthRecord]) -> HealthStatus:
@@ -206,6 +242,7 @@ def critical_failures(
 
 
 __all__ = [
+    "OPTIONAL_SOURCES",
     "critical_failures",
     "from_healthcheck",
     "overall_status",

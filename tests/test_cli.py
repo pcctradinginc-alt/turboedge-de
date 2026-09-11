@@ -21,7 +21,7 @@ import os
 from collections.abc import Sequence
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 from typer.testing import CliRunner
@@ -29,6 +29,7 @@ from typer.testing import CliRunner
 import turboedge.cli as cli_module
 from turboedge.adapters.base import AdapterError, AdapterMetadata, HealthCheckResult
 from turboedge.cli import app
+from turboedge.notifications.gmail import EmailMessageSpec, SendResult
 from turboedge.storage.schemas import (
     Direction,
     HealthStatus,
@@ -51,10 +52,14 @@ class _FakeProductAdapter:
         *,
         products: Sequence[ProductSnapshot] | None = None,
         exception: Exception | None = None,
+        health_status: HealthStatus = HealthStatus.PASS,
+        health_message: str = "fake product adapter",
     ) -> None:
         self._name = name
         self._products = list(products) if products is not None else []
         self._exception = exception
+        self._health_status = health_status
+        self._health_message = health_message
 
     @property
     def name(self) -> str:
@@ -68,11 +73,11 @@ class _FakeProductAdapter:
     def healthcheck(self) -> HealthCheckResult:
         return HealthCheckResult(
             source=self._name,
-            status=HealthStatus.PASS,
-            ok=True,
+            status=self._health_status,
+            ok=self._health_status != HealthStatus.FAIL,
             latency_ms=1.0,
             checked_at=datetime.now(UTC),
-            message="fake product adapter",
+            message=self._health_message,
         )
 
     def metadata(self) -> AdapterMetadata:
@@ -706,3 +711,167 @@ def test_sources_health_no_product_adapters_warns(
     )
     assert result.exit_code == 0
     assert "WARN" in result.stdout
+
+
+# --------------------------------------------------------------------------
+# sources health: critical-vs-optional alert/exit-code gating (daily
+# false-alarm fix) + dry-run recipients bug fix
+# --------------------------------------------------------------------------
+
+
+class _CapturingNotifier:
+    """Fake ``GmailNotifier`` that records every ``EmailMessageSpec`` it is
+    asked to send and always reports dry-run (no real SMTP/network)."""
+
+    sent_specs: ClassVar[list[EmailMessageSpec]] = []
+
+    def __init__(self, cfg: Any, credentials: Any) -> None:
+        del cfg, credentials
+
+    def send(self, spec: EmailMessageSpec) -> SendResult:
+        _CapturingNotifier.sent_specs.append(spec)
+        return SendResult(
+            sent=False, dry_run=True, recipients=list(spec.to), message=f"dry-run: {spec.subject}"
+        )
+
+
+@pytest.fixture(autouse=True)
+def _reset_capturing_notifier() -> None:
+    _CapturingNotifier.sent_specs = []
+
+
+def _clear_gmail_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GMAIL_USER", raising=False)
+    monkeypatch.delenv("GMAIL_APP_PASSWORD", raising=False)
+    monkeypatch.delenv("TURBOEDGE_EMAIL_TO", raising=False)
+
+
+def test_sources_health_optional_source_fail_never_alerts_or_exits_nonzero(
+    tmp_config_dir: Path, tmp_state_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression test for the daily false-alarm bug: csv_import (an
+    OPTIONAL source, see monitoring.source_health.OPTIONAL_SOURCES) FAILing
+    on its own must never send an email alert or exit nonzero, even with
+    both --email-on-fail and --fail-on-error."""
+    _clear_gmail_env(monkeypatch)
+    adapter = _FakeProductAdapter(
+        "csv_import", health_status=HealthStatus.FAIL, health_message="no CSV files"
+    )
+    monkeypatch.setattr(cli_module, "build_product_adapters", lambda cfg, only=None: [adapter])
+    monkeypatch.setattr(cli_module, "build_reference_healthchecks", lambda cfg: [])
+    monkeypatch.setattr(cli_module, "GmailNotifier", _CapturingNotifier)
+
+    result = runner.invoke(
+        app,
+        [
+            "--config-dir",
+            str(tmp_config_dir),
+            "--state-dir",
+            str(tmp_state_dir),
+            "sources",
+            "health",
+            "--email-on-fail",
+            "--fail-on-error",
+        ],
+    )
+    assert result.exit_code == 0, result.stdout
+    assert _CapturingNotifier.sent_specs == []
+
+
+def test_sources_health_critical_source_fail_alerts_and_exits_4(
+    tmp_config_dir: Path, tmp_state_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A critical product source (anything other than an OPTIONAL_SOURCES
+    entry) FAILing DOES trigger the email alert and the --fail-on-error
+    exit code."""
+    _clear_gmail_env(monkeypatch)
+    adapter = _FakeProductAdapter(
+        "bnp_paribas", health_status=HealthStatus.FAIL, health_message="HTTP error: connect failed"
+    )
+    monkeypatch.setattr(cli_module, "build_product_adapters", lambda cfg, only=None: [adapter])
+    monkeypatch.setattr(cli_module, "build_reference_healthchecks", lambda cfg: [])
+    monkeypatch.setattr(cli_module, "GmailNotifier", _CapturingNotifier)
+
+    result = runner.invoke(
+        app,
+        [
+            "--config-dir",
+            str(tmp_config_dir),
+            "--state-dir",
+            str(tmp_state_dir),
+            "sources",
+            "health",
+            "--email-on-fail",
+            "--fail-on-error",
+        ],
+    )
+    assert result.exit_code == 4, result.stdout
+    assert len(_CapturingNotifier.sent_specs) == 1
+
+
+def test_sources_health_dry_run_recipients_are_never_the_subject_prefix(
+    tmp_config_dir: Path, tmp_state_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression test: dry-run recipients must be ``spec.to`` (a real
+    placeholder address), never ``cfg.gmail.subject_prefix`` -- the
+    copy/paste bug that made the "notification_dry_run" log line report
+    recipients=["[TurboEdge-DE]"] (the subject prefix) instead of an actual
+    address list."""
+    _clear_gmail_env(monkeypatch)
+    adapter = _FakeProductAdapter(
+        "bnp_paribas", health_status=HealthStatus.FAIL, health_message="down"
+    )
+    monkeypatch.setattr(cli_module, "build_product_adapters", lambda cfg, only=None: [adapter])
+    monkeypatch.setattr(cli_module, "build_reference_healthchecks", lambda cfg: [])
+    monkeypatch.setattr(cli_module, "GmailNotifier", _CapturingNotifier)
+
+    result = runner.invoke(
+        app,
+        [
+            "--config-dir",
+            str(tmp_config_dir),
+            "--state-dir",
+            str(tmp_state_dir),
+            "sources",
+            "health",
+            "--email-on-fail",
+        ],
+    )
+    assert result.exit_code == 0, result.stdout
+    assert len(_CapturingNotifier.sent_specs) == 1
+    recipients = _CapturingNotifier.sent_specs[0].to
+    assert recipients != ["[TurboEdge-DE]"]
+    assert "[TurboEdge-DE]" not in recipients
+    assert all("@" in r for r in recipients)
+
+
+def test_sources_health_alert_deduplicated_same_day(
+    tmp_config_dir: Path, tmp_state_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Running `sources health --email-on-fail` twice for the same critical
+    failure on the same (UTC) day must only send the alert once -- the
+    second invocation, sharing the same state dir/DuckDB file, finds the
+    dedup hash already recorded and skips."""
+    _clear_gmail_env(monkeypatch)
+    adapter = _FakeProductAdapter(
+        "bnp_paribas", health_status=HealthStatus.FAIL, health_message="down"
+    )
+    monkeypatch.setattr(cli_module, "build_product_adapters", lambda cfg, only=None: [adapter])
+    monkeypatch.setattr(cli_module, "build_reference_healthchecks", lambda cfg: [])
+    monkeypatch.setattr(cli_module, "GmailNotifier", _CapturingNotifier)
+
+    args = [
+        "--config-dir",
+        str(tmp_config_dir),
+        "--state-dir",
+        str(tmp_state_dir),
+        "sources",
+        "health",
+        "--email-on-fail",
+    ]
+    first = runner.invoke(app, args)
+    second = runner.invoke(app, args)
+
+    assert first.exit_code == 0, first.stdout
+    assert second.exit_code == 0, second.stdout
+    assert len(_CapturingNotifier.sent_specs) == 1

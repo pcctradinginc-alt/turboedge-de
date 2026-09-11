@@ -34,6 +34,14 @@
 6. **Pricing + gates** — integrity checks, cost decomposition (intrinsic, financing spread, gap premium, issuer margin), cross-issuer consensus, WATCH/REJECT/DATA_QUALITY classification (per product)
 7. **Persist + report** — `candidate_sets` in DuckDB, Parquet snapshot, console table, optional email
 
+### Spot resolution (`pipeline/scan.py`, `_resolve_spot`)
+
+The spot used to price a product is the **cross-issuer consensus** (`pricing/cross_issuer.consensus_spot`: a robust median of `implied_underlying` across every quotable product on that underlying, MAD-outlier-filtered, and bias-corrected by averaging the LONG- and SHORT-side medians when both are present — a positive issuer margin baked into `mid` otherwise inflates LONG-implied spot and deflates SHORT-implied spot by the same amount). A source's own `underlying_price_ref` (e.g. BNP's `first.price`) is used **instead** only when it carries its own observation timestamp (`underlying_price_ref_timestamp`, distinct from the product's `quote_timestamp` — a source can batch/throttle its reference price independently of individual bid/ask ticks), that timestamp is fresh (`risk.max_quote_age_s`), and the value is within `risk.spot_ref_max_deviation_pct` of the consensus; otherwise the consensus is used and a `spot_ref_rejected` warning is recorded. Conflating a product's own quote freshness with its reference price's freshness previously caused near-identical products (same financing level/barrier/leverage) to show wildly different `issuer_margin_pct` — see `pricing/cross_issuer.py`/`pipeline/scan.py` docstrings for the measured example.
+
+### Cost ranking (`cost_rank_score`, "Cost per exposure (h)")
+
+Within WATCH, candidates are ranked by `cost_rank_score` = total round-trip cost over the scan horizon (spread + gap premium + financing + `max(issuer margin, 0)`, as a % of ask) **divided by leverage**. Dividing by leverage re-expresses cost as a % of underlying exposure instead of capital employed, so it does not mechanically favor low-leverage products (there is no leverage target in this system — a Hebel-2 and a Hebel-10 product with the same cost per unit of underlying exposure rank equally). `None` for a product with no ask (leverage cannot be computed).
+
 ### Modules
 
 ```
@@ -82,7 +90,7 @@ src/turboedge/
 
 | Tier | Sources | Status |
 |------|---------|--------|
-| Live products | BNP Paribas (`derivate.bnpparibas.com`), Citi/CitiFirst (`de.citifirst.com`) | Working — plain JSON APIs, no auth, real bid/ask, confirmed live twice |
+| Live products | BNP Paribas (`derivate.bnpparibas.com`) — full DAX coverage with live bid/ask; Citi/CitiFirst (`de.citifirst.com`) — master data only, no live quotes observed | BNP working with live quotes (4340/4340 DAX); Citi returns closing-price reference data (25/33 DAX observed on 2026-09-11, 08:51 UTC) with referencePriceMethod="Closing Price" — sets bid/ask to None |
 | Underlyings/rates | yfinance (daily OHLC), ECB EST rate (SDMX-JSON) | Working |
 | Manual | CSV import from `state/imports/products/` | Working |
 | Not implemented | Börse Stuttgart, Börse Frankfurt / Deutsche Börse | No adapter exists in code or `adapters/registry.py`; both remain `enabled: false` placeholder entries in `configs/sources.yaml` for documentation only |
@@ -90,8 +98,8 @@ src/turboedge/
 Börse Stuttgart is blocked by a domain-wide Cloudflare bot-management block (rejects even `robots.txt`). Börse Frankfurt's API (`api.boerse-frankfurt.de`) requires salted-hash signature headers (`X-Client-TraceId`/`X-Security`) computed from obfuscated JavaScript; without them it returns HTTP 403. Neither was bypassed (no headless-browser challenge solving, no hash reproduction), per the research rules. See `docs/data_sources.md` for the full per-source write-up, including issuers checked and found unusable (HSBC, Société Générale, UniCredit onemarkets, DZ Bank, Vontobel, Morgan Stanley, ING, UBS KeyInvest, Deutsche Bank X-markets).
 
 Known coverage gaps in the two working adapters:
-- **BNP Paribas** — page size 1000, full coverage confirmed live (4340/4340 DAX products in one pull). No `ask` key outside trading hours (key is absent, not `null`). `bidDate`/`askDate` have no UTC offset — must be localized as `Europe/Berlin`, not parsed as UTC.
-- **Citi** — first page only; response caps `items` at 25 regardless of `totalElementsCount` (25/33 DAX products observed live; `healthcheck()` reports WARN `citi_partial_universe`). Underlying mapping (`_CITI_UNDERLYING_ISINS`) currently covers DAX only.
+- **BNP Paribas** — page size 1000, full coverage confirmed live (4340/4340 DAX products in one pull), with real bid/ask quotes. No `ask` key outside trading hours (key is absent, not `null`). `bidDate`/`askDate` have no UTC offset — must be localized as `Europe/Berlin`, not parsed as UTC. Only source with live two-way quotes; cross-issuer consensus is derived from BNP products only.
+- **Citi** — first page only; response caps `items` at 25 regardless of `totalElementsCount` (25/33 DAX products observed live; `healthcheck()` reports WARN `citi_partial_universe`). **Critical: market-hours pull (2026-09-11, ~08:51 UTC) found `referencePriceMethod = "Closing Price"` and `ask = 0.0` on all 25 returned DAX rows — adapter sets bid/ask to `None`, marking them as stale/non-live.** Master data (financing level, barrier, ratio, ISIN) still usable for universe purposes. Underlying mapping (`_CITI_UNDERLYING_ISINS`) currently covers DAX only.
 
 ---
 
@@ -206,7 +214,7 @@ Exit codes are per-command, not global — `scan` never exits `4`; only `sources
 | any | `0` | Success |
 | any | `2` | Invalid argument / config error (e.g. unknown `--underlying`, bad `--horizon`, malformed config YAML) |
 | `universe`, `scan` | `3` | Every enabled product source failed (`NoProductsError`) — for `scan`, `--json-out`/`--report-out` are still written with the per-source errors and pre-flight health |
-| `sources health` | `4` | Overall status is FAIL **and** `--fail-on-error` was passed |
+| `sources health` | `4` | A **critical** source FAIL **and** `--fail-on-error` was passed (critical: all enabled product sources except `csv_import`, plus `yfinance` and `ecb_estr`; `--email-on-fail` also gates to critical FAILs only, deduplicated per day) |
 | `sources health`, `notify test` | `1` | Sending the alert/test email raised an exception |
 
 ---
@@ -249,7 +257,7 @@ Every prediction is tagged with `git_commit`, `config_hash` (SHA256 of all confi
 
 - **`.github/workflows/tests.yml`** — every push/PR: `uv sync --extra dev`, `ruff check`, `ruff format --check`, `mypy src`, `pytest -q --cov=turboedge` (live-marked tests excluded by default).
 - **`.github/workflows/source-health.yml`** — cron Mon–Fri 06:15 UTC: `turboedge sources health --json-out ... --email-on-fail`, uploads the JSON report (14-day artifact retention).
-- **`.github/workflows/scan-report.yml`** — cron Mon–Fri 13:45 UTC (or manual dispatch with `underlying`/`top`/`email` inputs): restores the `state/` cache, runs `universe` then `scan --report-out ... --json-out ...`, saves the cache and uploads reports (30-day retention).
+- **`.github/workflows/scan-report.yml`** — cron Mon–Fri 13:45 UTC (or manual dispatch with `underlying`/`top`/`email` inputs): restores the `state/` cache, runs `scan --report-out ... --json-out ...` (fetches product universe internally), then "Summarize scan results" step writes category counts and warnings to GitHub Job Summary, saves cache and uploads reports (30-day retention).
 
 State cache keys are per-run-id with a `turboedge-state-` prefix restore fallback; GitHub evicts any cache untouched for 7 days. Time-critical scans should not rely solely on scheduled Actions — cache eviction and scheduling jitter mean a run can start cold or be delayed. Use owned infrastructure for anything time-sensitive.
 
@@ -287,10 +295,10 @@ then retry `uv run pytest -q`.
 
 - **No path-dependent KO modeling.** Single-value end-date forecast only; barrier distance is tracked but not path risk. Requires Phase 3–4 bootstrap/Monte Carlo.
 - **ACTIONABLE gate locked.** See Status above — `lcb_ev`/`p_ko` are always `None` this milestone.
-- **Product data limited to BNP Paribas + Citi.** Börse Stuttgart and Börse Frankfurt have no adapter (see Data Sources). Coverage is selection-biased toward these two issuers; CSV import is the workaround for other sources. Citi additionally caps at 25 rows/underlying and only maps DAX.
+- **Product data limited to BNP Paribas + Citi.** Börse Stuttgart and Börse Frankfurt have no adapter (see Data Sources). **Citi delivers closing-price reference data only, not live quotes** (observed 2026-09-11 during Xetra hours); BNP is the sole source with live bid/ask, so cross-issuer comparison currently works only within BNP products. Citi caps at 25 rows/underlying and maps DAX only. CSV import is an optional fallback for manual exports (empty directory → WARN, not FAIL).
 - **yfinance is unofficial** — no published API contract; volume is unreliable for indices/FX; treated as best-effort.
 - **Financing-spread inference needs history; gap premium does not.** The realized financing spread (`pricing/financing.py`) needs ≥2 `product_snapshots` for the same ISIN on different calendar days to invert a pair of financing-level observations; with fewer, `configs/risk.yaml`'s `default_financing_spread` (currently `0.025`) is used and the candidate is tagged `financing_spread_default`. Gap premium (`pricing/gap_premium.py`) is estimated from the underlying's daily bar history (yfinance), independent of product snapshots.
-- **Spot consensus is thin.** No independent intraday market-data feed; consensus spot is derived only from BNP + Citi implied-underlying prices.
+- **Spot consensus is thin.** No independent intraday market-data feed; consensus spot is derived only from BNP + Citi implied-underlying prices. A source's own reference price (`underlying_price_ref`) is only used as a validated override of the consensus — see "Spot resolution" above.
 - **No recalibration loop.** Scans run offline on demand/schedule; drift/calibration/regret monitoring is not automated. Manual review of WATCH candidates advised.
 - **GitHub Actions state-cache eviction.** See Workflows above.
 

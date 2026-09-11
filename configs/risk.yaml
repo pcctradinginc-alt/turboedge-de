@@ -54,3 +54,14 @@ default_financing_spread: 0.025
 # Fallback reference rate (decimal) used when the ECB EST adapter is
 # unavailable and no config override applies.
 reference_rate_fallback: 0.03
+
+# Build Contract BEFUND 1: maximum relative deviation |ref - consensus| /
+# consensus tolerated before pipeline.scan._resolve_spot rejects a source's
+# underlying_price_ref (even with a fresh own timestamp) in favor of the
+# cross-issuer consensus spot. Measured on a live BNP+Citi DAX scan
+# (2026-09-11, docs/data_sources.md): the reference price is batched
+# independently of per-product bid/ask and can drift ~0.01-0.1%+ from the
+# quotes it is supposedly synchronous with. 0.002 (0.2%, ~50 DAX points at
+# ~25500) is comfortably above normal quote-to-quote noise but tight enough
+# to catch a genuinely stale/desynced reference price.
+spot_ref_max_deviation_pct: 0.002

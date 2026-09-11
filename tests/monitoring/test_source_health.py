@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 
 from turboedge.adapters.base import HealthCheckResult
 from turboedge.monitoring.source_health import (
+    OPTIONAL_SOURCES,
     critical_failures,
     from_healthcheck,
     overall_status,
@@ -253,6 +254,59 @@ class TestFromHealthcheck:
         record = from_healthcheck(hc)
 
         assert record.message == "Partial failure"
+
+    def test_from_healthcheck_warn_with_ok_true_stays_warn(self) -> None:
+        """Regression test: a WARN HealthCheckResult with ok=True (e.g.
+
+        CitiFirstTurboAdapter.healthcheck()'s partial_universe case) must
+        never be silently promoted to PASS just because score_source()'s
+        weighted score for its chosen metrics happens to clear the PASS
+        threshold. Previously `from_healthcheck` branched purely on `ok`
+        (treating any ok=True result as "PASS: perfect metrics"), which
+        made this exact WARN report as PASS in `sources health`.
+        """
+        now = datetime.now(UTC)
+        hc = HealthCheckResult(
+            source="citi",
+            status=HealthStatus.WARN,
+            ok=True,
+            latency_ms=42.0,
+            checked_at=now,
+            message="partial_universe: 25/33 rows for DAX",
+        )
+
+        record = from_healthcheck(hc)
+
+        assert record.status == HealthStatus.WARN
+        assert record.message == "partial_universe: 25/33 rows for DAX"
+
+    def test_from_healthcheck_pass_status_stays_pass_even_if_ok_false(self) -> None:
+        """Symmetric regression guard: status is authoritative in both
+        directions, not just for WARN."""
+        now = datetime.now(UTC)
+        hc = HealthCheckResult(
+            source="test_source",
+            status=HealthStatus.PASS,
+            ok=True,
+            latency_ms=10.0,
+            checked_at=now,
+            message="all good",
+        )
+
+        record = from_healthcheck(hc)
+
+        assert record.status == HealthStatus.PASS
+
+
+class TestOptionalSources:
+    """OPTIONAL_SOURCES: sources that must never gate a critical-failure alert."""
+
+    def test_csv_import_is_optional(self) -> None:
+        assert "csv_import" in OPTIONAL_SOURCES
+
+    def test_issuer_feeds_are_not_optional(self) -> None:
+        assert "bnp_paribas" not in OPTIONAL_SOURCES
+        assert "citi" not in OPTIONAL_SOURCES
 
 
 class TestOverallStatus:

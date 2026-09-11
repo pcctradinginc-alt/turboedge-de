@@ -15,6 +15,7 @@ autoloading the ``json`` extension in offline/sandboxed environments.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -22,6 +23,7 @@ from types import TracebackType
 from typing import Any, Self
 
 import duckdb
+import structlog
 
 from turboedge.storage.schemas import (
     CandidateEvaluation,
@@ -37,6 +39,8 @@ from turboedge.storage.schemas import (
     SourceHealthRecord,
     UnderlyingBar,
 )
+
+logger = structlog.get_logger(__name__)
 
 
 class StoreError(Exception):
@@ -111,6 +115,7 @@ _DDL_STATEMENTS: tuple[str, ...] = (
         trading_hours VARCHAR,
         product_age_days INTEGER,
         underlying_price_ref DOUBLE,
+        underlying_price_ref_timestamp TIMESTAMPTZ,
         raw_hash VARCHAR NOT NULL,
         observation_time TIMESTAMPTZ NOT NULL,
         available_at TIMESTAMPTZ NOT NULL,
@@ -242,6 +247,73 @@ _ALL_TABLES: tuple[str, ...] = (
     "notifications_sent",
 )
 
+# Append-only log of every additive column migration `Store.init_schema()`
+# has ever applied (see `_migrate_table_columns` below). Deliberately NOT
+# part of `_ALL_TABLES`/`table_counts()` -- it is bookkeeping metadata about
+# the schema itself, not a pipeline data table.
+_SCHEMA_MIGRATIONS_DDL = """
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+        applied_at TIMESTAMPTZ NOT NULL,
+        table_name VARCHAR NOT NULL,
+        column_name VARCHAR NOT NULL,
+        action VARCHAR NOT NULL
+    )
+    """
+
+
+# --------------------------------------------------------------------------
+# additive schema migration helpers
+# --------------------------------------------------------------------------
+
+
+def _actual_table_columns(conn: duckdb.DuckDBPyConnection, table: str) -> dict[str, str]:
+    """``{column_name: canonical_type}`` for a table that already exists.
+
+    ``table`` is always one of the fixed literals in ``_ALL_TABLES`` -- never
+    user input -- so interpolating it into the ``PRAGMA`` call is safe (same
+    pattern as ``Store.table_counts``).
+    """
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return {row[1]: row[2] for row in rows}
+
+
+def _probe_expected_columns(
+    conn: duckdb.DuckDBPyConnection, table: str, ddl: str
+) -> dict[str, str]:
+    """``{column_name: canonical_type}`` that ``ddl`` declares for ``table``.
+
+    ``ddl`` (one of ``_DDL_STATEMENTS``) is the single source of truth for a
+    table's current, code-defined schema -- rather than hand-maintaining a
+    second, parallel column list that could drift from it, this creates a
+    throwaway ``TEMP TABLE`` from the *same* DDL text (table name swapped for
+    a private probe name) and reads its columns back via
+    ``PRAGMA table_info``, which is DuckDB's own canonicalization of the
+    declared types (e.g. ``TIMESTAMPTZ`` -> ``TIMESTAMP WITH TIME ZONE``) --
+    the same canonicalization ``_actual_table_columns`` reads from the real
+    table, so the two are directly comparable. The probe table is dropped
+    immediately after; it never persists past this call.
+    """
+    probe_name = f"__schema_probe_{table}"
+    probe_ddl, n = re.subn(
+        rf"CREATE TABLE IF NOT EXISTS {re.escape(table)}\b",
+        f"CREATE TEMP TABLE IF NOT EXISTS {probe_name}",
+        ddl,
+        count=1,
+    )
+    if n != 1:
+        raise AssertionError(
+            f"could not derive a schema probe for table {table!r} from its DDL; "
+            "the DDL text no longer matches the expected "
+            "'CREATE TABLE IF NOT EXISTS <table> (' shape"
+        )
+    conn.execute(f"DROP TABLE IF EXISTS {probe_name}")
+    try:
+        conn.execute(probe_ddl)
+        rows = conn.execute(f"PRAGMA table_info({probe_name})").fetchall()
+    finally:
+        conn.execute(f"DROP TABLE IF EXISTS {probe_name}")
+    return {row[1]: row[2] for row in rows}
+
 
 # --------------------------------------------------------------------------
 # datetime helpers
@@ -301,9 +373,66 @@ class Store:
     # -- schema ------------------------------------------------------------
 
     def init_schema(self) -> None:
-        """Create every table if it does not already exist. Idempotent."""
-        for statement in _DDL_STATEMENTS:
+        """Create every table if it does not already exist, then run any
+        additive column migration each one still needs. Idempotent.
+
+        ``CREATE TABLE IF NOT EXISTS`` alone does not add columns to a table
+        that already exists -- which matters here because ``state/*.duckdb``
+        is restored from the GitHub Actions cache (``scan-report.yml``)
+        across runs. A DDL change like ``ProductSnapshot`` gaining
+        ``underlying_price_ref_timestamp`` is invisible to a table created by
+        an older cached run until this migration step adds the missing
+        column explicitly. Column removal or type changes are NEVER applied
+        automatically (see :func:`_migrate_table_columns`) -- only additive,
+        nullable ``ALTER TABLE ... ADD COLUMN`` ever runs here.
+        """
+        self._conn.execute(_SCHEMA_MIGRATIONS_DDL)
+        for table, statement in zip(_ALL_TABLES, _DDL_STATEMENTS, strict=True):
             self._conn.execute(statement)
+            self._migrate_table_columns(table, statement)
+
+    def _migrate_table_columns(self, table: str, ddl: str) -> None:
+        """Additively migrate one table's columns to match ``ddl``.
+
+        Compares the table's actual columns (``PRAGMA table_info``) against
+        the columns ``ddl`` declares (derived from ``ddl`` itself via a
+        throwaway ``TEMP TABLE`` probe, so the DDL string stays the single
+        source of truth -- no parallel column list to keep in sync). Any
+        column present in ``ddl`` but missing from the table is added via a
+        nullable ``ALTER TABLE ... ADD COLUMN`` and logged to
+        ``schema_migrations``. A column present in both with a different
+        type raises :class:`StoreError` -- this migration only ever adds
+        columns, it never changes or drops one.
+        """
+        expected = _probe_expected_columns(self._conn, table, ddl)
+        actual = _actual_table_columns(self._conn, table)
+
+        for name, col_type in expected.items():
+            if name in actual:
+                if actual[name].upper() != col_type.upper():
+                    raise StoreError(
+                        f"column {table}.{name} has type {actual[name]!r} in "
+                        f"{self.path}, but the current schema expects "
+                        f"{col_type!r}. Automatic migration only ever adds "
+                        "missing columns -- it never changes or drops an "
+                        "existing one. Resolve this manually (e.g. a "
+                        "one-off migration script, or a fresh state dir)."
+                    )
+                continue
+            self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {col_type}")
+            applied_at = datetime.now(UTC)
+            self._conn.execute(
+                "INSERT INTO schema_migrations "
+                "(applied_at, table_name, column_name, action) VALUES (?, ?, ?, ?)",
+                [applied_at, table, name, "add_column"],
+            )
+            logger.info(
+                "schema_migration_applied",
+                table=table,
+                column=name,
+                action="add_column",
+                column_type=col_type,
+            )
 
     def table_counts(self) -> dict[str, int]:
         counts: dict[str, int] = {}
@@ -311,6 +440,16 @@ class Store:
             row = self._conn.execute(f"SELECT count(*) FROM {table}").fetchone()
             counts[table] = int(row[0]) if row is not None else 0
         return counts
+
+    def list_schema_migrations(self) -> list[tuple[datetime, str, str, str]]:
+        """Every additive column migration ``init_schema()`` has applied so
+        far, as ``(applied_at, table_name, column_name, action)`` tuples,
+        oldest first."""
+        rows = self._conn.execute(
+            "SELECT applied_at, table_name, column_name, action "
+            "FROM schema_migrations ORDER BY applied_at ASC"
+        ).fetchall()
+        return [(_from_db_dt(row[0]), row[1], row[2], row[3]) for row in rows]
 
     # -- runs ----------------------------------------------------------------
 
@@ -733,6 +872,7 @@ _PRODUCT_SNAPSHOT_COLUMNS: tuple[str, ...] = (
     "trading_hours",
     "product_age_days",
     "underlying_price_ref",
+    "underlying_price_ref_timestamp",
     "raw_hash",
     "observation_time",
     "available_at",
@@ -776,6 +916,7 @@ def _product_snapshot_row(s: ProductSnapshot) -> tuple[Any, ...]:
         s.trading_hours,
         s.product_age_days,
         s.underlying_price_ref,
+        _opt_to_utc(s.underlying_price_ref_timestamp),
         s.raw_hash,
         _to_utc(s.observation_time),
         _to_utc(s.available_at),

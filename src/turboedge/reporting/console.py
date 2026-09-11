@@ -107,6 +107,7 @@ def render_scan(result: ScanResult, console: Console, top: int) -> None:
         "Margin%",
         "Fin. 7d%",
         "Gap%",
+        "Cost per exposure (h)",
         "Liquidity",
         "Top reasons",
     ):
@@ -132,6 +133,7 @@ def render_scan(result: ScanResult, console: Console, top: int) -> None:
             _fmt_pct(c.costs.issuer_margin_pct if c.costs is not None else None),
             _fmt_pct(c.financing_cost_horizon_pct.get("7d")),
             _fmt_pct(c.costs.gap_premium_pct if c.costs is not None else None),
+            _fmt_pct(c.cost_rank_score),
             _fmt_num(c.liquidity_factor),
             "; ".join(c.reasons[:3]),
         )
@@ -200,6 +202,7 @@ def _to_report_row(rank: int, c: CandidateEvaluation) -> ScanReportRow:
         issuer_margin_pct=c.costs.issuer_margin_pct if c.costs is not None else None,
         financing_cost_7d_pct=c.financing_cost_horizon_pct.get("7d"),
         liquidity_factor=c.liquidity_factor,
+        cost_rank_score=c.cost_rank_score,
         reasons=c.reasons,
     )
 

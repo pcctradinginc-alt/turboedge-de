@@ -69,6 +69,15 @@ class GateInput:
     # being penalized a second time for the spread/leverage fields it could
     # never have computed in the first place.
     has_ask: bool = True
+    # True when the source has explicitly reported no live two-way market at
+    # all for this product (bid AND ask both missing, source-reported
+    # ``quote_presence is False`` -- e.g. Citi's closing-price-only rows).
+    # Defaults to False for backward compatibility. When True, the product is
+    # rejected on "no_live_quote" alone (implies ``has_ask=False`` behavior:
+    # spread_pct/leverage are not evaluated) instead of the less precise
+    # "no_ask_quote" -- this is not a data-quality violation (master data
+    # stays plausible), it is "this source has nothing tradable to quote".
+    no_live_quote: bool = False
 
 
 def evaluate_gates(inp: GateInput, th: GateThresholds) -> tuple[Category, list[str]]:
@@ -79,13 +88,16 @@ def evaluate_gates(inp: GateInput, th: GateThresholds) -> tuple[Category, list[s
     1. ``DATA_QUALITY`` if the integrity check failed, or ``data_health_pass``
        is False.
     2. ``REJECT`` if ``bid_only``, ``knocked_out``, the quote timestamp is
-       missing or stale, there is no ask quote at all, the spread is too
-       wide, leverage is outside the configured band, or the barrier
-       distance (in sigma units) is too small. A stale/missing quote and a
-       missing ask are tradability gates, not data-integrity failures (Build
-       Contract Task 2): ``pricing/integrity.check_product`` only *warns*
-       about them, so they reach this REJECT branch rather than being
-       pre-empted by the DATA_QUALITY branch above.
+       missing or stale, there is no live quote at all (or no ask quote
+       specifically), the spread is too wide, leverage is outside the
+       configured band, or the barrier distance (in sigma units) is too
+       small. A stale/missing quote, a missing ask and a source-reported
+       absence of any live quote are tradability gates, not data-integrity
+       failures (Build Contract Task 2 / Citi closing-price follow-up):
+       ``pricing/integrity.check_product`` only *warns* about them (or does
+       not flag them at all when ``no_live_quote`` applies), so they reach
+       this REJECT branch rather than being pre-empted by the DATA_QUALITY
+       branch above.
     3. ``ACTIONABLE`` only if every other gate passed *and* ``lcb_ev is not
        None and lcb_ev > 0 and p_ko is not None and cluster_risk_pass is
        True`` -- in this milestone ``lcb_ev`` is always ``None`` (no path
@@ -111,7 +123,9 @@ def evaluate_gates(inp: GateInput, th: GateThresholds) -> tuple[Category, list[s
         reject_reasons.append("quote_timestamp_missing")
     elif inp.quote_age_s > th.max_quote_age_s:
         reject_reasons.append("quote_stale")
-    if not inp.has_ask:
+    if inp.no_live_quote:
+        reject_reasons.append("no_live_quote")
+    elif not inp.has_ask:
         reject_reasons.append("no_ask_quote")
     else:
         if inp.spread_pct is None or inp.spread_pct > th.max_spread_pct:

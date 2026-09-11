@@ -28,7 +28,7 @@ import pytest
 
 from turboedge.adapters.base import AdapterError
 from turboedge.config import TurboEdgeConfig
-from turboedge.pipeline.scan import ScanOptions, run_scan
+from turboedge.pipeline.scan import ScanOptions, _cost_rank_score, run_scan
 from turboedge.pipeline.universe import NoProductsError
 from turboedge.provenance import new_run_id
 from turboedge.storage.duckdb import Store
@@ -379,10 +379,17 @@ def test_missing_financing_level_marks_data_quality(
     (price-critical master data, never imputed) -> DATA_QUALITY, unlike the
     tradability gates (stale quote, no ask) above.
     """
-    # underlying_price_ref supplied directly so spot resolution does not
-    # itself depend on the cross-issuer consensus (which this lone product,
-    # missing financing_level, could not contribute to either).
-    base = _good_long(dax_product_factory, isin="DE000NOFIN01", underlying_price_ref=24000.0)
+    # underlying_price_ref (+ its own fresh timestamp) supplied directly so
+    # spot resolution does not itself depend on the cross-issuer consensus
+    # (which this lone product, missing financing_level, could not
+    # contribute to either) -- see pipeline.scan._resolve_spot: a ref without
+    # its own timestamp is never used (Build Contract BEFUND 1).
+    base = _good_long(
+        dax_product_factory,
+        isin="DE000NOFIN01",
+        underlying_price_ref=24000.0,
+        underlying_price_ref_timestamp=_EVAL_TIME,
+    )
     no_financing_product = base.model_copy(update={"financing_level": None})
     adapter = make_product_adapter("source_a", products=[no_financing_product])
     price_adapter = make_price_adapter(bars_by_underlying={"DAX": dax_bars})
@@ -403,6 +410,61 @@ def test_missing_financing_level_marks_data_quality(
     candidate = result.candidates[0]
     assert candidate.category == Category.DATA_QUALITY
     assert "missing_financing_level" in candidate.reasons
+
+
+def test_no_live_quote_is_rejected_not_data_quality(
+    cfg: TurboEdgeConfig,
+    store: Store,
+    tmp_path: Path,
+    dax_bars: list[UnderlyingBar],
+    dax_product_factory: Callable[..., ProductSnapshot],
+    make_product_adapter: Callable[..., Any],
+    make_price_adapter: Callable[..., Any],
+    make_estr_adapter: Callable[..., Any],
+) -> None:
+    """A product whose source explicitly reports no live quote at all (bid
+    AND ask both missing, quote_presence=False -- e.g. Citi's
+    referencePriceMethod == "Closing Price" rows) is a REJECT
+    ("no_live_quote"), not DATA_QUALITY: master data (financing level,
+    barrier, ISIN, underlying mapping) is otherwise plausible, the source
+    simply has nothing tradable to quote right now.
+    """
+    # underlying_price_ref (+ its own fresh timestamp) supplied directly so
+    # spot resolution does not itself depend on a cross-issuer consensus --
+    # this lone product, having no bid/ask, could not contribute one either
+    # (see pipeline.scan._resolve_spot / pricing.cross_issuer.consensus_spot).
+    base = _good_long(
+        dax_product_factory,
+        isin="DE000NOLQ001",
+        underlying_price_ref=24000.0,
+        underlying_price_ref_timestamp=_EVAL_TIME,
+    )
+    no_live_quote_product = base.model_copy(
+        update={"bid": None, "ask": None, "quote_presence": False}
+    )
+    adapter = make_product_adapter("source_a", products=[no_live_quote_product])
+    price_adapter = make_price_adapter(bars_by_underlying={"DAX": dax_bars})
+
+    result = run_scan(
+        **_base_kwargs(
+            cfg=cfg,
+            store=store,
+            tmp_path=tmp_path,
+            product_adapters=[adapter],
+            price_adapter=price_adapter,
+            estr_adapter=make_estr_adapter(),
+        ),
+        options=ScanOptions(underlying_id="DAX"),
+    )
+
+    assert len(result.candidates) == 1
+    candidate = result.candidates[0]
+    assert candidate.category == Category.REJECT
+    assert "no_live_quote" in candidate.reasons
+    assert "missing_bid" not in candidate.reasons
+    assert candidate.leverage is None
+    assert candidate.costs is None
+    assert candidate.integrity_passed is True
 
 
 # --------------------------------------------------------------------------
@@ -658,3 +720,308 @@ def test_email_dedup_second_identical_scan_does_not_resend(
     assert result_2.notification is not None
     assert result_2.notification.sent is False
     assert result_2.notification.message == "skipped_duplicate"
+
+
+# --------------------------------------------------------------------------
+# (j) spot resolution: underlying_price_ref vs. cross-issuer consensus
+# (Build Contract BEFUND 1)
+# --------------------------------------------------------------------------
+
+
+def _consensus_controls(
+    dax_product_factory: Callable[..., ProductSnapshot],
+) -> list[ProductSnapshot]:
+    """Four well-behaved DAX products (2 long, 2 short) at spot=24000 -- a
+    real cross-issuer consensus for pipeline.scan._resolve_spot to validate
+    a target product's `underlying_price_ref` against.
+    """
+    return [
+        dax_product_factory(
+            isin="DE000CTRLL01",
+            issuer="ControlBank",
+            direction=Direction.LONG,
+            financing_level=20000.0,
+            quote_timestamp=_EVAL_TIME,
+        ),
+        dax_product_factory(
+            isin="DE000CTRLL02",
+            issuer="ControlBank",
+            direction=Direction.LONG,
+            financing_level=19000.0,
+            quote_timestamp=_EVAL_TIME,
+        ),
+        dax_product_factory(
+            isin="DE000CTRLS01",
+            issuer="ControlBank",
+            direction=Direction.SHORT,
+            financing_level=28000.0,
+            quote_timestamp=_EVAL_TIME,
+        ),
+        dax_product_factory(
+            isin="DE000CTRLS02",
+            issuer="ControlBank",
+            direction=Direction.SHORT,
+            financing_level=29000.0,
+            quote_timestamp=_EVAL_TIME,
+        ),
+    ]
+
+
+def test_spot_resolution_uses_fresh_in_tolerance_ref(
+    cfg: TurboEdgeConfig,
+    store: Store,
+    tmp_path: Path,
+    dax_bars: list[UnderlyingBar],
+    dax_product_factory: Callable[..., ProductSnapshot],
+    make_product_adapter: Callable[..., Any],
+    make_price_adapter: Callable[..., Any],
+    make_estr_adapter: Callable[..., Any],
+) -> None:
+    """A `underlying_price_ref` with its own fresh timestamp, close enough to
+    the cross-issuer consensus (well within `spot_ref_max_deviation_pct`), is
+    used verbatim as the pricing spot -- not the consensus.
+    """
+    controls = _consensus_controls(dax_product_factory)
+    # 24030 is ~0.125% above the ~24000 consensus -- inside the configured
+    # 0.2% (configs/risk.yaml: spot_ref_max_deviation_pct) tolerance band.
+    target = dax_product_factory(
+        isin="DE000TARGET1",
+        issuer="TargetBank",
+        direction=Direction.LONG,
+        financing_level=20000.0,
+        spot=24000.0,  # target's own bid/ask priced off the true spot
+        quote_timestamp=_EVAL_TIME,
+        underlying_price_ref=24030.0,
+        underlying_price_ref_timestamp=_EVAL_TIME,
+    )
+    adapter = make_product_adapter("source_a", products=[*controls, target])
+    price_adapter = make_price_adapter(bars_by_underlying={"DAX": dax_bars})
+
+    result = run_scan(
+        **_base_kwargs(
+            cfg=cfg,
+            store=store,
+            tmp_path=tmp_path,
+            product_adapters=[adapter],
+            price_adapter=price_adapter,
+            estr_adapter=make_estr_adapter(),
+        ),
+        options=ScanOptions(underlying_id="DAX"),
+    )
+
+    candidate = next(c for c in result.candidates if c.isin == "DE000TARGET1")
+    assert candidate.costs is not None
+    # intrinsic = (ref - financing_level) * ratio = (24030 - 20000) * 0.01
+    assert candidate.costs.intrinsic == pytest.approx(40.30, abs=0.01)
+    assert "spot_ref_rejected" not in result.warnings
+
+
+def test_spot_resolution_rejects_ref_far_from_consensus(
+    cfg: TurboEdgeConfig,
+    store: Store,
+    tmp_path: Path,
+    dax_bars: list[UnderlyingBar],
+    dax_product_factory: Callable[..., ProductSnapshot],
+    make_product_adapter: Callable[..., Any],
+    make_price_adapter: Callable[..., Any],
+    make_estr_adapter: Callable[..., Any],
+) -> None:
+    """A fresh, independently-timestamped `underlying_price_ref` that
+    deviates too far from the cross-issuer consensus is rejected in favor of
+    the consensus, with a "spot_ref_rejected" warning (Build Contract
+    BEFUND 1: this is exactly the BNP `first.price`-batching scenario).
+    """
+    controls = _consensus_controls(dax_product_factory)
+    # 24240 is 1% above the ~24000 consensus -- well outside the 0.2% band.
+    target = dax_product_factory(
+        isin="DE000TARGET2",
+        issuer="TargetBank",
+        direction=Direction.LONG,
+        financing_level=20000.0,
+        spot=24000.0,
+        quote_timestamp=_EVAL_TIME,
+        underlying_price_ref=24240.0,
+        underlying_price_ref_timestamp=_EVAL_TIME,
+    )
+    adapter = make_product_adapter("source_a", products=[*controls, target])
+    price_adapter = make_price_adapter(bars_by_underlying={"DAX": dax_bars})
+
+    result = run_scan(
+        **_base_kwargs(
+            cfg=cfg,
+            store=store,
+            tmp_path=tmp_path,
+            product_adapters=[adapter],
+            price_adapter=price_adapter,
+            estr_adapter=make_estr_adapter(),
+        ),
+        options=ScanOptions(underlying_id="DAX"),
+    )
+
+    candidate = next(c for c in result.candidates if c.isin == "DE000TARGET2")
+    assert candidate.costs is not None
+    # consensus (~24000), NOT the rejected ref (24240) -> intrinsic near
+    # 40.00, far from what a 24240 spot would give ((24240-20000)*0.01=42.40).
+    assert candidate.costs.intrinsic == pytest.approx(40.0, abs=0.5)
+    assert "spot_ref_rejected" in result.warnings
+
+
+def test_spot_resolution_rejects_ref_without_own_timestamp(
+    cfg: TurboEdgeConfig,
+    store: Store,
+    tmp_path: Path,
+    dax_bars: list[UnderlyingBar],
+    dax_product_factory: Callable[..., ProductSnapshot],
+    make_product_adapter: Callable[..., Any],
+    make_price_adapter: Callable[..., Any],
+    make_estr_adapter: Callable[..., Any],
+) -> None:
+    """`underlying_price_ref` with no independent timestamp (e.g. a source
+    that never exposes one) is never used as spot, even if the value itself
+    would have been within tolerance -- the whole point of BEFUND 1 is that
+    the product's own `quote_timestamp` is NOT a valid freshness proxy for a
+    separately-batched reference price.
+    """
+    controls = _consensus_controls(dax_product_factory)
+    target = dax_product_factory(
+        isin="DE000TARGET3",
+        issuer="TargetBank",
+        direction=Direction.LONG,
+        financing_level=20000.0,
+        spot=24000.0,
+        quote_timestamp=_EVAL_TIME,
+        underlying_price_ref=24030.0,
+        underlying_price_ref_timestamp=None,
+    )
+    adapter = make_product_adapter("source_a", products=[*controls, target])
+    price_adapter = make_price_adapter(bars_by_underlying={"DAX": dax_bars})
+
+    result = run_scan(
+        **_base_kwargs(
+            cfg=cfg,
+            store=store,
+            tmp_path=tmp_path,
+            product_adapters=[adapter],
+            price_adapter=price_adapter,
+            estr_adapter=make_estr_adapter(),
+        ),
+        options=ScanOptions(underlying_id="DAX"),
+    )
+
+    candidate = next(c for c in result.candidates if c.isin == "DE000TARGET3")
+    assert candidate.costs is not None
+    assert candidate.costs.intrinsic == pytest.approx(40.0, abs=0.5)
+    assert "spot_ref_rejected" in result.warnings
+
+
+# --------------------------------------------------------------------------
+# (k) cost_rank_score: leverage-normalized cost ranking (Build Contract
+# BEFUND 2)
+# --------------------------------------------------------------------------
+
+
+def test_cost_rank_score_ranking_invariant_for_equal_cost_per_exposure() -> None:
+    """Two products with equal cost *per unit of underlying exposure* get an
+    equal cost_rank_score even at very different leverage -- the ranking
+    invariance the leverage-normalized formula is designed to guarantee (no
+    "kein pauschales Hebelziel" bias toward low leverage).
+    """
+    # 1% of ask at 2x leverage vs. 5% of ask at 10x leverage: 5x the
+    # capital-relative cost, but the SAME cost per unit of underlying
+    # exposure moved (0.01/2 == 0.05/10 == 0.5%).
+    low_leverage_score = _cost_rank_score(0.01, 2.0)
+    high_leverage_score = _cost_rank_score(0.05, 10.0)
+    assert low_leverage_score == pytest.approx(0.005)
+    assert high_leverage_score == pytest.approx(0.005)
+    assert low_leverage_score == pytest.approx(high_leverage_score)
+
+    # Same total_cost_pct, different leverage -> DIFFERENT score (the old,
+    # pre-BEFUND-2 formula never divided by leverage at all, so it would
+    # have scored these two identically despite the 5x-more-expensive-per-
+    # exposure Hebel-2 product).
+    assert _cost_rank_score(0.01, 2.0) != pytest.approx(_cost_rank_score(0.01, 10.0))
+
+
+def test_cost_rank_score_none_for_missing_or_nonpositive_leverage() -> None:
+    assert _cost_rank_score(0.01, None) is None
+    assert _cost_rank_score(0.01, 0.0) is None
+    assert _cost_rank_score(0.01, -1.0) is None
+
+
+def test_cost_rank_score_matches_leverage_normalized_formula_in_real_scan(
+    cfg: TurboEdgeConfig,
+    store: Store,
+    tmp_path: Path,
+    dax_bars: list[UnderlyingBar],
+    dax_product_factory: Callable[..., ProductSnapshot],
+    make_product_adapter: Callable[..., Any],
+    make_price_adapter: Callable[..., Any],
+    make_estr_adapter: Callable[..., Any],
+) -> None:
+    """Wiring check: a real scan's cost_rank_score equals
+    total_cost_pct / leverage reconstructed from the candidate's own fields
+    (round-trip spread from costs.ask/bid, gap premium, the selected
+    horizon's financing cost, and max(issuer margin, 0)).
+    """
+    product = _good_long(dax_product_factory)
+    adapter = make_product_adapter("source_a", products=[product])
+    price_adapter = make_price_adapter(bars_by_underlying={"DAX": dax_bars})
+
+    result = run_scan(
+        **_base_kwargs(
+            cfg=cfg,
+            store=store,
+            tmp_path=tmp_path,
+            product_adapters=[adapter],
+            price_adapter=price_adapter,
+            estr_adapter=make_estr_adapter(),
+        ),
+        options=ScanOptions(underlying_id="DAX", horizon_days=7),
+    )
+
+    candidate = result.candidates[0]
+    assert candidate.costs is not None
+    assert candidate.leverage is not None
+    assert candidate.cost_rank_score is not None
+
+    round_trip_spread_pct = (candidate.costs.ask - candidate.costs.bid) / candidate.costs.ask
+    total_cost_pct = (
+        round_trip_spread_pct
+        + candidate.costs.gap_premium_pct
+        + candidate.financing_cost_horizon_pct["7d"]
+        + max(candidate.costs.issuer_margin_pct, 0.0)
+    )
+    assert candidate.cost_rank_score == pytest.approx(total_cost_pct / candidate.leverage)
+
+
+def test_cost_rank_score_none_when_no_ask(
+    cfg: TurboEdgeConfig,
+    store: Store,
+    tmp_path: Path,
+    dax_bars: list[UnderlyingBar],
+    dax_product_factory: Callable[..., ProductSnapshot],
+    make_product_adapter: Callable[..., Any],
+    make_price_adapter: Callable[..., Any],
+    make_estr_adapter: Callable[..., Any],
+) -> None:
+    """A product with no ask (leverage cannot be computed) gets
+    cost_rank_score=None rather than a division by a missing leverage."""
+    base = _good_long(dax_product_factory, isin="DE000NOASK02")
+    no_ask_product = base.model_copy(update={"ask": None})
+    adapter = make_product_adapter("source_a", products=[no_ask_product])
+    price_adapter = make_price_adapter(bars_by_underlying={"DAX": dax_bars})
+
+    result = run_scan(
+        **_base_kwargs(
+            cfg=cfg,
+            store=store,
+            tmp_path=tmp_path,
+            product_adapters=[adapter],
+            price_adapter=price_adapter,
+            estr_adapter=make_estr_adapter(),
+        ),
+        options=ScanOptions(underlying_id="DAX"),
+    )
+
+    assert len(result.candidates) == 1
+    assert result.candidates[0].cost_rank_score is None

@@ -47,6 +47,13 @@ class ConsensusSpot:
     # Callers (pipeline/scan.py) surface this as a "consensus_from_bid_only"
     # warning.
     used_bid_only_fallback: bool = False
+    # True iff both LONG and SHORT accepted quotes contributed, so `value`
+    # is the bias-cancelling average of the two directions' medians (see
+    # "Long/Short wrapper-margin bias" in :func:`consensus_spot`'s
+    # docstring). False means only one direction had accepted quotes and
+    # `value` is that direction's plain median instead -- a degraded but
+    # still best-available estimate, not bias-corrected.
+    direction_balanced: bool = False
 
 
 def consensus_spot(
@@ -89,6 +96,31 @@ def consensus_spot(
     epsilon is used instead so a single far-off outlier is still excluded
     rather than accidentally accepted by a zero-width band.
 
+    Long/Short wrapper-margin bias (Build Contract BEFUND 1): ``mid = fair
+    value + issuer margin`` to first order (``pricing/issuer_margin.py``), so
+    a typically-positive margin makes ``implied_underlying`` computed from a
+    LONG product's mid *overstate* the true spot (``implied_S = S +
+    margin/ratio``) and from a SHORT product's mid *understate* it
+    (``implied_S = S - margin/ratio``). Measured on a live BNP+Citi DAX scan
+    (2026-09-11, ``docs/data_sources.md``): median implied spot from LONG
+    quotes was ~25487.6 vs. ~25478.7 from SHORT quotes (~8.9 points / ~0.03%
+    apart, both directions with >2000 contributing quotes) -- a small but
+    real, systematically-signed gap, not sampling noise. Averaging
+    ``median(implied | LONG)`` and ``median(implied | SHORT)`` cancels this
+    bias to first order (the same live sample: ~25483.1, vs. ~25485.7 for the
+    plain combined median, which is pulled toward the LONG side). This
+    function therefore computes the MAD outlier filter on the full combined
+    sample (outlier rejection is direction-agnostic -- a ratio/factor error
+    looks the same from either side), then -- when the accepted sample has
+    at least one LONG *and* one SHORT quote -- takes the average of the two
+    per-direction medians as the final ``value``
+    (``ConsensusSpot.direction_balanced=True``). When only one direction
+    survives (thin/one-sided sample), the plain median of the accepted
+    sample is used instead (``direction_balanced=False``): a real, if
+    uncorrected, estimate is still preferable to refusing to price the
+    underlying at all (CLAUDE.md rule 29 forbids imputing *missing* data, not
+    reporting an unbalanced-but-genuine estimate).
+
     Raises:
         ValueError: if no product contributes a valid implied spot.
     """
@@ -112,6 +144,7 @@ def consensus_spot(
     contributing = [*full_quotes, *(bid_only_quotes if use_bid_only_fallback else [])]
 
     implied_values: list[float] = []
+    directions: list[Direction] = []
     for product in contributing:
         # bid/financing_level/ratio were already checked non-None while
         # building full_quotes/bid_only_quotes above; re-asserted here since
@@ -127,6 +160,7 @@ def consensus_spot(
         except ValueError:
             continue
         implied_values.append(implied)
+        directions.append(product.direction)
 
     n_total = len(implied_values)
     if n_total == 0:
@@ -139,9 +173,18 @@ def consensus_spot(
     threshold = max(abs(median) * 1e-6, 1e-9) if scaled_mad == 0.0 else mad_k * scaled_mad
     mask = np.abs(arr - median) <= threshold
     accepted = arr[mask]
+    accepted_directions = [d for d, keep in zip(directions, mask, strict=True) if keep]
     n_rejected = int(n_total - accepted.size)
 
-    value = float(np.median(accepted))
+    paired = list(zip(accepted, accepted_directions, strict=True))
+    long_values = [v for v, d in paired if d == Direction.LONG]
+    short_values = [v for v, d in paired if d == Direction.SHORT]
+    direction_balanced = bool(long_values) and bool(short_values)
+    if direction_balanced:
+        value = (statistics.median(long_values) + statistics.median(short_values)) / 2.0
+    else:
+        value = float(np.median(accepted))
+
     accepted_mad = float(np.median(np.abs(accepted - value))) if accepted.size > 0 else 0.0
     dispersion = accepted_mad * _MAD_TO_STD
 
@@ -151,6 +194,7 @@ def consensus_spot(
         n_rejected=n_rejected,
         dispersion=dispersion,
         used_bid_only_fallback=use_bid_only_fallback,
+        direction_balanced=direction_balanced,
     )
 
 

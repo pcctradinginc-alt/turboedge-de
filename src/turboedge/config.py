@@ -112,6 +112,14 @@ class RiskConfig(BaseModel):
     # quote_size_coverage to score how much of a "normal" trade the displayed
     # ask size could fill.
     required_notional_eur: float = Field(gt=0)
+    # Build Contract BEFUND 1: maximum relative deviation of a source-reported
+    # `underlying_price_ref` from the cross-issuer consensus spot before
+    # pipeline.scan._resolve_spot rejects it (falls back to consensus,
+    # warning "spot_ref_rejected") even though its own timestamp
+    # (`underlying_price_ref_timestamp`) is fresh. Guards against a reference
+    # price that updates on its own (slower) cadence and has silently
+    # drifted from the market the product's own bid/ask is actually quoting.
+    spot_ref_max_deviation_pct: float = Field(gt=0)
 
 
 # -- universe.yaml --------------------------------------------------------------

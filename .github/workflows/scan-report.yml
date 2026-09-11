@@ -82,12 +82,6 @@ jobs:
             echo "send_email=$send_email"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Fetch product universe
-        env:
-          UNDERLYING: ${{ steps.params.outputs.underlying }}
-        run: |
-          uv run turboedge --log-format json universe --underlying "$UNDERLYING"
-
       - name: Run scan
         env:
           UNDERLYING: ${{ steps.params.outputs.underlying }}
@@ -102,6 +96,64 @@ jobs:
             args+=(--email)
           fi
           uv run turboedge --log-format json scan "${args[@]}"
+
+      - name: Summarize scan results
+        if: always()
+        env:
+          SCAN_JSON_PATH: reports/scan.json
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+
+          path = os.environ.get("SCAN_JSON_PATH", "reports/scan.json")
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+
+          lines = ["## Scan Summary", ""]
+          data = None
+          try:
+              with open(path, encoding="utf-8") as f:
+                  data = json.load(f)
+          except FileNotFoundError:
+              lines.append(f"No scan report found at `{path}` (scan may not have produced one).")
+          except (OSError, json.JSONDecodeError) as exc:
+              lines.append(f"Could not read/parse `{path}`: {exc}")
+
+          if data is not None:
+              lines.append(f"Run ID: `{data.get('run_id', 'n/a')}`")
+
+              error = data.get("error")
+              if error:
+                  lines.append(f"\n**Error:** {error}")
+
+              counts = data.get("counts") or {}
+              if counts:
+                  lines.append("")
+                  lines.append("| Category | Count |")
+                  lines.append("| --- | --- |")
+                  for category in sorted(counts):
+                      lines.append(f"| {category} | {counts[category]} |")
+              else:
+                  lines.append("")
+                  lines.append("No candidate counts available.")
+
+              warnings = data.get("warnings") or []
+              if warnings:
+                  lines.append("")
+                  lines.append("### Warnings")
+                  shown = warnings[:20]
+                  for warning in shown:
+                      lines.append(f"- {warning}")
+                  remaining = len(warnings) - len(shown)
+                  if remaining > 0:
+                      lines.append(f"- ... and {remaining} more")
+
+          text = "\n".join(lines) + "\n"
+          print(text)
+          if summary_path:
+              with open(summary_path, "a", encoding="utf-8") as f:
+                  f.write(text)
+          PY
 
       - name: Display database info
         run: uv run turboedge db info

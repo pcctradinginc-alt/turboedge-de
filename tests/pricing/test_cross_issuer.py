@@ -154,6 +154,90 @@ def test_consensus_spot_excludes_bid_only_when_enough_full_quotes(
     assert result.value == pytest.approx(24000.0, rel=0.005)
 
 
+def test_consensus_spot_one_sided_sample_is_not_direction_balanced(
+    make_product_snapshot: Callable[..., ProductSnapshot],
+) -> None:
+    """A sample with only one direction (e.g. only LONG quotes) cannot
+    bias-cancel -- `direction_balanced` is False and the plain median is
+    used, same as before the Build Contract BEFUND 1 fix.
+    """
+    financing_level, ratio = 22000.0, 0.01
+    normal_spots = [23990.0, 24000.0, 24010.0, 23995.0, 24005.0]
+    products = []
+    for i, spot in enumerate(normal_spots):
+        mid = _mid_for_spot(spot, financing_level, ratio)
+        products.append(
+            make_product_snapshot(
+                isin=f"DE000ONESD{i:02d}",
+                financing_level=financing_level,
+                ratio=ratio,
+                direction=Direction.LONG,
+                bid=mid - 0.01,
+                ask=mid + 0.01,
+            )
+        )
+    result = consensus_spot(products)
+    assert result.direction_balanced is False
+    assert result.value == pytest.approx(24000.0, rel=0.005)
+
+
+def test_consensus_spot_balances_long_short_wrapper_margin_bias(
+    make_product_snapshot: Callable[..., ProductSnapshot],
+) -> None:
+    """Build Contract BEFUND 1: a positive issuer margin baked into every
+    mid price inflates LONG-implied spot and deflates SHORT-implied spot by
+    the same amount (``mid = intrinsic + margin``, and
+    ``implied_underlying`` adds/subtracts ``mid/ratio`` for Long/Short
+    respectively). With an intentionally imbalanced sample (6 LONG quotes,
+    median implied +9 vs. the true spot, against 3 SHORT quotes, median
+    implied -8), a plain pooled median is skewed toward the more numerous,
+    inflated LONG side (would land at +6); averaging the per-direction
+    medians instead recovers a value much closer to the true spot.
+    """
+    # Separate financing levels per direction (structurally required: LONG
+    # needs F below spot, SHORT needs F above spot -- both ~24000 here).
+    financing_level_long, financing_level_short, ratio = 22000.0, 28000.0, 0.01
+    true_spot = 24000.0
+    # Implied-spot values each quote's mid is engineered to produce (jittered
+    # so the sample's MAD is not degenerately zero -- see
+    # test_consensus_spot_one_sided_sample_is_not_direction_balanced's
+    # sibling investigation of that edge case).
+    long_implied = [24004.0, 24006.0, 24008.0, 24010.0, 24012.0, 24014.0]
+    short_implied = [23988.0, 23992.0, 23996.0]
+
+    products = [
+        make_product_snapshot(
+            isin=f"DE000LONGB{i:02d}",
+            financing_level=financing_level_long,
+            ratio=ratio,
+            direction=Direction.LONG,
+            bid=_mid_for_spot(v, financing_level_long, ratio) - 0.001,
+            ask=_mid_for_spot(v, financing_level_long, ratio) + 0.001,
+        )
+        for i, v in enumerate(long_implied)
+    ] + [
+        make_product_snapshot(
+            isin=f"DE000SHRTB{i:02d}",
+            financing_level=financing_level_short,
+            ratio=ratio,
+            direction=Direction.SHORT,
+            bid=(financing_level_short - v) * ratio - 0.001,
+            ask=(financing_level_short - v) * ratio + 0.001,
+        )
+        for i, v in enumerate(short_implied)
+    ]
+
+    result = consensus_spot(products)
+    assert result.n_used == len(long_implied) + len(short_implied)  # no MAD rejection
+    assert result.direction_balanced is True
+    # Bias-cancelling average of the two direction medians (24009, 23992)
+    # recovers a value close to the true spot; the plain pooled median of
+    # all 9 accepted values (what the pre-fix code computed) is 24006 --
+    # 12x further from the true spot than the balanced estimate.
+    assert result.value == pytest.approx(24000.5, abs=0.01)
+    assert abs(result.value - true_spot) < abs(24006.0 - true_spot)
+
+
 def test_consensus_spot_raises_when_nothing_valid(
     make_product_snapshot: Callable[..., ProductSnapshot],
 ) -> None:

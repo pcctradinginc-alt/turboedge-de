@@ -107,6 +107,30 @@ def test_has_ask_defaults_true_for_backward_compatibility() -> None:
     assert category != Category.REJECT
 
 
+def test_reject_no_live_quote_skips_spread_and_leverage_checks() -> None:
+    category, reasons = evaluate_gates(_base_input(has_ask=False, no_live_quote=True), _THRESHOLDS)
+    assert category == Category.REJECT
+    assert "no_live_quote" in reasons
+    assert "spread_too_high" not in reasons
+    assert "leverage_out_of_range" not in reasons
+
+
+def test_no_live_quote_takes_precedence_over_no_ask_quote_reason() -> None:
+    # Both signal "no ask" (has_ask=False); when the source explicitly
+    # reported no live quote at all, the more precise "no_live_quote" reason
+    # is used instead of the generic "no_ask_quote".
+    category, reasons = evaluate_gates(_base_input(has_ask=False, no_live_quote=True), _THRESHOLDS)
+    assert category == Category.REJECT
+    assert "no_live_quote" in reasons
+    assert "no_ask_quote" not in reasons
+
+
+def test_no_live_quote_defaults_false_for_backward_compatibility() -> None:
+    category, reasons = evaluate_gates(_base_input(), _THRESHOLDS)
+    assert "no_live_quote" not in reasons
+    assert category != Category.REJECT
+
+
 def test_reject_wide_spread() -> None:
     category, reasons = evaluate_gates(_base_input(spread_pct=0.10), _THRESHOLDS)
     assert category == Category.REJECT

@@ -242,18 +242,178 @@ def _data_quality_candidate(
     )
 
 
+def _gate_only_candidate(
+    *,
+    run_id: str,
+    product: ProductSnapshot,
+    underlying_id: str,
+    horizon_days: int,
+    integrity: IntegrityReport,
+    quote_age_s: float | None,
+    distance_pct: float | None,
+    distance_sigma: float | None,
+    data_health_pass: bool,
+    risk: object,
+    has_ask: bool,
+    no_live_quote: bool = False,
+) -> CandidateEvaluation:
+    """Build a candidate whose category comes purely from :func:`evaluate_gates`,
+    with none of the ask-dependent pricing steps (decompose_ask, leverage,
+    spread) run -- used for a product that has no ask at all (``has_ask=False``)
+    and/or no live quote at all (``no_live_quote=True``, e.g. Citi's
+    closing-price-only rows). Both scenarios skip the same pricing steps;
+    ``evaluate_gates`` picks the more precise "no_live_quote" REJECT reason
+    over "no_ask_quote" when both would otherwise apply.
+    """
+    thresholds = GateThresholds.from_risk_config(risk)
+    gate_input = GateInput(
+        integrity=integrity,
+        bid_only=product.bid_only,
+        knocked_out=product.knocked_out,
+        quote_age_s=quote_age_s,
+        spread_pct=None,
+        leverage=None,
+        distance_to_barrier_sigma=distance_sigma,
+        data_health_pass=data_health_pass,
+        lcb_ev=None,
+        p_ko=None,
+        cluster_risk_pass=None,
+        has_ask=has_ask,
+        no_live_quote=no_live_quote,
+    )
+    category, gate_reasons = evaluate_gates(gate_input, thresholds)
+    return CandidateEvaluation(
+        run_id=run_id,
+        candidate_id=_candidate_id(product.isin, underlying_id, product.direction, horizon_days),
+        isin=product.isin,
+        wkn=product.wkn,
+        issuer=product.issuer,
+        underlying_id=underlying_id,
+        direction=product.direction,
+        category=category,
+        reasons=list(gate_reasons),
+        leverage=None,
+        leverage_bucket=None,
+        distance_to_barrier_pct=distance_pct,
+        distance_to_barrier_sigma=distance_sigma,
+        costs=None,
+        realized_financing_spread=None,
+        financing_cost_horizon_pct={},
+        cross_issuer_residual_zscore=None,
+        issuer_markup_score=None,
+        quote_dislocation_score=None,
+        wrapper_edge=None,
+        liquidity_factor=None,
+        integrity_passed=integrity.passed,
+        lcb_ev=None,
+        cost_rank_score=None,
+    )
+
+
 def _resolve_spot(
     product: ProductSnapshot,
     consensus_value: float | None,
     max_quote_age_s: float,
+    spot_ref_max_deviation_pct: float,
     now: datetime,
+    warnings: list[str],
 ) -> float | None:
-    """``underlying_price_ref`` when present and fresh, else the cross-issuer consensus."""
-    if product.underlying_price_ref is not None and product.quote_timestamp is not None:
-        age = quote_age_seconds(product.quote_timestamp, now)
-        if age <= max_quote_age_s:
-            return product.underlying_price_ref
-    return consensus_value
+    """Spot for pricing: cross-issuer consensus, with ``underlying_price_ref``
+    only as a validated override.
+
+    Build Contract BEFUND 1 (measured on a live BNP+Citi DAX scan,
+    2026-09-11, ``docs/data_sources.md``): the previous rule used
+    ``product.quote_timestamp`` (the product's own bid/ask timestamp) as a
+    freshness proxy for ``underlying_price_ref``. That is wrong -- BNP's
+    ``first.price`` batches/throttles independently of (and less frequently
+    than) individual product bid/ask ticks, so a fresh quote timestamp does
+    not imply a fresh reference price; three near-identical BNP short turbos
+    (same financing level, barrier, ratio, leverage) showed
+    ``issuer_margin_pct`` of -0.03%/-0.80%/-1.43% purely from this
+    conflation. ``ProductSnapshot.underlying_price_ref_timestamp`` (parsed
+    from BNP's own ``first.priceDate``, see ``adapters/issuer_feeds.py``) is
+    the reference price's genuine own timestamp and is used here instead.
+
+    ``underlying_price_ref`` is only used in place of the consensus when
+    *all* of the following hold:
+
+    1. it is present at all (structurally absent for Citi -- never guessed);
+    2. it carries its own timestamp (``underlying_price_ref_timestamp``);
+    3. that timestamp is fresh (age <= ``max_quote_age_s``, the same
+       staleness bound applied to product quotes elsewhere in this module);
+    4. a consensus is available *and* ``ref`` is within
+       ``spot_ref_max_deviation_pct`` of it (relative deviation) -- catching
+       exactly the batched/stale-reference scenario above, which a fresh
+       *timestamp* alone cannot rule out if the underlying itself moved
+       between reference-price updates.
+
+    When a consensus is unavailable (too few/no other quotes to build one
+    from -- e.g. a single-product universe), condition 4 cannot be evaluated;
+    a ``ref`` that is otherwise fresh and independently timestamped is still
+    used rather than discarding the only spot estimate available (CLAUDE.md
+    rule 29 forbids imputing *missing* data, not falling back to the single
+    genuine data point on hand when no second source exists to cross-check
+    it against).
+
+    Any rejection of a present-but-unusable ``ref`` (missing/stale own
+    timestamp, or too far from an available consensus) appends the
+    ``"spot_ref_rejected"`` warning; a structurally absent ``ref`` (e.g.
+    every Citi product) is normal and never warned about.
+    """
+    ref = product.underlying_price_ref
+    if ref is None:
+        return consensus_value
+
+    ref_ts = product.underlying_price_ref_timestamp
+    if ref_ts is None:
+        _add_warning(warnings, "spot_ref_rejected")
+        return consensus_value
+
+    age = quote_age_seconds(ref_ts, now)
+    if age > max_quote_age_s:
+        _add_warning(warnings, "spot_ref_rejected")
+        return consensus_value
+
+    if consensus_value is None:
+        # Nothing to cross-check against; a fresh, independently-timestamped
+        # ref is still the best available estimate.
+        return ref
+
+    deviation = (
+        abs(ref - consensus_value) / abs(consensus_value) if consensus_value != 0 else float("inf")
+    )
+    if deviation > spot_ref_max_deviation_pct:
+        _add_warning(warnings, "spot_ref_rejected")
+        return consensus_value
+
+    return ref
+
+
+def _cost_rank_score(total_cost_pct: float, leverage_value: float | None) -> float | None:
+    """ "Cost per exposure (h)" (Build Contract BEFUND 2): ``total_cost_pct``
+    (round-trip spread + gap premium + financing + max(issuer margin, 0),
+    all as a % of ask) divided by leverage.
+
+    ``total_cost_pct`` alone is a % of capital employed (the ask), which is
+    mechanically smaller for a higher-leverage product at equal underlying
+    exposure cost -- a Hebel-2 and a Hebel-10 product with identical
+    round-trip spread/financing/margin *as a % of underlying moved* would
+    otherwise rank the Hebel-2 product as "cheaper" purely because 5x less
+    capital sits behind an equivalent bet size. Dividing by leverage
+    re-expresses cost as a % of UNDERLYING exposure: "how far the underlying
+    has to move just to cover this product's costs over the horizon" --
+    leverage-neutral, per the Spec's "kein pauschales Hebelziel". Two
+    products with equal ``total_cost_pct / leverage_value`` therefore get an
+    equal score regardless of how different their leverage is (the ranking
+    invariance this formula is designed to guarantee).
+
+    Returns ``None`` when ``leverage_value`` is ``None`` or non-positive
+    (no ask -> leverage cannot be computed at all, or a degenerate/invalid
+    value) rather than raising or dividing by zero.
+    """
+    if leverage_value is None or not (leverage_value > 0):
+        return None
+    return total_cost_pct / leverage_value
 
 
 def _resolve_fx(
@@ -319,6 +479,7 @@ def _evaluate_single_product(
     next_night_is_weekend: bool,
     data_health_pass: bool,
     run_id: str,
+    warnings: list[str],
 ) -> CandidateEvaluation | _PricedProduct:
     """Price and integrity-check one product. Never raises for ordinary data issues.
 
@@ -339,7 +500,14 @@ def _evaluate_single_product(
             reasons=["fx_unavailable"],
         )
 
-    spot = _resolve_spot(product, consensus_value, risk.max_quote_age_s, evaluation_time)
+    spot = _resolve_spot(
+        product,
+        consensus_value,
+        risk.max_quote_age_s,
+        risk.spot_ref_max_deviation_pct,
+        evaluation_time,
+        warnings,
+    )
     if spot is None:
         return _data_quality_candidate(
             run_id=run_id,
@@ -376,6 +544,32 @@ def _evaluate_single_product(
         )
         distance_pct, distance_sigma = bd.pct, bd.sigma
 
+    # Source explicitly reported no live two-way market at all for this
+    # product (bid AND ask both missing, quote_presence is False -- e.g.
+    # Citi's referencePriceMethod == "Closing Price" rows, see
+    # adapters/issuer_feeds.py). That is "no tradable quote", not a
+    # data-quality violation -- pricing/integrity.check_product does not
+    # fail on `missing_bid` in this case, so `integrity.passed` here reflects
+    # only genuine master-data problems (financing level, barrier, underlying
+    # mapping, ...). Route through the gate evaluation for a REJECT
+    # ("no_live_quote") rather than the DATA_QUALITY branch below.
+    no_live_quote = product.bid is None and product.ask is None and product.quote_presence is False
+    if no_live_quote and integrity.passed:
+        return _gate_only_candidate(
+            run_id=run_id,
+            product=product,
+            underlying_id=underlying_id,
+            horizon_days=horizon_days,
+            integrity=integrity,
+            quote_age_s=quote_age_s,
+            distance_pct=distance_pct,
+            distance_sigma=distance_sigma,
+            data_health_pass=data_health_pass,
+            risk=risk,
+            has_ask=False,
+            no_live_quote=True,
+        )
+
     if product.bid is None or product.financing_level is None:
         reasons = list(integrity.failures) or ["missing_pricing_inputs"]
         return _data_quality_candidate(
@@ -395,49 +589,18 @@ def _evaluate_single_product(
         # every other candidate (REJECT vs. DATA_QUALITY precedence stays
         # centralized in ranking/gates.py) but skip every ask-dependent
         # pricing step (decompose_ask, leverage, spread) entirely.
-        thresholds = GateThresholds.from_risk_config(risk)
-        gate_input = GateInput(
-            integrity=integrity,
-            bid_only=product.bid_only,
-            knocked_out=product.knocked_out,
-            quote_age_s=quote_age_s,
-            spread_pct=None,
-            leverage=None,
-            distance_to_barrier_sigma=distance_sigma,
-            data_health_pass=data_health_pass,
-            lcb_ev=None,
-            p_ko=None,
-            cluster_risk_pass=None,
-            has_ask=False,
-        )
-        category, gate_reasons = evaluate_gates(gate_input, thresholds)
-        return CandidateEvaluation(
+        return _gate_only_candidate(
             run_id=run_id,
-            candidate_id=_candidate_id(
-                product.isin, underlying_id, product.direction, horizon_days
-            ),
-            isin=product.isin,
-            wkn=product.wkn,
-            issuer=product.issuer,
+            product=product,
             underlying_id=underlying_id,
-            direction=product.direction,
-            category=category,
-            reasons=list(gate_reasons),
-            leverage=None,
-            leverage_bucket=None,
-            distance_to_barrier_pct=distance_pct,
-            distance_to_barrier_sigma=distance_sigma,
-            costs=None,
-            realized_financing_spread=None,
-            financing_cost_horizon_pct={},
-            cross_issuer_residual_zscore=None,
-            issuer_markup_score=None,
-            quote_dislocation_score=None,
-            wrapper_edge=None,
-            liquidity_factor=None,
-            integrity_passed=integrity.passed,
-            lcb_ev=None,
-            cost_rank_score=None,
+            horizon_days=horizon_days,
+            integrity=integrity,
+            quote_age_s=quote_age_s,
+            distance_pct=distance_pct,
+            distance_sigma=distance_sigma,
+            data_health_pass=data_health_pass,
+            risk=risk,
+            has_ask=False,
         )
 
     bid, ask, financing_level = product.bid, product.ask, product.financing_level
@@ -628,6 +791,7 @@ def _process_products(
                 next_night_is_weekend=next_night_is_weekend,
                 data_health_pass=data_health_pass,
                 run_id=run_id,
+                warnings=warnings,
             )
         except Exception as exc:
             logger.warning("candidate_pricing_failed", isin=product.isin, error=str(exc))
@@ -696,12 +860,19 @@ def _process_products(
             reasons.append("counter_baseline_signal")
 
         round_trip_spread_pct = (p.ask - p.bid) / p.ask
-        cost_rank_score = (
+        total_cost_pct = (
             round_trip_spread_pct
             + p.gap_premium_over_horizon_pct
             + p.financing_cost_pct[horizon_key]
             + max(p.costs.issuer_margin_pct, 0.0)
         )
+        # See _cost_rank_score's docstring for the BEFUND 2 rationale
+        # (leverage-normalized "Cost per exposure (h)"). `p.leverage_value`
+        # is always a finite, positive float in this branch -- this loop
+        # only ever processes priced products that reached leverage
+        # computation successfully (the ask-less branch above returns with
+        # cost_rank_score=None before reaching this code).
+        cost_rank_score = _cost_rank_score(total_cost_pct, p.leverage_value)
 
         finalized[isin] = CandidateEvaluation(
             run_id=run_id,
@@ -780,6 +951,7 @@ def _maybe_send_email(
             issuer_margin_pct=c.costs.issuer_margin_pct if c.costs is not None else None,
             financing_cost_7d_pct=c.financing_cost_horizon_pct.get("7d"),
             liquidity_factor=c.liquidity_factor,
+            cost_rank_score=c.cost_rank_score,
             reasons=c.reasons,
         )
         for i, c in enumerate(top_candidates)

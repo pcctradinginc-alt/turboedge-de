@@ -20,6 +20,7 @@ from typing import Any
 import httpx
 import pytest
 import respx
+import structlog.testing
 
 from turboedge.adapters.base import AdapterHttpError, HttpClient
 from turboedge.adapters.issuer_feeds import (
@@ -129,6 +130,7 @@ def _citi_product(
     ko: float = 3390.0,
     ratio: float = 0.01,
     maturity_date: str | None = None,
+    reference_price_method: str = "Closing Price",
 ) -> dict[str, Any]:
     return {
         "isin": isin,
@@ -136,7 +138,7 @@ def _citi_product(
         "currencyCode": "EUR",
         "productType": "MiniFuture",
         "subTypeTranslation": sub_type,
-        "referencePriceMethod": "Closing Price",
+        "referencePriceMethod": reference_price_method,
         "maturityDate": maturity_date,
         "isQuanto": False,
         "underlyings": [
@@ -238,6 +240,66 @@ def test_bnp_ask_absent_treated_as_none_and_quote_presence_false() -> None:
     assert all(s.quote_presence is False for s in snapshots)
     # quality_score reflects "no usable ask" (0.3), never the "fresh" (1.0) case.
     assert all(s.quality_score == pytest.approx(0.3) for s in snapshots)
+
+
+@respx.mock
+def test_bnp_ask_anomalies_logged_as_one_aggregated_summary_not_per_row() -> None:
+    """20 rows, all missing `ask` -- previously 20 INFO lines (one per row,
+    `bnp_ask_key_absent`), now exactly one `bnp_quotes_summary` INFO line
+    with the aggregated counts, capped at 5 example ISINs; per-row detail
+    still logged, but only at DEBUG."""
+    respx.get(BNP_INDEXES_URL).mock(
+        return_value=httpx.Response(
+            200, json=_load_fixture("bnp_paribas", "underlying_indexes.json")
+        )
+    )
+    respx.post(BNP_LEVERAGE_URL).mock(
+        return_value=httpx.Response(
+            200, json=_load_fixture("bnp_paribas", "productlist_leverage_dax_probe_output.json")
+        )
+    )
+    adapter = _bnp_adapter(clock=_fixed_clock(datetime(2026, 9, 11, 4, 0, tzinfo=UTC)))
+
+    with structlog.testing.capture_logs() as logs:
+        snapshots = adapter.fetch_products(["DAX"])
+
+    summary_events = [e for e in logs if e.get("event") == "bnp_quotes_summary"]
+    assert len(summary_events) == 1
+    summary = summary_events[0]
+    assert summary["count_total"] == len(snapshots)
+    assert summary["count_ask_missing"] == len(snapshots)
+    assert summary["count_bid_missing"] == 0
+    assert len(summary["example_isins"]) == 5
+
+    # Per-row detail must not appear as INFO-level individual lines anymore.
+    per_row_info_events = [
+        e for e in logs if e.get("event") == "bnp_ask_key_absent" and e.get("log_level") == "info"
+    ]
+    assert per_row_info_events == []
+
+
+@respx.mock
+def test_bnp_quotes_summary_not_logged_when_no_anomalies() -> None:
+    """A healthy fetch (every row has a usable bid+ask) stays silent."""
+    respx.get(BNP_INDEXES_URL).mock(
+        return_value=httpx.Response(
+            200, json=_load_fixture("bnp_paribas", "underlying_indexes.json")
+        )
+    )
+    respx.post(BNP_LEVERAGE_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json=_load_fixture(
+                "bnp_paribas", "productlist_leverage_dax_market_hours_ask_present.json"
+            ),
+        )
+    )
+    adapter = _bnp_adapter(clock=_fixed_clock(datetime(2026, 9, 10, 22, 5, tzinfo=UTC)))
+
+    with structlog.testing.capture_logs() as logs:
+        adapter.fetch_products(["DAX"])
+
+    assert [e for e in logs if e.get("event") == "bnp_quotes_summary"] == []
 
 
 def test_bnp_timezone_conversion_summer_and_winter() -> None:
@@ -523,7 +585,14 @@ def test_citi_fetch_products_parses_real_fixture() -> None:
 
 
 @respx.mock
-def test_citi_ask_zero_treated_as_missing() -> None:
+def test_citi_closing_price_reference_treated_as_no_live_quote() -> None:
+    """Real fixture: every row is referencePriceMethod == "Closing Price".
+
+    Market-hours disambiguation (2026-09-11, ~08:51 UTC): 25/25 DAX rows
+    were closing-price snapshots, not live two-way quotes -- bid AND ask
+    (not just the zero-sentinel ask) must be discarded, the row forced
+    stale, and quality low. Master data must remain intact regardless.
+    """
     respx.post(CITI_SEARCH_URL).mock(
         return_value=httpx.Response(
             200, json=_load_fixture("citi", "productsearch_search_dax_probe_output.json")
@@ -534,10 +603,95 @@ def test_citi_ask_zero_treated_as_missing() -> None:
 
     assert snapshots  # fixture is non-empty
     assert all(s.ask is None for s in snapshots)
+    assert all(s.bid is None for s in snapshots)
+    assert all(s.bid_size is None and s.ask_size is None for s in snapshots)
     assert all(s.quote_presence is False for s in snapshots)
+    assert all(s.is_stale is True for s in snapshots)
     assert all(s.quality_score == pytest.approx(0.3) for s in snapshots)
-    # bid is real (non-sentinel) for most rows in this fixture.
-    assert any(s.bid is not None and s.bid > 0 for s in snapshots)
+    # Master data must survive even without a live quote.
+    assert all(s.isin and len(s.isin) == 12 for s in snapshots)
+    assert all(s.financing_level is not None and s.financing_level > 0 for s in snapshots)
+    assert all(s.knockout_barrier is not None and s.knockout_barrier > 0 for s in snapshots)
+    assert all(s.ratio > 0 for s in snapshots)
+
+
+@respx.mock
+def test_citi_non_live_reference_forces_none_even_with_nonzero_amounts() -> None:
+    """A nonzero closing-price bid/ask is just as unusable as a zero one.
+
+    referencePriceMethod alone -- not the numeric value -- decides whether
+    this is a live quote.
+    """
+    product = _citi_product(
+        "DE000IIIIII1",
+        reference_price_method="Closing Price",
+        bid_amount=200.5,
+        ask_amount=201.0,
+    )
+    respx.post(CITI_SEARCH_URL).mock(
+        return_value=httpx.Response(
+            200, json=_citi_search_response([product], total_elements_count=1)
+        )
+    )
+    adapter = _citi_adapter(clock=_fixed_clock(datetime(2026, 9, 10, 22, 5, tzinfo=UTC)))
+    snapshots = adapter.fetch_products(["DAX"])
+
+    assert len(snapshots) == 1
+    snapshot = snapshots[0]
+    assert snapshot.bid is None
+    assert snapshot.ask is None
+    assert snapshot.quote_presence is False
+    assert snapshot.is_stale is True
+    assert snapshot.quality_score == pytest.approx(0.3)
+
+
+@respx.mock
+def test_citi_live_reference_price_method_keeps_zero_sentinel_fallback() -> None:
+    """A referencePriceMethod not in the non-live set uses the plain
+    zero-sentinel path: ask=0.0 -> None, but a real nonzero bid survives."""
+    product = _citi_product(
+        "DE000JJJJJJ1",
+        reference_price_method="Live",
+        bid_amount=200.0,
+        ask_amount=0.0,
+    )
+    respx.post(CITI_SEARCH_URL).mock(
+        return_value=httpx.Response(
+            200, json=_citi_search_response([product], total_elements_count=1)
+        )
+    )
+    adapter = _citi_adapter(clock=_fixed_clock(datetime(2026, 9, 10, 22, 5, tzinfo=UTC)))
+    snapshots = adapter.fetch_products(["DAX"])
+
+    assert len(snapshots) == 1
+    snapshot = snapshots[0]
+    assert snapshot.ask is None
+    assert snapshot.bid == pytest.approx(200.0)
+    assert snapshot.quote_presence is False
+
+
+@respx.mock
+def test_citi_quotes_summary_logged_as_one_aggregated_line_not_per_row() -> None:
+    """25 rows, all `referencePriceMethod == "Closing Price"` -- previously
+    25 INFO lines (`citi_ask_zero_sentinel`), now exactly one
+    `citi_quotes_summary` INFO line with aggregated counts."""
+    respx.post(CITI_SEARCH_URL).mock(
+        return_value=httpx.Response(
+            200, json=_load_fixture("citi", "productsearch_search_dax_probe_output.json")
+        )
+    )
+    adapter = _citi_adapter(clock=_fixed_clock(datetime(2026, 9, 10, 22, 5, tzinfo=UTC)))
+
+    with structlog.testing.capture_logs() as logs:
+        snapshots = adapter.fetch_products(["DAX"])
+
+    summary_events = [e for e in logs if e.get("event") == "citi_quotes_summary"]
+    assert len(summary_events) == 1
+    summary = summary_events[0]
+    assert summary["count_total"] == len(snapshots)
+    assert summary["count_ask_missing"] == len(snapshots)
+    assert summary["count_bid_missing"] == len(snapshots)
+    assert len(summary["example_isins"]) == 5
 
 
 @respx.mock

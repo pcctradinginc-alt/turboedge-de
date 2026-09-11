@@ -55,6 +55,21 @@ BNP Paribas (``derivate.bnpparibas.com``)
   naive UTC parsing would silently shift every BNP quote timestamp by 1-2
   hours. Always localized via real ``Europe/Berlin`` tzdata (correct
   CET/CEST per calendar date) before conversion to UTC.
+- Pitfall 3 (session-critical, Build Contract BEFUND 1): ``first.price`` (the
+  underlying reference price, -> ``ProductSnapshot.underlying_price_ref``)
+  carries its own, separate timestamp ``first.priceDate`` (same naive
+  Europe/Berlin convention as ``bidDate``/``askDate`` -- see Pitfall 2) plus a
+  same-day flag ``first.isPriceToday``. This timestamp is **not** the same as
+  the product's own ``bidDate``/``askDate``: live probing (BEFUND 1
+  measurement, see ``docs/data_sources.md``/scan review) found ``first.price``
+  batched/throttled to only 1-2 distinct values across an entire ~4300-row DAX
+  page, while individual products' bid/ask update continuously -- so a fresh
+  ``bidDate``/``askDate`` does **not** imply a fresh ``first.price``. This
+  adapter therefore parses ``first.priceDate`` into
+  ``ProductSnapshot.underlying_price_ref_timestamp`` as an independent field;
+  ``pipeline/scan.py._resolve_spot`` uses *that* timestamp (never
+  ``quote_timestamp``) to decide whether ``underlying_price_ref`` is fresh
+  enough to use in place of the cross-issuer consensus spot.
 
 Citi / CitiFirst (``de.citifirst.com``)
 -----------------------------------------
@@ -85,12 +100,30 @@ Citi / CitiFirst (``de.citifirst.com``)
   :meth:`CitiFirstTurboAdapter.healthcheck` -- never silently truncated.
 - ``ask == 0.0`` was observed on every sampled row in both live pulls,
   including rows with ``referencePriceMethod`` suggesting auction-only
-  pricing -- not fully disambiguated from a simple after-hours snapshot
-  effect. Per this milestone's directive, ``ask == 0.0`` is always treated
-  as "no live ask" (``ask=None``, ``quote_presence=False``), with
-  ``referencePriceMethod`` surfaced in the log line so this can be revisited
-  once a market-hours pull disambiguates it. ``bid == 0.0`` is treated
-  analogously.
+  pricing. A dedicated market-hours pull (2026-09-11, ~08:51 UTC, well
+  inside Xetra trading hours) disambiguated this: every one of the 25
+  returned DAX products had ``ask == 0.0`` *and*
+  ``referencePriceMethod == "Closing Price"`` -- i.e. Citi's search endpoint
+  is returning end-of-day/reference pricing, not a live two-way market, for
+  this underlying at this time. Per CLAUDE.md rule 29 (never silently
+  impute pricing-critical data), any row whose ``referencePriceMethod`` is
+  in ``_CITI_NON_LIVE_REFERENCE_PRICE_METHODS`` (currently just
+  ``"Closing Price"`` -- the only value observed across every fixture and
+  live pull to date) has ``bid``/``ask`` forced to ``None`` and
+  ``quote_presence=False``/``is_stale=True`` *regardless of the numeric
+  value* -- a nonzero closing price is just as unusable as a live ask as a
+  zero one would be, so this is checked before, and independently of, the
+  zero-sentinel handling below. Master data (ISIN, WKN, financing_level,
+  knockout_barrier, ratio, maturity, ...) is unaffected and still populated
+  -- still useful for cross-issuer universe/master-data purposes even
+  without a live quote. Rows whose ``referencePriceMethod`` is *not* one of
+  the known non-live values fall through to the plain zero-sentinel
+  handling: ``ask == 0.0`` (or ``bid == 0.0``) is always treated as "no live
+  ask/bid" (``=None``, ``quote_presence=False``), with
+  ``referencePriceMethod`` surfaced in the (DEBUG-level, see
+  ``_QuoteAnomalyStats``) per-row log line so a future, currently-unseen
+  ``referencePriceMethod`` value can be triaged and, if warranted, added to
+  ``_CITI_NON_LIVE_REFERENCE_PRICE_METHODS``.
 - ``price.timeStamp`` carries no UTC offset either -- same Europe/Berlin
   local-time treatment as BNP's ``bidDate``/``askDate`` (evidenced by
   ``underlyings[].origin.timeZone == "CET"`` and values clustering just
@@ -108,7 +141,7 @@ import hashlib
 import json
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -222,6 +255,52 @@ def _resolve_zero_as_missing(value: float | None) -> tuple[float | None, bool]:
     if value == 0.0:
         return None, True
     return value, False
+
+
+@dataclass
+class _QuoteAnomalyStats:
+    """Aggregates per-row "no live ask/bid" anomalies across one fetch.
+
+    Previously every affected row logged its own INFO-level line
+    (``bnp_ask_key_absent``/``bnp_ask_zero_sentinel``/``bnp_bid_zero_sentinel``,
+    ``citi_ask_zero_sentinel``/``citi_bid_zero_sentinel``) -- thousands of
+    near-identical lines per run whenever a source is broadly returning
+    stale/closing-price/after-hours data (e.g. Citi's ``"Closing Price"``
+    rows, see the module docstring). The per-row detail is still logged, but
+    only at DEBUG; :func:`_log_quote_anomaly_summary` emits one INFO-level
+    summary line per :meth:`fetch_products` call instead.
+    """
+
+    total: int = 0
+    ask_missing: int = 0
+    bid_missing: int = 0
+    example_isins: list[str] = field(default_factory=list)
+
+    def note(self, isin: str | None, *, ask_missing: bool, bid_missing: bool) -> None:
+        self.total += 1
+        if ask_missing:
+            self.ask_missing += 1
+        if bid_missing:
+            self.bid_missing += 1
+        if (ask_missing or bid_missing) and isin and len(self.example_isins) < 5:
+            self.example_isins.append(isin)
+
+
+def _log_quote_anomaly_summary(event: str, stats: _QuoteAnomalyStats) -> None:
+    """Emit one aggregated INFO line for a fetch_products() call, if needed.
+
+    A no-op when nothing was anomalous (every row had a usable bid and ask)
+    -- a healthy fetch stays silent at INFO level.
+    """
+    if stats.ask_missing == 0 and stats.bid_missing == 0:
+        return
+    logger.info(
+        event,
+        count_total=stats.total,
+        count_ask_missing=stats.ask_missing,
+        count_bid_missing=stats.bid_missing,
+        example_isins=stats.example_isins,
+    )
 
 
 # -- BNP Paribas ----------------------------------------------------------------
@@ -349,6 +428,7 @@ class BnpParibasTurboAdapter:
         self.last_errors = []
         self._partial_universe = {}
         now = self._clock()
+        quote_stats = _QuoteAnomalyStats()
 
         index_map = self._resolve_underlying_index()
 
@@ -372,9 +452,14 @@ class BnpParibasTurboAdapter:
 
             snapshots.extend(
                 self._normalize_products(
-                    raw_items, underlying_id=underlying_id, now=now, response_date=response_date
+                    raw_items,
+                    underlying_id=underlying_id,
+                    now=now,
+                    response_date=response_date,
+                    quote_stats=quote_stats,
                 )
             )
+        _log_quote_anomaly_summary("bnp_quotes_summary", quote_stats)
         return snapshots
 
     def _fetch_all_pages(
@@ -440,13 +525,18 @@ class BnpParibasTurboAdapter:
         underlying_id: str,
         now: datetime,
         response_date: datetime | None,
+        quote_stats: _QuoteAnomalyStats,
     ) -> list[ProductSnapshot]:
         snapshots: list[ProductSnapshot] = []
         for raw_product in raw_items:
             isin_for_error = raw_product.get("isin")
             try:
                 snapshot = self._build_snapshot(
-                    raw_product, underlying_id=underlying_id, now=now, response_date=response_date
+                    raw_product,
+                    underlying_id=underlying_id,
+                    now=now,
+                    response_date=response_date,
+                    quote_stats=quote_stats,
                 )
                 snapshots.append(snapshot)
             except (KeyError, ValidationError, ValueError, TypeError) as exc:
@@ -463,6 +553,7 @@ class BnpParibasTurboAdapter:
         underlying_id: str,
         now: datetime,
         response_date: datetime | None,
+        quote_stats: _QuoteAnomalyStats,
     ) -> ProductSnapshot:
         isin = p["isin"]
         wkn = p.get("wkn")
@@ -519,7 +610,7 @@ class BnpParibasTurboAdapter:
             float(bid_raw) if bid_raw is not None else None
         )
         if bid_was_zero:
-            logger.info("bnp_bid_zero_sentinel", isin=isin)
+            logger.debug("bnp_bid_zero_sentinel", isin=isin)
 
         ask_present = "ask" in p
         ask_raw = p.get("ask") if ask_present else None
@@ -527,9 +618,11 @@ class BnpParibasTurboAdapter:
             float(ask_raw) if ask_raw is not None else None
         )
         if not ask_present:
-            logger.info("bnp_ask_key_absent", isin=isin)
+            logger.debug("bnp_ask_key_absent", isin=isin)
         elif ask_was_zero:
-            logger.info("bnp_ask_zero_sentinel", isin=isin)
+            logger.debug("bnp_ask_zero_sentinel", isin=isin)
+
+        quote_stats.note(isin, ask_missing=ask is None, bid_missing=bid_was_zero)
 
         quote_presence = bid is not None and ask is not None
 
@@ -560,6 +653,11 @@ class BnpParibasTurboAdapter:
         )
 
         underlying_price_ref = first.get("price")
+        # Own, independent timestamp for `first.price` -- see module
+        # docstring Pitfall 3. Deliberately NOT the product's own
+        # bidDate/askDate-derived `quote_timestamp`: the two update at
+        # different cadences, and conflating them was the BEFUND 1 bug.
+        underlying_price_ref_timestamp = _parse_berlin_naive_to_utc(first.get("priceDate"))
 
         observation_time = quote_timestamp if quote_timestamp is not None else now
         source_timestamp = quote_timestamp if quote_timestamp is not None else response_date
@@ -595,6 +693,7 @@ class BnpParibasTurboAdapter:
             underlying_price_ref=(
                 float(underlying_price_ref) if underlying_price_ref is not None else None
             ),
+            underlying_price_ref_timestamp=underlying_price_ref_timestamp,
             raw_hash=_raw_hash(p),
             observation_time=observation_time,
             available_at=now,
@@ -715,6 +814,18 @@ _CITI_UNDERLYING_ISINS: dict[str, str] = {
     "DAX": "DE0008469008",
 }
 
+# `referencePriceMethod` values that mean "this bid/ask is a closing/
+# reference-price snapshot, not a live tradable quote" -- see module
+# docstring for the disambiguating market-hours pull (2026-09-11, ~08:51 UTC,
+# 25/25 DAX rows: ask == 0.0 with referencePriceMethod == "Closing Price").
+# Currently the only value ever observed, across every fixture and both
+# research-session live pulls plus this disambiguation pull -- deliberately
+# a closed allowlist (not e.g. "contains 'Closing'") per CLAUDE.md rule 29:
+# an unrecognized future value falls through to the plain zero-sentinel
+# handling and is surfaced via the per-row DEBUG log / `_QuoteAnomalyStats`
+# summary rather than silently guessed either way.
+_CITI_NON_LIVE_REFERENCE_PRICE_METHODS: frozenset[str] = frozenset({"Closing Price"})
+
 _CITI_DIRECTION_MAP: dict[str, Direction] = {
     "Bull": Direction.LONG,
     "Long": Direction.LONG,
@@ -787,6 +898,7 @@ class CitiFirstTurboAdapter:
         self.last_errors = []
         self._partial_universe = {}
         now = self._clock()
+        quote_stats = _QuoteAnomalyStats()
 
         snapshots: list[ProductSnapshot] = []
         for underlying_id in underlying_ids:
@@ -833,18 +945,28 @@ class CitiFirstTurboAdapter:
                 )
 
             snapshots.extend(
-                self._normalize_products(matched_items, underlying_id=underlying_id, now=now)
+                self._normalize_products(
+                    matched_items, underlying_id=underlying_id, now=now, quote_stats=quote_stats
+                )
             )
+        _log_quote_anomaly_summary("citi_quotes_summary", quote_stats)
         return snapshots
 
     def _normalize_products(
-        self, raw_items: list[dict[str, Any]], *, underlying_id: str, now: datetime
+        self,
+        raw_items: list[dict[str, Any]],
+        *,
+        underlying_id: str,
+        now: datetime,
+        quote_stats: _QuoteAnomalyStats,
     ) -> list[ProductSnapshot]:
         snapshots: list[ProductSnapshot] = []
         for raw_product in raw_items:
             isin_for_error = raw_product.get("isin")
             try:
-                snapshot = self._build_snapshot(raw_product, underlying_id=underlying_id, now=now)
+                snapshot = self._build_snapshot(
+                    raw_product, underlying_id=underlying_id, now=now, quote_stats=quote_stats
+                )
                 snapshots.append(snapshot)
             except (KeyError, ValidationError, ValueError, TypeError) as exc:
                 self.last_errors.append(
@@ -854,7 +976,12 @@ class CitiFirstTurboAdapter:
         return snapshots
 
     def _build_snapshot(
-        self, it: dict[str, Any], *, underlying_id: str, now: datetime
+        self,
+        it: dict[str, Any],
+        *,
+        underlying_id: str,
+        now: datetime,
+        quote_stats: _QuoteAnomalyStats,
     ) -> ProductSnapshot:
         isin = it["isin"]
         wkn = it.get("wkn")
@@ -907,35 +1034,67 @@ class CitiFirstTurboAdapter:
 
         price = it.get("price") or {}
         reference_price_method = it.get("referencePriceMethod")
+        is_non_live_reference = reference_price_method in _CITI_NON_LIVE_REFERENCE_PRICE_METHODS
 
-        bid_amount = (price.get("bid") or {}).get("amount")
-        bid, bid_was_zero = _resolve_zero_as_missing(
-            float(bid_amount) if bid_amount is not None else None
-        )
-        if bid_was_zero:
-            logger.info(
-                "citi_bid_zero_sentinel", isin=isin, reference_price_method=reference_price_method
+        if is_non_live_reference:
+            # referencePriceMethod says this is a closing/reference-price
+            # snapshot, not a live two-way market -- see module docstring
+            # and _CITI_NON_LIVE_REFERENCE_PRICE_METHODS. bid/ask/sizes are
+            # discarded regardless of their numeric value (a nonzero closing
+            # price is just as unusable as a live ask as a zero one), and
+            # the row is forced stale: it is never a fresh tradable quote no
+            # matter how recent price.timeStamp is. Master data (financing
+            # level, knockout barrier, ratio, ISIN, ...) is untouched.
+            bid = None
+            ask = None
+            bid_was_zero = False
+            ask_was_zero = False
+            bid_size = None
+            ask_size = None
+            logger.debug(
+                "citi_non_live_reference_price",
+                isin=isin,
+                reference_price_method=reference_price_method,
             )
+        else:
+            bid_amount = (price.get("bid") or {}).get("amount")
+            bid, bid_was_zero = _resolve_zero_as_missing(
+                float(bid_amount) if bid_amount is not None else None
+            )
+            if bid_was_zero:
+                logger.debug(
+                    "citi_bid_zero_sentinel",
+                    isin=isin,
+                    reference_price_method=reference_price_method,
+                )
 
-        ask_amount = (price.get("ask") or {}).get("amount")
-        ask, ask_was_zero = _resolve_zero_as_missing(
-            float(ask_amount) if ask_amount is not None else None
-        )
-        if ask_was_zero:
-            logger.info(
-                "citi_ask_zero_sentinel", isin=isin, reference_price_method=reference_price_method
+            ask_amount = (price.get("ask") or {}).get("amount")
+            ask, ask_was_zero = _resolve_zero_as_missing(
+                float(ask_amount) if ask_amount is not None else None
             )
+            if ask_was_zero:
+                logger.debug(
+                    "citi_ask_zero_sentinel",
+                    isin=isin,
+                    reference_price_method=reference_price_method,
+                )
+
+            bid_size = price.get("bidSize")
+            ask_size = price.get("askSize")
+
+        quote_stats.note(
+            isin,
+            ask_missing=ask is None,
+            bid_missing=bid is None,
+        )
 
         quote_presence = bid is not None and ask is not None
-
-        bid_size = price.get("bidSize")
-        ask_size = price.get("askSize")
 
         quote_timestamp = _parse_berlin_naive_to_utc(price.get("timeStamp"))
 
         is_stale = (
             True
-            if quote_timestamp is None
+            if quote_timestamp is None or is_non_live_reference
             else (now - quote_timestamp).total_seconds() > self._stale_after_s
         )
         quality_score = _quality_score(quote_presence=quote_presence, is_stale=is_stale)
@@ -983,6 +1142,7 @@ class CitiFirstTurboAdapter:
             trading_hours=trading_hours,
             product_age_days=None,
             underlying_price_ref=None,
+            underlying_price_ref_timestamp=None,
             raw_hash=_raw_hash(it),
             observation_time=observation_time,
             available_at=now,

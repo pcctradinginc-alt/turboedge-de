@@ -22,7 +22,7 @@ from uuid import uuid4
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
-SCHEMA_VERSION = "1.0.0"
+SCHEMA_VERSION = "1.1.0"
 
 _ISIN_RE = re.compile(r"^[A-Z0-9]{12}$")
 
@@ -155,6 +155,18 @@ class ProductSnapshot(Provenance):
     trading_hours: str | None = None
     product_age_days: int | None = None
     underlying_price_ref: float | None = None
+    # This reference price's OWN observation timestamp, when the source
+    # exposes one (e.g. BNP's `first.priceDate`) -- distinct from
+    # `quote_timestamp` (the product's own bid/ask timestamp). The two are
+    # NOT interchangeable: BNP batches/throttles `first.price` updates
+    # independently of (and less frequently than) individual product
+    # bid/ask ticks (Build Contract BEFUND 1 measurement:
+    # `pipeline/scan.py._resolve_spot` previously used `quote_timestamp` as
+    # a freshness proxy for `underlying_price_ref`, which is wrong whenever
+    # the two update at different cadences). `None` when the source gives no
+    # independent timestamp for its reference price (e.g. Citi, which never
+    # populates `underlying_price_ref` at all) -- never guessed.
+    underlying_price_ref_timestamp: OptionalTzAwareDatetime = None
     raw_hash: str  # sha256 of the raw source record, for reproducibility
 
 
@@ -254,7 +266,16 @@ class CandidateEvaluation(BaseModel):
     integrity_passed: bool
     # never set in this milestone; the ACTIONABLE gate requires this to be not-None
     lcb_ev: float | None = None
-    cost_rank_score: float | None = None  # low = cheap; a cost ranking, NOT a return forecast
+    # "Cost per exposure (h)": total round-trip cost over the scan horizon
+    # (spread + gap premium + financing + max(issuer margin, 0)), as a %
+    # of ask, divided by leverage -- i.e. re-expressed as a % of
+    # UNDERLYING exposure rather than capital employed, so it does not
+    # mechanically favor low-leverage products (Build Contract BEFUND 2:
+    # "kein pauschales Hebelziel" -- see pipeline/scan.py for the formula
+    # and rationale). Low = cheap per unit of underlying exposure; a cost
+    # ranking, NOT a return forecast. `None` for a product with no ask
+    # (leverage cannot be computed).
+    cost_rank_score: float | None = None
 
 
 # Master data & operational models (not in the spec excerpt, needed by the

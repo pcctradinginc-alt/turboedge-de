@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-TurboEdge-DE is a quantitative research system for identifying, evaluating, and ranking tradeable German turbocertificates (Knock-out products) across equities, FX, metals, and energy underlyings. The system produces actionable, multi-horizon trade proposals via Gmail, with robustness against survivor bias, winner's curse, look-ahead bias, and multiple-testing inflation.
+TurboEdge-DE is a quantitative research system for identifying, evaluating, and ranking tradeable German turbocertificates (Knock-out products) across equities, FX, metals, and energy underlyings. Target state (Spec §54): multi-horizon trade proposals via Gmail, with robustness against survivor bias, winner's curse, look-ahead bias, and multiple-testing inflation. Current state: see "Current Milestone" below — cost/integrity analysis only, no trade proposals yet.
 
 **Core principle:** Rigorous signal generation and product evaluation, but **no automatic execution**. The final trading decision remains human.
 
@@ -54,8 +54,8 @@ Konkretisierungen (z.B. Anpassungsbudget, Ruin-Grenzen) stehen versioniert in GO
 ## Current Milestone: Phase 0 + Phase 1 + Minimal Gmail Notifier
 
 **Phase 0 – Data Feasibility & Product Snapshot**
-- Deutsche Börse adapter
-- Stuttgart Börse adapter
+- Product sources: BNP Paribas issuer API (live bid/ask), Citi issuer API (master data + closing reference prices only, partial coverage), CSV import (optional, manual)
+- Börse Stuttgart and Börse Frankfurt/Deutsche Börse: NOT implemented — blocked (Cloudflare bot management / anti-bot signature headers). Never bypass access protection; see docs/data_sources.md
 - Product normalization & deduplication
 - Quote health scoring
 - Financing level history
@@ -156,6 +156,8 @@ turboedge position close --wkn XXXXX --price 5.42 --date 2026-09-15
 
 ## Notes
 
+- Local checkout lives in an iCloud-synced Desktop: `.venv` is a symlink to `.venv.nosync` (excluded from iCloud). If `ModuleNotFoundError: turboedge` appears, run `chflags -R nohidden .venv.nosync`.
+- DuckDB schema changes must be additive and go through the migration in `Store.init_schema()` (CI restores old databases from the Actions cache).
 - All timestamps must be tz-aware UTC.
 - No `pass` stubs; all functions implemented.
 - Contract tests mandatory for adapter changes.

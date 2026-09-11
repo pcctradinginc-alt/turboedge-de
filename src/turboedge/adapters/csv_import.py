@@ -244,6 +244,7 @@ class CsvProductImportAdapter:
         self._stale_after_s = stale_after_s
         self._clock = clock if clock is not None else lambda: datetime.now(UTC)
         self.last_errors: list[RowError] = []
+        self.last_file_errors: list[str] = []
 
     @property
     def name(self) -> str:
@@ -265,6 +266,7 @@ class CsvProductImportAdapter:
         """
         del kwargs  # no fetch-time filtering; fetch_products() filters after normalize()
         self.last_errors = []
+        self.last_file_errors = []
 
         if not self._import_dir.exists():
             return []
@@ -326,7 +328,12 @@ class CsvProductImportAdapter:
                                 error=str(exc),
                             )
 
-            except OSError as exc:
+            except (OSError, UnicodeDecodeError) as exc:
+                # A file that cannot even be opened/decoded is a genuinely
+                # broken source (as opposed to "no CSV files present" --
+                # see healthcheck()), so it is tracked separately from
+                # per-row parse errors and surfaced there as FAIL.
+                self.last_file_errors.append(f"{csv_path.name}: {exc}")
                 logger.error("csv_file_read_error", file=csv_path.name, error=str(exc))
 
         return raw_rows
@@ -608,39 +615,73 @@ class CsvProductImportAdapter:
         return snapshots
 
     def healthcheck(self) -> HealthCheckResult:
-        """Check the health of the CSV import directory."""
+        """Check the health of the CSV import directory.
+
+        CSV import is an OPTIONAL, user-curated fallback source (see
+        ``docs/data_sources.md``): the common/default state is an absent or
+        empty ``state/imports/products/`` directory, e.g. every CI run where
+        nobody has dropped a manual export there. That is not an
+        operational failure and must never be reported as FAIL -- it is
+        WARN ("nothing to import"), so that ``sources health
+        --email-on-fail``/``--fail-on-error`` (which key off *critical*
+        sources only, see ``monitoring/source_health.OPTIONAL_SOURCES`` /
+        ``critical_failures``) do not fire a daily false alarm for it.
+
+        FAIL is reserved for content that is actually defective once CSV
+        files are present: every file failed to even open/decode, or every
+        row that was read failed to parse.
+        """
         now = self._clock()
 
         if not self._import_dir.exists():
             return HealthCheckResult(
                 source="csv_import",
-                status=HealthStatus.FAIL,
-                ok=False,
+                status=HealthStatus.WARN,
+                ok=True,
                 latency_ms=None,
                 checked_at=now,
-                message=f"import directory does not exist: {self._import_dir}",
+                message=f"optional source: import directory does not exist: {self._import_dir}",
             )
 
         csv_files = list(self._import_dir.glob("*.csv"))
         if not csv_files:
             return HealthCheckResult(
                 source="csv_import",
-                status=HealthStatus.FAIL,
-                ok=False,
-                latency_ms=None,
+                status=HealthStatus.WARN,
+                ok=True,
+                latency_ms=0.0,
                 checked_at=now,
-                message=f"no CSV files in {self._import_dir} — export product lists there",
+                message=(
+                    f"optional source: no CSV files in {self._import_dir} "
+                    "— export product lists there if desired"
+                ),
             )
 
         # Try to read and parse all files
-        total_rows = 0
-        error_rows = 0
-
         snapshots = self.fetch_products([])
         total_rows = len(snapshots)
         error_rows = len(self.last_errors)
+        unreadable_files = len(self.last_file_errors)
 
         if total_rows == 0:
+            if error_rows > 0 or unreadable_files > 0:
+                # Files are present but nothing usable came out of them --
+                # either every row failed to parse or a file could not even
+                # be opened/decoded. That is an actually broken source, not
+                # "nobody uploaded anything today": FAIL, not WARN.
+                parts = []
+                if error_rows:
+                    parts.append(f"{error_rows} row(s) failed to parse")
+                if unreadable_files:
+                    parts.append(f"{unreadable_files} file(s) unreadable: {self.last_file_errors}")
+                return HealthCheckResult(
+                    source="csv_import",
+                    status=HealthStatus.FAIL,
+                    ok=False,
+                    latency_ms=0.0,
+                    checked_at=now,
+                    message=f"CSV files present but defective: {'; '.join(parts)}",
+                )
             return HealthCheckResult(
                 source="csv_import",
                 status=HealthStatus.WARN,

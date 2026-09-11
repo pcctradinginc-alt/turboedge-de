@@ -86,6 +86,7 @@ class TestRenderScanReport:
             issuer_margin_pct=0.005,
             financing_cost_7d_pct=0.0007,
             liquidity_factor=0.85,
+            cost_rank_score=0.002,
             reasons=["strong signal", "good liquidity"],
         )
 
@@ -125,6 +126,7 @@ class TestRenderScanReport:
             issuer_margin_pct=0.001,
             financing_cost_7d_pct=0.0,
             liquidity_factor=0.95,
+            cost_rank_score=0.0015,
             reasons=[],
         )
 
@@ -145,6 +147,7 @@ class TestRenderScanReport:
         assert "50.00%" in body  # distance_to_barrier_pct
         assert "0.10%" in body  # issuer_margin_pct
         assert "0.00%" in body  # financing_cost_7d_pct
+        assert "0.15%" in body  # cost_rank_score
 
     def test_none_formatting(self) -> None:
         """Test None values render as 'n/a'."""
@@ -161,6 +164,7 @@ class TestRenderScanReport:
             issuer_margin_pct=None,
             financing_cost_7d_pct=None,
             liquidity_factor=None,
+            cost_rank_score=None,
             reasons=["no wkn"],
         )
 
@@ -177,8 +181,9 @@ class TestRenderScanReport:
 
         _, body = render_scan_report(context)
 
-        # Count 'n/a' occurrences (should be many)
-        assert body.count("n/a") >= 6  # leverage, spread, distance, margin, cost, liquidity
+        # Count 'n/a' occurrences (should be many): leverage, spread,
+        # distance, margin, financing, cost_rank_score, liquidity
+        assert body.count("n/a") >= 7
 
     def test_footer_and_actionable_message(self) -> None:
         """Test footer and ACTIONABLE message appear."""
@@ -256,6 +261,7 @@ class TestScanReportRow:
             issuer_margin_pct=0.005,
             financing_cost_7d_pct=0.0007,
             liquidity_factor=0.85,
+            cost_rank_score=0.002,
             reasons=["signal", "liquidity"],
         )
 
@@ -278,6 +284,7 @@ class TestScanReportRow:
             issuer_margin_pct=None,
             financing_cost_7d_pct=None,
             liquidity_factor=None,
+            cost_rank_score=None,
             reasons=[],
         )
 

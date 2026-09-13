@@ -1,0 +1,66 @@
+name: "TurboEdge: job summary"
+description: >-
+  Write the "## Pipeline summary -- mode: <mode>" section (an optional
+  state-restore note, plus the counts table from reports/summary.json) to
+  GITHUB_STEP_SUMMARY. Call this with `if: always()` at the call site so it
+  still reports even when the mode-specific step(s) failed.
+
+inputs:
+  mode:
+    description: "Pipeline mode (scan/eod/weekly/monthly) for the summary heading."
+    required: true
+  state_note:
+    description: "Optional note from the turboedge-state action's `state_note` output; rendered as a callout when non-empty."
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Job summary
+      shell: bash
+      env:
+        MODE: ${{ inputs.mode }}
+        STATE_NOTE: ${{ inputs.state_note }}
+      run: |
+        set -euo pipefail
+        python3 - <<'PY'
+        import json
+        import os
+
+        mode = os.environ.get("MODE", "unknown")
+        state_note = os.environ.get("STATE_NOTE", "")
+        path = "reports/summary.json"
+        summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+        lines = [f"## Pipeline summary -- mode: {mode}", ""]
+
+        if state_note:
+            lines.append(f"> **State restore:** {state_note}")
+            lines.append("")
+
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except FileNotFoundError:
+            lines.append(f"No summary found at `{path}`.")
+            data = None
+        except (OSError, json.JSONDecodeError) as exc:
+            lines.append(f"Could not read/parse `{path}`: {exc}")
+            data = None
+
+        if data is not None:
+            counts = data.get("counts") or {}
+            if counts:
+                lines.append("| Category | Count |")
+                lines.append("| --- | --- |")
+                for category in sorted(counts):
+                    lines.append(f"| {category} | {counts[category]} |")
+            else:
+                lines.append("No counts reported.")
+
+        text = "\n".join(lines) + "\n"
+        print(text)
+        if summary_path:
+            with open(summary_path, "a", encoding="utf-8") as f:
+                f.write(text)
+        PY

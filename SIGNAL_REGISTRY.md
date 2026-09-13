@@ -113,16 +113,63 @@ Challenger must achieve $\Delta \geq 10$ bps out-of-sample to justify complexity
 |------------------------------|---------|------------|-----------|----------------------------------------------|
 | tsmom_horizon_norm_v1        | 1.0.0   | 2026-09-10 | PROTECTED | Initial baseline; threshold 0.5; λ=0.94      |
 
+`tsmom_horizon_norm_v1` itself (the score) is unchanged and remains
+protected. Workstream W4 (2026-09-12) measured a full predictive
+*distribution* built on top of this score (mean/sigma/quantiles via
+`TsmomForecastModel`) against a trivial unconditional (null) benchmark —
+see §3 below and `docs/measured_results.md` §1. That measurement did not
+alter the protected score; it evaluated a distributional mapping built on
+top of it.
+
 ---
 
-## 3. Future Challenger Families (Placeholder)
+## 3. Forecast Models and Challenger Signal Families (measured, none promoted)
 
-Reserved for Phase 2+:
-- `trend_plus_volatility_v1` (experimental)
-- `mean_reversion_bounded_v1` (experimental)
-- `cross_asset_leadlag_v1` (experimental)
+Every entry below has been implemented and measured out-of-sample
+(walk-forward, `min_train=750`, `step=21`, `embargo=horizon_days`,
+horizons 3/5/7/10/14 trading days, `^GDAXI`/`^NDX`/`^GSPC`/`^STOXX50E`,
+2010–2026 `yfinance` daily bars). **None has been promoted.** Full numbers:
+`docs/measured_results.md` §1–2; raw source write-ups:
+`w4_walkforward_results.md`, `w9_challenger_results.md` (outside this
+repository, on the development machine).
 
-No challengers implemented in Phase 0+1.
+### 3.1 Forecast models (`models/forecast.py`, `models/directional.py`, `models/quantile.py`) — Workstream W4, measured 2026-09-12
+
+| model_id / signal_family | class | scope measured | result vs. null | status |
+|---|---|---|---|---|
+| `null` (`signal_family="null"`) | `NullModel` | 4 underlyings × 5 horizons (20/20) | reference benchmark | baseline, not a challenger |
+| `tsmom` (`signal_family="tsmom"`, distributional mapping of the protected score) | `TsmomForecastModel` | 4 underlyings × 5 horizons (20/20) | worse Brier in 20/20 cells (avg +0.0072, up to +0.0212); ECE worse by 5–15× in nearly every cell | not promoted |
+| `logit` (`signal_family="logit"`) | `LogisticDirectionModel` | DAX only, h=5 only, reduced step (1 data point, not a full sweep) | worse Brier than null (+0.0014) | not promoted, insufficient scope to evaluate further |
+| — (`RidgeReturnModel`, `models/quantile.py`) | `RidgeReturnModel` | not separately walk-forward measured in W4 | not measured | not promoted |
+
+### 3.2 Challenger signal families (`models/challengers.py`, `features/cross_asset.py`) — Workstream W9, pre-registered before measurement, measured 2026-09-13
+
+| trial_id | signal_family | class | cells measured | mean ΔBrier vs. null | best single-cell edge vs. null (signal-dir. return) | BH-significant? | status |
+|---|---|---|---|---:|---:|---|---|
+| W9-2026Q3-001 | `voltarget_tsmom` | `VolTargetedTsmom` | 14 | +0.0179 (worse) | ~0 bp (best cell effectively 0) | 0/14 | dormant |
+| W9-2026Q3-002 | `lowvol_regime_trend` | `LowVolRegimeTrend` | 14 | +0.0356 (worse; worst of the six) | +0.71 bp | 0/14 | dormant |
+| W9-2026Q3-003 | `reversal_short_horizon` | `ShortHorizonReversal` | 14 | +0.0043 (worse) | +1.50 bp; lowest raw p-value in the whole sweep (p=0.040, SPX h=10 return) but does not survive BH correction against 80 comparisons; stricter pre-registered reversal-family bar (BH-significant AND deflated z≥2.0 AND DSR≥0.6) not cleared | 0/14 | dormant |
+| W9-2026Q3-004 | `vix_term_structure` | `VixTermStructure` | 14 | +0.0091 (worse) | +1.85 bp (best edge of all six families) | 0/14 | dormant |
+| W9-2026Q3-005 | `cross_asset_leadlag` | `CrossAssetLeadLag` | 10 (DAX/ESTX50 only, per pre-registration) | +0.0056 (worse) | +0.84 bp | 0/10 | dormant |
+| W9-2026Q3-006 | `seasonality_turn_of_month` | `SeasonalityTurnOfMonth` | 14 | +0.0002 (worse, but closest to null) | +0.68 bp | 0/14 | dormant |
+
+Across all 80 cells measured in W9: 78/80 (97.5%) had a worse Brier score
+than the null model; 0/80 cleared Benjamini-Hochberg FDR (α=0.10) on
+either Brier or signal-direction return; 0/80 exceeded even the low end
+of the assumed realistic Turbo round-trip cost band. Best edge across the
+entire sweep (1.85 bp) is well short of `SIGNAL_REGISTRY.md` §1.10's
+required 10 bp minimum improvement over the TSMOM baseline. All six
+families are recorded `dormant` in `state/registry/failed_hypotheses.json`
+(Master Spec §23 hypothesis graveyard) with `effective_sample` in the
+34,542–48,304 range per family and `incremental_net_ev` (each family's own
+single best cell, not its average) 1–2 orders of magnitude below the
+0.0010 (10 bp) ladder minimum in `GOVERNANCE.md` §2.2 — none is a close
+call.
+
+**Nothing in this section has been promoted to champion or added to the
+live ensemble.** Per CLAUDE.md rule 26 ("keine Verbesserung nur anhand
+In-Sample behaupten") and Master Spec §53, this is reported as the
+unembellished, negative result it is.
 
 ---
 

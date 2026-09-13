@@ -1,0 +1,1247 @@
+{
+  "data": {
+    "groups": {
+      "products": [
+        {
+          "wkn": {
+            "type": "text",
+            "value": "UN1HT7"
+          },
+          "isin": {
+            "type": "text",
+            "value": "DE000UN1HT70"
+          },
+          "underlying": {
+            "type": "text",
+            "value": "DAX (Performance)"
+          },
+          "underlyings.price": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:1|id_market:19|EUR|397|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00####",
+            "valueRender": "{{value}} {{currency}}",
+            "valueTuple": {
+              "size": 0.0,
+              "delayMinutes": 0.0,
+              "value": 25559.5,
+              "timestamp": 1789141637454.0
+            }
+          },
+          "issuer": {
+            "type": "text",
+            "value": "UniCredit Bank GmbH"
+          },
+          "structure.direction": {
+            "type": "text",
+            "value": "long"
+          },
+          "financingLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 23200
+          },
+          "koLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 23200
+          },
+          "leverage": {
+            "currency": "x",
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney"
+          },
+          "bid": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:58893752|id_market:505|EUR|6|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}",
+            "valueTuple": {
+              "value": 0.001,
+              "timestamp": 1763478304270.0,
+              "size": 50000.0,
+              "delayMinutes": 0.0
+            }
+          },
+          "ask": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:58893752|id_market:505|EUR|7|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}"
+          }
+        },
+        {
+          "wkn": {
+            "type": "text",
+            "value": "UN1XHA"
+          },
+          "isin": {
+            "type": "text",
+            "value": "DE000UN1XHA3"
+          },
+          "underlying": {
+            "type": "text",
+            "value": "DAX (Performance)"
+          },
+          "underlyings.price": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:1|id_market:19|EUR|397|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00####",
+            "valueRender": "{{value}} {{currency}}",
+            "valueTuple": {
+              "size": 0.0,
+              "delayMinutes": 0.0,
+              "value": 25559.5,
+              "timestamp": 1789141637454.0
+            }
+          },
+          "issuer": {
+            "type": "text",
+            "value": "UniCredit Bank GmbH"
+          },
+          "structure.direction": {
+            "type": "text",
+            "value": "long"
+          },
+          "financingLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 23100
+          },
+          "koLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 23100
+          },
+          "leverage": {
+            "currency": "x",
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney"
+          },
+          "bid": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:59249353|id_market:505|EUR|6|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}",
+            "valueTuple": {
+              "value": 0.001,
+              "timestamp": 1772829017135.0,
+              "size": 60000.0,
+              "delayMinutes": 0.0
+            }
+          },
+          "ask": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:59249353|id_market:505|EUR|7|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}"
+          }
+        },
+        {
+          "wkn": {
+            "type": "text",
+            "value": "UN2G43"
+          },
+          "isin": {
+            "type": "text",
+            "value": "DE000UN2G433"
+          },
+          "underlying": {
+            "type": "text",
+            "value": "DAX (Performance)"
+          },
+          "underlyings.price": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:1|id_market:19|EUR|397|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00####",
+            "valueRender": "{{value}} {{currency}}",
+            "valueTuple": {
+              "size": 0.0,
+              "delayMinutes": 0.0,
+              "value": 25559.5,
+              "timestamp": 1789141637454.0
+            }
+          },
+          "issuer": {
+            "type": "text",
+            "value": "UniCredit Bank GmbH"
+          },
+          "structure.direction": {
+            "type": "text",
+            "value": "long"
+          },
+          "financingLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 23600
+          },
+          "koLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 23600
+          },
+          "leverage": {
+            "currency": "x",
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney"
+          },
+          "bid": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:59823432|id_market:505|EUR|6|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}",
+            "valueTuple": {
+              "value": 0.001,
+              "timestamp": 1772553088022.0,
+              "size": 500000.0,
+              "delayMinutes": 0.0
+            }
+          },
+          "ask": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:59823432|id_market:505|EUR|7|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}"
+          }
+        },
+        {
+          "wkn": {
+            "type": "text",
+            "value": "HW0SB9"
+          },
+          "isin": {
+            "type": "text",
+            "value": "DE000HW0SB92"
+          },
+          "underlying": {
+            "type": "text",
+            "value": "DAX (Performance)"
+          },
+          "underlyings.price": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:1|id_market:19|EUR|397|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00####",
+            "valueRender": "{{value}} {{currency}}",
+            "valueTuple": {
+              "size": 0.0,
+              "delayMinutes": 0.0,
+              "value": 25559.5,
+              "timestamp": 1789141637454.0
+            }
+          },
+          "issuer": {
+            "type": "text",
+            "value": "UniCredit Bank GmbH"
+          },
+          "structure.direction": {
+            "type": "text",
+            "value": "long"
+          },
+          "financingLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 14123.2108
+          },
+          "koLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 14123.2108
+          },
+          "leverage": {
+            "currency": "x",
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney"
+          },
+          "bid": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:19148267|id_market:505|EUR|6|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}",
+            "valueTuple": {
+              "value": 96.21,
+              "timestamp": 1758006036448.0,
+              "size": 70000.0,
+              "delayMinutes": 0.0
+            }
+          },
+          "ask": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:19148267|id_market:505|EUR|7|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}"
+          }
+        },
+        {
+          "wkn": {
+            "type": "text",
+            "value": "UN1HT1"
+          },
+          "isin": {
+            "type": "text",
+            "value": "DE000UN1HT13"
+          },
+          "underlying": {
+            "type": "text",
+            "value": "DAX (Performance)"
+          },
+          "underlyings.price": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:1|id_market:19|EUR|397|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00####",
+            "valueRender": "{{value}} {{currency}}",
+            "valueTuple": {
+              "size": 0.0,
+              "delayMinutes": 0.0,
+              "value": 25559.5,
+              "timestamp": 1789141637454.0
+            }
+          },
+          "issuer": {
+            "type": "text",
+            "value": "UniCredit Bank GmbH"
+          },
+          "structure.direction": {
+            "type": "text",
+            "value": "long"
+          },
+          "financingLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 22000
+          },
+          "koLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 22000
+          },
+          "leverage": {
+            "currency": "x",
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney"
+          },
+          "bid": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:58893747|id_market:505|EUR|6|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}",
+            "valueTuple": {
+              "value": 0.001,
+              "timestamp": 1774024603165.0,
+              "size": 90000.0,
+              "delayMinutes": 0.0
+            }
+          },
+          "ask": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:58893747|id_market:505|EUR|7|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}"
+          }
+        },
+        {
+          "wkn": {
+            "type": "text",
+            "value": "UN1XH8"
+          },
+          "isin": {
+            "type": "text",
+            "value": "DE000UN1XH82"
+          },
+          "underlying": {
+            "type": "text",
+            "value": "DAX (Performance)"
+          },
+          "underlyings.price": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:1|id_market:19|EUR|397|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00####",
+            "valueRender": "{{value}} {{currency}}",
+            "valueTuple": {
+              "size": 0.0,
+              "delayMinutes": 0.0,
+              "value": 25559.5,
+              "timestamp": 1789141637454.0
+            }
+          },
+          "issuer": {
+            "type": "text",
+            "value": "UniCredit Bank GmbH"
+          },
+          "structure.direction": {
+            "type": "text",
+            "value": "long"
+          },
+          "financingLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 22990
+          },
+          "koLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 22990
+          },
+          "leverage": {
+            "currency": "x",
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney"
+          },
+          "bid": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:59249350|id_market:505|EUR|6|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}",
+            "valueTuple": {
+              "value": 0.001,
+              "timestamp": 1773088219001.0,
+              "size": 60000.0,
+              "delayMinutes": 0.0
+            }
+          },
+          "ask": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:59249350|id_market:505|EUR|7|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}"
+          }
+        },
+        {
+          "wkn": {
+            "type": "text",
+            "value": "UN1HT8"
+          },
+          "isin": {
+            "type": "text",
+            "value": "DE000UN1HT88"
+          },
+          "underlying": {
+            "type": "text",
+            "value": "DAX (Performance)"
+          },
+          "underlyings.price": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:1|id_market:19|EUR|397|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00####",
+            "valueRender": "{{value}} {{currency}}",
+            "valueTuple": {
+              "size": 0.0,
+              "delayMinutes": 0.0,
+              "value": 25559.5,
+              "timestamp": 1789141637454.0
+            }
+          },
+          "issuer": {
+            "type": "text",
+            "value": "UniCredit Bank GmbH"
+          },
+          "structure.direction": {
+            "type": "text",
+            "value": "long"
+          },
+          "financingLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 23400
+          },
+          "koLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 23400
+          },
+          "leverage": {
+            "currency": "x",
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney"
+          },
+          "bid": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:58893756|id_market:505|EUR|6|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}",
+            "valueTuple": {
+              "value": 0.001,
+              "timestamp": 1763497824343.0,
+              "size": 25000.0,
+              "delayMinutes": 0.0
+            }
+          },
+          "ask": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:58893756|id_market:505|EUR|7|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}"
+          }
+        },
+        {
+          "wkn": {
+            "type": "text",
+            "value": "UG8W92"
+          },
+          "isin": {
+            "type": "text",
+            "value": "DE000UG8W923"
+          },
+          "underlying": {
+            "type": "text",
+            "value": "DAX (Performance)"
+          },
+          "underlyings.price": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:1|id_market:19|EUR|397|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00####",
+            "valueRender": "{{value}} {{currency}}",
+            "valueTuple": {
+              "size": 0.0,
+              "delayMinutes": 0.0,
+              "value": 25559.5,
+              "timestamp": 1789141637454.0
+            }
+          },
+          "issuer": {
+            "type": "text",
+            "value": "UniCredit Bank GmbH"
+          },
+          "structure.direction": {
+            "type": "text",
+            "value": "long"
+          },
+          "financingLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 23770
+          },
+          "koLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 23770
+          },
+          "leverage": {
+            "currency": "x",
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney"
+          },
+          "bid": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:56381845|id_market:505|EUR|6|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}",
+            "valueTuple": {
+              "value": 0.001,
+              "timestamp": 1757430900469.0,
+              "size": 70000.0,
+              "delayMinutes": 0.0
+            }
+          },
+          "ask": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:56381845|id_market:505|EUR|7|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}"
+          }
+        },
+        {
+          "wkn": {
+            "type": "text",
+            "value": "UN1XH6"
+          },
+          "isin": {
+            "type": "text",
+            "value": "DE000UN1XH66"
+          },
+          "underlying": {
+            "type": "text",
+            "value": "DAX (Performance)"
+          },
+          "underlyings.price": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:1|id_market:19|EUR|397|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00####",
+            "valueRender": "{{value}} {{currency}}",
+            "valueTuple": {
+              "size": 0.0,
+              "delayMinutes": 0.0,
+              "value": 25559.5,
+              "timestamp": 1789141637454.0
+            }
+          },
+          "issuer": {
+            "type": "text",
+            "value": "UniCredit Bank GmbH"
+          },
+          "structure.direction": {
+            "type": "text",
+            "value": "long"
+          },
+          "financingLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 21760
+          },
+          "koLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 21760
+          },
+          "leverage": {
+            "currency": "x",
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney"
+          },
+          "bid": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:59249348|id_market:505|EUR|6|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}",
+            "valueTuple": {
+              "value": 0.001,
+              "timestamp": 1774297810379.0,
+              "size": 60000.0,
+              "delayMinutes": 0.0
+            }
+          },
+          "ask": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:59249348|id_market:505|EUR|7|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}"
+          }
+        },
+        {
+          "wkn": {
+            "type": "text",
+            "value": "UN2G3Z"
+          },
+          "isin": {
+            "type": "text",
+            "value": "DE000UN2G3Z8"
+          },
+          "underlying": {
+            "type": "text",
+            "value": "DAX (Performance)"
+          },
+          "underlyings.price": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:1|id_market:19|EUR|397|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00####",
+            "valueRender": "{{value}} {{currency}}",
+            "valueTuple": {
+              "size": 0.0,
+              "delayMinutes": 0.0,
+              "value": 25559.5,
+              "timestamp": 1789141637454.0
+            }
+          },
+          "issuer": {
+            "type": "text",
+            "value": "UniCredit Bank GmbH"
+          },
+          "structure.direction": {
+            "type": "text",
+            "value": "long"
+          },
+          "financingLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 23200
+          },
+          "koLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 23200
+          },
+          "leverage": {
+            "currency": "x",
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney"
+          },
+          "bid": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:59823429|id_market:505|EUR|6|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}",
+            "valueTuple": {
+              "value": 0.001,
+              "timestamp": 1772829024429.0,
+              "size": 250000.0,
+              "delayMinutes": 0.0
+            }
+          },
+          "ask": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:59823429|id_market:505|EUR|7|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}"
+          }
+        }
+      ],
+      "groupedBy": null
+    },
+    "filters": {
+      "firstLevel": {
+        "underlying": {
+          "label": "underlying",
+          "type": "singleUnderlyingDropdown",
+          "order": 1,
+          "list": {
+            "2444768": {
+              "label": "1 & 1 Drillisch AG",
+              "value": 2444768,
+              "selected": false,
+              "order": 0,
+              "group": false
+            },
+            "705468": {
+              "label": "10 Year US Treasury Notes",
+              "value": 705468,
+              "selected": false,
+              "order": 1,
+              "group": false
+            },
+            "30941561": {
+              "label": "2-Year U.S. Treasury Notes Future",
+              "value": 30941561,
+              "selected": false,
+              "order": 2,
+              "group": false
+            },
+            "5441297": {
+              "label": "2G Energy AG",
+              "value": 5441297,
+              "selected": false,
+              "order": 3,
+              "group": false
+            },
+            "3178226": {
+              "label": "3 Year SEK Worst of Booster Notes linked Bis Nordea Bank Abp and Svenska Handelsbanken AB",
+              "value": 3178226,
+              "selected": false,
+              "order": 4,
+              "group": false
+            }
+          },
+          "showOptionAll": false,
+          "showActionButtons": true,
+          "hidden": false
+        },
+        "productType": {
+          "label": "productType",
+          "type": "dropdown",
+          "order": 2,
+          "list": {
+            "Optionsscheine Classic": {
+              "label": "Optionsscheine Classic",
+              "value": "Optionsscheine Classic",
+              "selected": false,
+              "order": 0,
+              "count": 16463,
+              "group": false
+            },
+            "Turbos endlos": {
+              "label": "Turbos endlos",
+              "value": "Turbos endlos",
+              "selected": true,
+              "order": 1,
+              "count": 13855,
+              "group": false
+            },
+            "Inliner": {
+              "label": "Inliner",
+              "value": "Inliner",
+              "selected": false,
+              "order": 2,
+              "count": 10595,
+              "group": false
+            },
+            "Discount Optionsscheine": {
+              "label": "Discount Optionsscheine",
+              "value": "Discount Optionsscheine",
+              "selected": false,
+              "order": 3,
+              "count": 7737,
+              "group": false
+            },
+            "Turbo Optionsscheine": {
+              "label": "Turbo Optionsscheine",
+              "value": "Turbo Optionsscheine",
+              "selected": false,
+              "order": 4,
+              "count": 5913,
+              "group": false
+            },
+            "Mini-Futures": {
+              "label": "Mini-Futures",
+              "value": "Mini-Futures",
+              "selected": false,
+              "order": 5,
+              "count": 5542,
+              "group": false
+            },
+            "Faktor-Optionsscheine": {
+              "label": "Faktor-Optionsscheine",
+              "value": "Faktor-Optionsscheine",
+              "selected": false,
+              "order": 6,
+              "count": 1342,
+              "group": false
+            },
+            "Bonus Optionsscheine": {
+              "label": "Bonus Optionsscheine",
+              "value": "Bonus Optionsscheine",
+              "selected": false,
+              "order": 7,
+              "count": 130,
+              "group": false
+            }
+          },
+          "showOptionAll": false,
+          "showActionButtons": true,
+          "hidden": false
+        }
+      },
+      "secondLevel": {
+        "leverage": {
+          "label": "leverage",
+          "type": "range",
+          "order": 7,
+          "min": 1.085376622769952,
+          "max": 319.05529,
+          "showOptionAll": false,
+          "showActionButtons": true,
+          "hidden": false,
+          "suggestedRanges": []
+        },
+        "structure.direction": {
+          "label": "structure.direction",
+          "type": "multiDropdown",
+          "order": 3,
+          "list": {
+            "long": {
+              "label": "long",
+              "value": "long",
+              "selected": false,
+              "order": 0,
+              "count": 9059,
+              "group": false
+            },
+            "short": {
+              "label": "short",
+              "value": "short",
+              "selected": false,
+              "order": 1,
+              "count": 4796,
+              "group": false
+            }
+          },
+          "showOptionAll": true,
+          "showActionButtons": true,
+          "hidden": false
+        },
+        "countryFlag": {
+          "label": "countryFlag",
+          "type": "multiDropdown",
+          "order": 3,
+          "list": {
+            "null": {
+              "selected": false,
+              "order": 0,
+              "count": 866,
+              "group": false
+            },
+            "AT": {
+              "label": "AT",
+              "value": "AT",
+              "selected": false,
+              "order": 1,
+              "count": 13242,
+              "group": false
+            },
+            "DE": {
+              "label": "DE",
+              "value": "DE",
+              "selected": false,
+              "order": 2,
+              "count": 13283,
+              "group": false
+            },
+            "FR": {
+              "label": "FR",
+              "value": "FR",
+              "selected": false,
+              "order": 3,
+              "count": 294,
+              "group": false
+            },
+            "IT": {
+              "label": "IT",
+              "value": "IT",
+              "selected": false,
+              "order": 4,
+              "count": 294,
+              "group": false
+            },
+            "LU": {
+              "label": "LU",
+              "value": "LU",
+              "selected": false,
+              "order": 5,
+              "count": 3271,
+              "group": false
+            },
+            "NL": {
+              "label": "NL",
+              "value": "NL",
+              "selected": false,
+              "order": 6,
+              "count": 87,
+              "group": false
+            }
+          },
+          "showOptionAll": false,
+          "showActionButtons": true,
+          "hidden": false
+        },
+        "isQuanto": {
+          "label": "isQuanto",
+          "type": "simpleCheckbox",
+          "order": 6,
+          "list": {
+            "false": {
+              "label": "false",
+              "value": false,
+              "selected": false,
+              "order": 0,
+              "count": 13855,
+              "group": false
+            }
+          },
+          "showOptionAll": false,
+          "showActionButtons": true,
+          "hidden": false
+        },
+        "isIntradayTrade": {
+          "label": "isIntradayTrade",
+          "type": "simpleCheckbox",
+          "order": 20,
+          "list": {
+            "false": {
+              "label": "false",
+              "value": "false",
+              "selected": false,
+              "order": 0,
+              "count": 10301,
+              "group": false
+            },
+            "true": {
+              "label": "true",
+              "value": "true",
+              "selected": false,
+              "order": 1,
+              "count": 3554,
+              "group": false
+            }
+          },
+          "showOptionAll": false,
+          "showActionButtons": true,
+          "hidden": false
+        },
+        "distance2koLevelRefCurPercent": {
+          "label": "distance2koLevelRefCurPercent",
+          "type": "percentRange",
+          "order": 9,
+          "min": 0.000176094229979,
+          "max": 1.0,
+          "showOptionAll": false,
+          "showActionButtons": true,
+          "hidden": false,
+          "suggestedRanges": []
+        },
+        "issuer": {
+          "label": "issuer",
+          "type": "multiDropdown",
+          "order": 2,
+          "list": {
+            "BNP Paribas": {
+              "label": "BNP Paribas",
+              "value": "BNP Paribas",
+              "selected": false,
+              "order": 0,
+              "count": 7466,
+              "group": false
+            },
+            "Goldman Sachs Bank Europe SE": {
+              "label": "Goldman Sachs Bank Europe SE",
+              "value": "Goldman Sachs Bank Europe SE",
+              "selected": false,
+              "order": 5,
+              "count": 1963,
+              "group": false
+            },
+            "HSBC Trinkaus & Burkhardt GmbH": {
+              "label": "HSBC Trinkaus & Burkhardt GmbH",
+              "value": "HSBC Trinkaus & Burkhardt GmbH",
+              "selected": false,
+              "order": 6,
+              "count": 1154,
+              "group": false
+            },
+            "UniCredit Bank GmbH": {
+              "label": "UniCredit Bank GmbH",
+              "value": "UniCredit Bank GmbH",
+              "selected": false,
+              "order": 7,
+              "count": 3272,
+              "group": false
+            }
+          },
+          "showOptionAll": true,
+          "showActionButtons": true,
+          "hidden": false
+        },
+        "koLevelRefCurAbsolute": {
+          "label": "koLevelRefCurAbsolute",
+          "type": "range",
+          "order": 8,
+          "min": 0,
+          "max": 45902.4481,
+          "showOptionAll": false,
+          "showActionButtons": true,
+          "hidden": false,
+          "suggestedRanges": []
+        }
+      }
+    },
+    "headers": [
+      "identifiers",
+      "underlyingData",
+      "issuer",
+      "structure.direction",
+      "financingLevelRefCurAbsolute",
+      "koLevelRefCurAbsolute",
+      "leverage",
+      "bidAsk"
+    ],
+    "fields": [
+      [
+        [
+          {
+            "key": "isin"
+          }
+        ],
+        [
+          {
+            "key": "wkn"
+          }
+        ]
+      ],
+      [
+        [
+          {
+            "key": "underlying"
+          }
+        ],
+        [
+          {
+            "key": "underlyings.price"
+          }
+        ]
+      ],
+      {
+        "key": "issuer"
+      },
+      {
+        "key": "structure.direction"
+      },
+      {
+        "key": "financingLevelRefCurAbsolute"
+      },
+      {
+        "key": "koLevelRefCurAbsolute"
+      },
+      {
+        "key": "leverage"
+      },
+      [
+        [
+          {
+            "key": "bid"
+          },
+          {
+            "key": "ask"
+          }
+        ]
+      ]
+    ],
+    "sort": {
+      "field": "leverage",
+      "direction": 1
+    },
+    "pagination": {
+      "page": 1,
+      "rowsPerPage": 30,
+      "filteredCount": 13855,
+      "totalCount": 837596,
+      "options": [
+        10,
+        20,
+        50,
+        100
+      ],
+      "filteredCountByGroup": [
+        {
+          "group": "turbosOpenEnd",
+          "filteredCount": 13855
+        }
+      ]
+    }
+  },
+  "status": "success"
+}

@@ -1,0 +1,1311 @@
+{
+  "data": {
+    "groups": {
+      "products": [
+        {
+          "wkn": {
+            "type": "text",
+            "value": "PM9ENN"
+          },
+          "isin": {
+            "type": "text",
+            "value": "DE000PM9ENN5"
+          },
+          "underlying": {
+            "type": "text",
+            "value": "NASDAQ 100"
+          },
+          "underlyings.price": {
+            "currency": "USD",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:526295|id_market:1870|USD|397|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00####",
+            "valueRender": "{{value}} {{currency}}",
+            "valueTuple": {
+              "size": 0.0,
+              "delayMinutes": 0.0,
+              "value": 29447.38,
+              "timestamp": 1789141637076.0
+            }
+          },
+          "issuer": {
+            "type": "text",
+            "value": "BNP Paribas"
+          },
+          "structure.direction": {
+            "type": "text",
+            "value": "short"
+          },
+          "financingLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 29472
+          },
+          "koLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 29472
+          },
+          "leverage": {
+            "currency": "x",
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 3022.535813387764
+          },
+          "bid": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:68117712|id_market:3933|EUR|6|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}",
+            "valueTuple": {
+              "delayMinutes": 0.0,
+              "size": 60000.0,
+              "value": 0.001,
+              "timestamp": 1789140948960.0
+            }
+          },
+          "ask": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:68117712|id_market:3933|EUR|7|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}",
+            "valueTuple": {
+              "delayMinutes": 0.0,
+              "size": 0.0,
+              "value": 0.0,
+              "timestamp": 1789138692589.0
+            }
+          }
+        },
+        {
+          "wkn": {
+            "type": "text",
+            "value": "PM9ENM"
+          },
+          "isin": {
+            "type": "text",
+            "value": "DE000PM9ENM7"
+          },
+          "underlying": {
+            "type": "text",
+            "value": "NASDAQ 100"
+          },
+          "underlyings.price": {
+            "currency": "USD",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:526295|id_market:1870|USD|397|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00####",
+            "valueRender": "{{value}} {{currency}}",
+            "valueTuple": {
+              "size": 0.0,
+              "delayMinutes": 0.0,
+              "value": 29447.38,
+              "timestamp": 1789141637076.0
+            }
+          },
+          "issuer": {
+            "type": "text",
+            "value": "BNP Paribas"
+          },
+          "structure.direction": {
+            "type": "text",
+            "value": "short"
+          },
+          "financingLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 29470
+          },
+          "koLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 29470
+          },
+          "leverage": {
+            "currency": "x",
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 1586.248582409817
+          },
+          "bid": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:68117715|id_market:3933|EUR|6|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}",
+            "valueTuple": {
+              "delayMinutes": 0.0,
+              "size": 60000.0,
+              "value": 0.001,
+              "timestamp": 1789140948938.0
+            }
+          },
+          "ask": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:68117715|id_market:3933|EUR|7|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}",
+            "valueTuple": {
+              "delayMinutes": 0.0,
+              "size": 0.0,
+              "value": 0.0,
+              "timestamp": 1789138735106.0
+            }
+          }
+        },
+        {
+          "wkn": {
+            "type": "text",
+            "value": "PM4KFK"
+          },
+          "isin": {
+            "type": "text",
+            "value": "DE000PM4KFK5"
+          },
+          "underlying": {
+            "type": "text",
+            "value": "NASDAQ 100"
+          },
+          "underlyings.price": {
+            "currency": "USD",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:526295|id_market:1870|USD|397|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00####",
+            "valueRender": "{{value}} {{currency}}",
+            "valueTuple": {
+              "size": 0.0,
+              "delayMinutes": 0.0,
+              "value": 29447.38,
+              "timestamp": 1789141637076.0
+            }
+          },
+          "issuer": {
+            "type": "text",
+            "value": "BNP Paribas"
+          },
+          "structure.direction": {
+            "type": "text",
+            "value": "long"
+          },
+          "financingLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 29616.2966
+          },
+          "koLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 29616.2966
+          },
+          "leverage": {
+            "currency": "x",
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 981.780543278628
+          },
+          "bid": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:65385840|id_market:3933|EUR|6|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}",
+            "valueTuple": {
+              "value": 0.26,
+              "timestamp": 1781725874788.0,
+              "size": 16000.0,
+              "delayMinutes": 0.0
+            }
+          },
+          "ask": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:65385840|id_market:3933|EUR|7|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}"
+          }
+        },
+        {
+          "wkn": {
+            "type": "text",
+            "value": "PM9ENB"
+          },
+          "isin": {
+            "type": "text",
+            "value": "DE000PM9ENB0"
+          },
+          "underlying": {
+            "type": "text",
+            "value": "NASDAQ 100"
+          },
+          "underlyings.price": {
+            "currency": "USD",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:526295|id_market:1870|USD|397|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00####",
+            "valueRender": "{{value}} {{currency}}",
+            "valueTuple": {
+              "size": 0.0,
+              "delayMinutes": 0.0,
+              "value": 29447.38,
+              "timestamp": 1789141637076.0
+            }
+          },
+          "issuer": {
+            "type": "text",
+            "value": "BNP Paribas"
+          },
+          "structure.direction": {
+            "type": "text",
+            "value": "short"
+          },
+          "financingLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 29448
+          },
+          "koLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 29448
+          },
+          "leverage": {
+            "currency": "x",
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 873.964048271584
+          },
+          "bid": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:68117706|id_market:3933|EUR|6|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}",
+            "valueTuple": {
+              "delayMinutes": 0.0,
+              "size": 60000.0,
+              "value": 0.001,
+              "timestamp": 1789140592894.0
+            }
+          },
+          "ask": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:68117706|id_market:3933|EUR|7|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}",
+            "valueTuple": {
+              "delayMinutes": 0.0,
+              "size": 0.0,
+              "value": 0.0,
+              "timestamp": 1789138703509.0
+            }
+          }
+        },
+        {
+          "wkn": {
+            "type": "text",
+            "value": "PM9ENC"
+          },
+          "isin": {
+            "type": "text",
+            "value": "DE000PM9ENC8"
+          },
+          "underlying": {
+            "type": "text",
+            "value": "NASDAQ 100"
+          },
+          "underlyings.price": {
+            "currency": "USD",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:526295|id_market:1870|USD|397|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00####",
+            "valueRender": "{{value}} {{currency}}",
+            "valueTuple": {
+              "size": 0.0,
+              "delayMinutes": 0.0,
+              "value": 29447.38,
+              "timestamp": 1789141637076.0
+            }
+          },
+          "issuer": {
+            "type": "text",
+            "value": "BNP Paribas"
+          },
+          "structure.direction": {
+            "type": "text",
+            "value": "short"
+          },
+          "financingLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 29450
+          },
+          "koLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 29450
+          },
+          "leverage": {
+            "currency": "x",
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 844.819583380004
+          },
+          "bid": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:68117705|id_market:3933|EUR|6|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}",
+            "valueTuple": {
+              "delayMinutes": 0.0,
+              "size": 60000.0,
+              "value": 0.001,
+              "timestamp": 1789140592916.0
+            }
+          },
+          "ask": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:68117705|id_market:3933|EUR|7|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}",
+            "valueTuple": {
+              "delayMinutes": 0.0,
+              "size": 0.0,
+              "value": 0.0,
+              "timestamp": 1789138634369.0
+            }
+          }
+        },
+        {
+          "wkn": {
+            "type": "text",
+            "value": "PM9END"
+          },
+          "isin": {
+            "type": "text",
+            "value": "DE000PM9END6"
+          },
+          "underlying": {
+            "type": "text",
+            "value": "NASDAQ 100"
+          },
+          "underlyings.price": {
+            "currency": "USD",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:526295|id_market:1870|USD|397|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00####",
+            "valueRender": "{{value}} {{currency}}",
+            "valueTuple": {
+              "size": 0.0,
+              "delayMinutes": 0.0,
+              "value": 29447.38,
+              "timestamp": 1789141637076.0
+            }
+          },
+          "issuer": {
+            "type": "text",
+            "value": "BNP Paribas"
+          },
+          "structure.direction": {
+            "type": "text",
+            "value": "short"
+          },
+          "financingLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 29452
+          },
+          "koLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 29452
+          },
+          "leverage": {
+            "currency": "x",
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 703.897520365249
+          },
+          "bid": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:68117707|id_market:3933|EUR|6|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}",
+            "valueTuple": {
+              "delayMinutes": 0.0,
+              "size": 60000.0,
+              "value": 0.001,
+              "timestamp": 1789140592917.0
+            }
+          },
+          "ask": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:68117707|id_market:3933|EUR|7|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}",
+            "valueTuple": {
+              "delayMinutes": 0.0,
+              "size": 0.0,
+              "value": 0.0,
+              "timestamp": 1789138719964.0
+            }
+          }
+        },
+        {
+          "wkn": {
+            "type": "text",
+            "value": "PM9ENE"
+          },
+          "isin": {
+            "type": "text",
+            "value": "DE000PM9ENE4"
+          },
+          "underlying": {
+            "type": "text",
+            "value": "NASDAQ 100"
+          },
+          "underlyings.price": {
+            "currency": "USD",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:526295|id_market:1870|USD|397|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00####",
+            "valueRender": "{{value}} {{currency}}",
+            "valueTuple": {
+              "size": 0.0,
+              "delayMinutes": 0.0,
+              "value": 29447.38,
+              "timestamp": 1789141637076.0
+            }
+          },
+          "issuer": {
+            "type": "text",
+            "value": "BNP Paribas"
+          },
+          "structure.direction": {
+            "type": "text",
+            "value": "short"
+          },
+          "financingLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 29454
+          },
+          "koLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 29454
+          },
+          "leverage": {
+            "currency": "x",
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 649.746854303758
+          },
+          "bid": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:68117708|id_market:3933|EUR|6|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}",
+            "valueTuple": {
+              "delayMinutes": 0.0,
+              "size": 60000.0,
+              "value": 0.001,
+              "timestamp": 1789140592916.0
+            }
+          },
+          "ask": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:68117708|id_market:3933|EUR|7|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}",
+            "valueTuple": {
+              "delayMinutes": 0.0,
+              "size": 0.0,
+              "value": 0.0,
+              "timestamp": 1789138634346.0
+            }
+          }
+        },
+        {
+          "wkn": {
+            "type": "text",
+            "value": "PM9ENF"
+          },
+          "isin": {
+            "type": "text",
+            "value": "DE000PM9ENF1"
+          },
+          "underlying": {
+            "type": "text",
+            "value": "NASDAQ 100"
+          },
+          "underlyings.price": {
+            "currency": "USD",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:526295|id_market:1870|USD|397|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00####",
+            "valueRender": "{{value}} {{currency}}",
+            "valueTuple": {
+              "size": 0.0,
+              "delayMinutes": 0.0,
+              "value": 29447.38,
+              "timestamp": 1789141637076.0
+            }
+          },
+          "issuer": {
+            "type": "text",
+            "value": "BNP Paribas"
+          },
+          "structure.direction": {
+            "type": "text",
+            "value": "short"
+          },
+          "financingLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 29456
+          },
+          "koLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 29456
+          },
+          "leverage": {
+            "currency": "x",
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 618.045137166751
+          },
+          "bid": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:68117709|id_market:3933|EUR|6|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}",
+            "valueTuple": {
+              "delayMinutes": 0.0,
+              "size": 60000.0,
+              "value": 0.001,
+              "timestamp": 1789140592916.0
+            }
+          },
+          "ask": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:68117709|id_market:3933|EUR|7|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}",
+            "valueTuple": {
+              "delayMinutes": 0.0,
+              "size": 0.0,
+              "value": 0.0,
+              "timestamp": 1789138707712.0
+            }
+          }
+        },
+        {
+          "wkn": {
+            "type": "text",
+            "value": "BY6UNL"
+          },
+          "isin": {
+            "type": "text",
+            "value": "DE000BY6UNL3"
+          },
+          "underlying": {
+            "type": "text",
+            "value": "NASDAQ 100"
+          },
+          "underlyings.price": {
+            "currency": "USD",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:526295|id_market:1870|USD|397|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00####",
+            "valueRender": "{{value}} {{currency}}",
+            "valueTuple": {
+              "size": 0.0,
+              "delayMinutes": 0.0,
+              "value": 29447.38,
+              "timestamp": 1789141637076.0
+            }
+          },
+          "issuer": {
+            "type": "text",
+            "value": "BNP Paribas"
+          },
+          "structure.direction": {
+            "type": "text",
+            "value": "short"
+          },
+          "financingLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 29458.4013
+          },
+          "koLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 29458.4013
+          },
+          "leverage": {
+            "currency": "x",
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 539.062121514339
+          },
+          "bid": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:68110897|id_market:3933|EUR|6|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}",
+            "valueTuple": {
+              "delayMinutes": 0.0,
+              "size": 60000.0,
+              "value": 0.001,
+              "timestamp": 1789140592916.0
+            }
+          },
+          "ask": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:68110897|id_market:3933|EUR|7|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}",
+            "valueTuple": {
+              "delayMinutes": 0.0,
+              "size": 0.0,
+              "value": 0.0,
+              "timestamp": 1789138719585.0
+            }
+          }
+        },
+        {
+          "wkn": {
+            "type": "text",
+            "value": "PM9ENG"
+          },
+          "isin": {
+            "type": "text",
+            "value": "DE000PM9ENG9"
+          },
+          "underlying": {
+            "type": "text",
+            "value": "NASDAQ 100"
+          },
+          "underlyings.price": {
+            "currency": "USD",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:526295|id_market:1870|USD|397|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00####",
+            "valueRender": "{{value}} {{currency}}",
+            "valueTuple": {
+              "size": 0.0,
+              "delayMinutes": 0.0,
+              "value": 29447.38,
+              "timestamp": 1789141637076.0
+            }
+          },
+          "issuer": {
+            "type": "text",
+            "value": "BNP Paribas"
+          },
+          "structure.direction": {
+            "type": "text",
+            "value": "short"
+          },
+          "financingLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 29458
+          },
+          "koLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 29458
+          },
+          "leverage": {
+            "currency": "x",
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 539.054764464404
+          },
+          "bid": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:68117710|id_market:3933|EUR|6|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}",
+            "valueTuple": {
+              "delayMinutes": 0.0,
+              "size": 60000.0,
+              "value": 0.001,
+              "timestamp": 1789140592917.0
+            }
+          },
+          "ask": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:68117710|id_market:3933|EUR|7|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}",
+            "valueTuple": {
+              "delayMinutes": 0.0,
+              "size": 0.0,
+              "value": 0.0,
+              "timestamp": 1789138689957.0
+            }
+          }
+        }
+      ],
+      "groupedBy": null
+    },
+    "filters": {
+      "firstLevel": {
+        "underlying": {
+          "label": "underlying",
+          "type": "singleUnderlyingDropdown",
+          "order": 1,
+          "list": {
+            "2444768": {
+              "label": "1 & 1 Drillisch AG",
+              "value": 2444768,
+              "selected": false,
+              "order": 0,
+              "group": false
+            },
+            "705468": {
+              "label": "10 Year US Treasury Notes",
+              "value": 705468,
+              "selected": false,
+              "order": 1,
+              "group": false
+            },
+            "30941561": {
+              "label": "2-Year U.S. Treasury Notes Future",
+              "value": 30941561,
+              "selected": false,
+              "order": 2,
+              "group": false
+            },
+            "5441297": {
+              "label": "2G Energy AG",
+              "value": 5441297,
+              "selected": false,
+              "order": 3,
+              "group": false
+            },
+            "3178226": {
+              "label": "3 Year SEK Worst of Booster Notes linked Bis Nordea Bank Abp and Svenska Handelsbanken AB",
+              "value": 3178226,
+              "selected": false,
+              "order": 4,
+              "group": false
+            }
+          },
+          "showOptionAll": false,
+          "showActionButtons": true,
+          "hidden": false
+        },
+        "productType": {
+          "label": "productType",
+          "type": "dropdown",
+          "order": 2,
+          "list": {
+            "Turbos endlos": {
+              "label": "Turbos endlos",
+              "value": "Turbos endlos",
+              "selected": true,
+              "order": 0,
+              "count": 22333,
+              "group": false
+            },
+            "Optionsscheine Classic": {
+              "label": "Optionsscheine Classic",
+              "value": "Optionsscheine Classic",
+              "selected": false,
+              "order": 1,
+              "count": 11956,
+              "group": false
+            },
+            "Mini-Futures": {
+              "label": "Mini-Futures",
+              "value": "Mini-Futures",
+              "selected": false,
+              "order": 2,
+              "count": 4745,
+              "group": false
+            },
+            "Turbo Optionsscheine": {
+              "label": "Turbo Optionsscheine",
+              "value": "Turbo Optionsscheine",
+              "selected": false,
+              "order": 3,
+              "count": 2586,
+              "group": false
+            },
+            "Discount Optionsscheine": {
+              "label": "Discount Optionsscheine",
+              "value": "Discount Optionsscheine",
+              "selected": false,
+              "order": 4,
+              "count": 2477,
+              "group": false
+            },
+            "Inliner": {
+              "label": "Inliner",
+              "value": "Inliner",
+              "selected": false,
+              "order": 5,
+              "count": 1447,
+              "group": false
+            },
+            "Faktor-Optionsscheine": {
+              "label": "Faktor-Optionsscheine",
+              "value": "Faktor-Optionsscheine",
+              "selected": false,
+              "order": 6,
+              "count": 1221,
+              "group": false
+            }
+          },
+          "showOptionAll": false,
+          "showActionButtons": true,
+          "hidden": false
+        }
+      },
+      "secondLevel": {
+        "leverage": {
+          "label": "leverage",
+          "type": "range",
+          "order": 7,
+          "min": 1.032921948198119,
+          "max": 3022.5358133877635,
+          "showOptionAll": false,
+          "showActionButtons": true,
+          "hidden": false,
+          "suggestedRanges": []
+        },
+        "structure.direction": {
+          "label": "structure.direction",
+          "type": "multiDropdown",
+          "order": 3,
+          "list": {
+            "long": {
+              "label": "long",
+              "value": "long",
+              "selected": false,
+              "order": 0,
+              "count": 15815,
+              "group": false
+            },
+            "short": {
+              "label": "short",
+              "value": "short",
+              "selected": false,
+              "order": 1,
+              "count": 6518,
+              "group": false
+            }
+          },
+          "showOptionAll": true,
+          "showActionButtons": true,
+          "hidden": false
+        },
+        "countryFlag": {
+          "label": "countryFlag",
+          "type": "multiDropdown",
+          "order": 3,
+          "list": {
+            "null": {
+              "selected": false,
+              "order": 0,
+              "count": 3860,
+              "group": false
+            },
+            "AT": {
+              "label": "AT",
+              "value": "AT",
+              "selected": false,
+              "order": 1,
+              "count": 18777,
+              "group": false
+            },
+            "DE": {
+              "label": "DE",
+              "value": "DE",
+              "selected": false,
+              "order": 2,
+              "count": 18799,
+              "group": false
+            },
+            "ES": {
+              "label": "ES",
+              "value": "ES",
+              "selected": false,
+              "order": 3,
+              "count": 10,
+              "group": false
+            },
+            "FR": {
+              "label": "FR",
+              "value": "FR",
+              "selected": false,
+              "order": 4,
+              "count": 336,
+              "group": false
+            },
+            "IT": {
+              "label": "IT",
+              "value": "IT",
+              "selected": false,
+              "order": 5,
+              "count": 336,
+              "group": false
+            },
+            "LU": {
+              "label": "LU",
+              "value": "LU",
+              "selected": false,
+              "order": 6,
+              "count": 2291,
+              "group": false
+            },
+            "NL": {
+              "label": "NL",
+              "value": "NL",
+              "selected": false,
+              "order": 7,
+              "count": 189,
+              "group": false
+            }
+          },
+          "showOptionAll": false,
+          "showActionButtons": true,
+          "hidden": false
+        },
+        "isQuanto": {
+          "label": "isQuanto",
+          "type": "simpleCheckbox",
+          "order": 6,
+          "list": {
+            "false": {
+              "label": "false",
+              "value": false,
+              "selected": false,
+              "order": 0,
+              "count": 22333,
+              "group": false
+            }
+          },
+          "showOptionAll": false,
+          "showActionButtons": true,
+          "hidden": false
+        },
+        "isIntradayTrade": {
+          "label": "isIntradayTrade",
+          "type": "simpleCheckbox",
+          "order": 20,
+          "list": {
+            "false": {
+              "label": "false",
+              "value": "false",
+              "selected": false,
+              "order": 0,
+              "count": 15341,
+              "group": false
+            },
+            "true": {
+              "label": "true",
+              "value": "true",
+              "selected": false,
+              "order": 1,
+              "count": 6992,
+              "group": false
+            }
+          },
+          "showOptionAll": false,
+          "showActionButtons": true,
+          "hidden": false
+        },
+        "distance2koLevelRefCurPercent": {
+          "label": "distance2koLevelRefCurPercent",
+          "type": "percentRange",
+          "order": 9,
+          "min": 8.5874503e-06,
+          "max": 1.0,
+          "showOptionAll": false,
+          "showActionButtons": true,
+          "hidden": false,
+          "suggestedRanges": []
+        },
+        "issuer": {
+          "label": "issuer",
+          "type": "multiDropdown",
+          "order": 2,
+          "list": {
+            "BNP Paribas": {
+              "label": "BNP Paribas",
+              "value": "BNP Paribas",
+              "selected": false,
+              "order": 0,
+              "count": 16761,
+              "group": false
+            },
+            "Goldman Sachs Bank Europe SE": {
+              "label": "Goldman Sachs Bank Europe SE",
+              "value": "Goldman Sachs Bank Europe SE",
+              "selected": false,
+              "order": 5,
+              "count": 2173,
+              "group": false
+            },
+            "HSBC Trinkaus & Burkhardt GmbH": {
+              "label": "HSBC Trinkaus & Burkhardt GmbH",
+              "value": "HSBC Trinkaus & Burkhardt GmbH",
+              "selected": false,
+              "order": 6,
+              "count": 1107,
+              "group": false
+            },
+            "UniCredit Bank GmbH": {
+              "label": "UniCredit Bank GmbH",
+              "value": "UniCredit Bank GmbH",
+              "selected": false,
+              "order": 7,
+              "count": 2292,
+              "group": false
+            }
+          },
+          "showOptionAll": true,
+          "showActionButtons": true,
+          "hidden": false
+        },
+        "koLevelRefCurAbsolute": {
+          "label": "koLevelRefCurAbsolute",
+          "type": "range",
+          "order": 8,
+          "min": 0,
+          "max": 50057.3388,
+          "showOptionAll": false,
+          "showActionButtons": true,
+          "hidden": false,
+          "suggestedRanges": []
+        }
+      }
+    },
+    "headers": [
+      "identifiers",
+      "underlyingData",
+      "issuer",
+      "structure.direction",
+      "financingLevelRefCurAbsolute",
+      "koLevelRefCurAbsolute",
+      "leverage",
+      "bidAsk"
+    ],
+    "fields": [
+      [
+        [
+          {
+            "key": "isin"
+          }
+        ],
+        [
+          {
+            "key": "wkn"
+          }
+        ]
+      ],
+      [
+        [
+          {
+            "key": "underlying"
+          }
+        ],
+        [
+          {
+            "key": "underlyings.price"
+          }
+        ]
+      ],
+      {
+        "key": "issuer"
+      },
+      {
+        "key": "structure.direction"
+      },
+      {
+        "key": "financingLevelRefCurAbsolute"
+      },
+      {
+        "key": "koLevelRefCurAbsolute"
+      },
+      {
+        "key": "leverage"
+      },
+      [
+        [
+          {
+            "key": "bid"
+          },
+          {
+            "key": "ask"
+          }
+        ]
+      ]
+    ],
+    "sort": {
+      "field": "leverage",
+      "direction": 0
+    },
+    "pagination": {
+      "page": 1,
+      "rowsPerPage": 20,
+      "filteredCount": 22333,
+      "totalCount": 837596,
+      "options": [
+        10,
+        20,
+        50,
+        100
+      ],
+      "filteredCountByGroup": [
+        {
+          "group": "turbosOpenEnd",
+          "filteredCount": 22333
+        }
+      ]
+    }
+  },
+  "status": "success"
+}

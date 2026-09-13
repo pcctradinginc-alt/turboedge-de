@@ -29,6 +29,7 @@ from typer.testing import CliRunner
 import turboedge.cli as cli_module
 from turboedge.adapters.base import AdapterError, AdapterMetadata, HealthCheckResult
 from turboedge.cli import app
+from turboedge.config import CONFIG_FILES
 from turboedge.notifications.gmail import EmailMessageSpec, SendResult
 from turboedge.storage.schemas import (
     Direction,
@@ -236,15 +237,7 @@ def tmp_config_dir(tmp_path: Path) -> Path:
 
     # Copy real config files from the project
     project_root = Path(__file__).parent.parent
-    for config_file in [
-        "default.yaml",
-        "sources.yaml",
-        "risk.yaml",
-        "universe.yaml",
-        "models.yaml",
-        "gmail.yaml",
-        "governance.yaml",
-    ]:
+    for config_file in CONFIG_FILES:
         src = project_root / "configs" / config_file
         if src.exists():
             dst = config_dir / config_file

@@ -29,9 +29,10 @@ network access.
 from __future__ import annotations
 
 import hashlib
+import statistics
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
-from datetime import UTC, datetime
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Protocol
 from zoneinfo import ZoneInfo
@@ -42,7 +43,7 @@ import structlog
 
 from turboedge.adapters.base import HealthCheckResult
 from turboedge.adapters.registry import ProductSourceAdapter
-from turboedge.config import TurboEdgeConfig, config_hash
+from turboedge.config import TurboEdgeConfig, build_ev_config, config_hash
 from turboedge.features.product import (
     distance_to_barrier,
     ewma_volatility,
@@ -51,6 +52,10 @@ from turboedge.features.product import (
     quote_age_seconds,
 )
 from turboedge.features.product import spread_pct as feature_spread_pct
+from turboedge.learning.ledger import ForwardLedger, select_shadow_sample
+from turboedge.learning.registry import ModelRegistry
+from turboedge.models.ensemble import combine_forecasts
+from turboedge.models.forecast import ForecastModel, HorizonForecast, build_default_models
 from turboedge.models.protected_baseline import (
     TsmomConfig,
     TsmomResult,
@@ -65,7 +70,13 @@ from turboedge.notifications.gmail import (
     NotificationError,
     SendResult,
 )
-from turboedge.notifications.templates import ScanReportContext, ScanReportRow, render_scan_report
+from turboedge.notifications.templates import (
+    ScanReportContext,
+    ScanReportRow,
+    TradeProposalContext,
+    render_scan_report,
+    render_trade_proposal,
+)
 from turboedge.pipeline.universe import UniverseResult, run_universe
 from turboedge.pricing.cross_issuer import (
     CrossIssuerInput,
@@ -73,6 +84,7 @@ from turboedge.pricing.cross_issuer import (
     consensus_spot,
     cross_issuer_scores,
 )
+from turboedge.pricing.fair_value import dividend_yield_for_underlying, theoretical_fair_value
 from turboedge.pricing.financing import (
     financing_cost_over_horizon,
     financing_spread_history,
@@ -87,17 +99,28 @@ from turboedge.pricing.gap_premium import (
 from turboedge.pricing.integrity import IntegrityReport, check_product
 from turboedge.pricing.intrinsic import leverage as compute_leverage
 from turboedge.pricing.issuer_margin import decompose_ask
-from turboedge.provenance import data_snapshot_hash, git_commit
+from turboedge.provenance import data_snapshot_hash, git_commit, sha256_json
+from turboedge.ranking.cluster import ClusterConfig, OpenClusterPosition
+from turboedge.ranking.cluster import cluster_risk as compute_cluster_risk
+from turboedge.ranking.cluster import cluster_risk_pass as compute_cluster_risk_pass
+from turboedge.ranking.ev import ProductHorizonEvaluation, evaluate_product_horizons
 from turboedge.ranking.gates import GateInput, GateThresholds, evaluate_gates
 from turboedge.ranking.liquidity import liquidity_factor, quote_size_coverage, spread_quality
+from turboedge.ranking.shrinkage import leverage_bucket_for
+from turboedge.simulation.payoff import ProductTerms
 from turboedge.storage.duckdb import Store
 from turboedge.storage.schemas import (
     CandidateEvaluation,
     Category,
     CostDecomposition,
     Direction,
+    ForecastRecord,
     HealthStatus,
+    LedgerEntry,
+    LedgerEntryStatus,
+    ModelStatus,
     ProductSnapshot,
+    ProductType,
     SignalSnapshot,
     SourceHealthRecord,
     UnderlyingBar,
@@ -110,6 +133,29 @@ _VALID_HORIZONS: tuple[int, ...] = (3, 5, 7, 10, 14)
 _MIN_BARS_FOR_VOLATILITY = 2
 _BERLIN_TZ = ZoneInfo("Europe/Berlin")
 _FRIDAY_WEEKDAY = 4
+_CALENDAR_DAYS_PER_TRADING_DAY = 7.0 / 5.0
+# Routine, budget-free trial id used for every ordinary scan's ledger entries
+# (Master Spec §27.1's per-trial "TR-..." ids are for RESEARCH CHANGES --
+# see learning/trials.py -- minting one per scan candidate would exhaust the
+# quarterly adaptation budget instantly and mean something it does not: this
+# scan did not change any feature/model/threshold, it just applied the
+# already-approved current configuration).
+_ROUTINE_TRIAL_ID = "TR-ROUTINE-SCAN"
+# W4's measurement (Contract v3 coordinator note): no forecast model beats
+# the null model out of sample yet (Brier worse in 20/20 index-horizon
+# combinations tested). Every ACTIONABLE mail must carry this disclosure
+# alongside the P(KO)-is-conservative one, for as long as that remains true.
+_NO_MODEL_BEATS_NULL_DISCLOSURE = (
+    "Bislang hat KEINE getestete Signalfamilie einen gemessenen "
+    "out-of-sample-Vorteil (W4: die Kern-Prognosemodelle schlagen das "
+    "Nullmodell in 20/20 getesteten Index/Horizont-Kombinationen nicht, "
+    "Brier-Score jeweils schlechter; W9: 6 weitere Signalfamilien, 80 "
+    "Walk-Forward-Zellen, 0 signifikant nach Benjamini-Hochberg-Korrektur, "
+    "keine übersteht realistische Turbo-Kosten). Dieser Vorschlag beruht "
+    "auf dem aktuellen Ensemble trotzdem, weil alle Gates (LCB(EV)>0, "
+    "P(KO) bekannt, Cluster-Risiko im Limit) bestanden wurden -- er ist "
+    "nicht durch einen erwiesenen Prognosevorteil gedeckt."
+)
 
 
 class PriceSource(Protocol):
@@ -161,6 +207,12 @@ class ScanResult:
     warnings: list[str]
     health: list[SourceHealthRecord]
     notification: SendResult | None
+    # -- Contract v3 integration wave: EV pipeline outcome (empty/zero when
+    # `run_scan(..., rng=None)`, i.e. the EV step never ran -- see run_scan).
+    ledger_entries_written: int = 0
+    forecasts_written: int = 0
+    actionable_notifications: list[SendResult] = field(default_factory=list)
+    new_cluster_positions: list[OpenClusterPosition] = field(default_factory=list)
 
 
 # --------------------------------------------------------------------------
@@ -447,6 +499,8 @@ class _PricedProduct:
     product: ProductSnapshot
     bid: float
     ask: float
+    spot: float
+    fx: float
     integrity: IntegrityReport
     leverage_value: float
     leverage_bucket_value: str
@@ -456,6 +510,7 @@ class _PricedProduct:
     distance_sigma: float | None
     realized_spread: float
     used_default_spread: bool
+    financing_spread_source: str
     costs: CostDecomposition
     financing_cost_pct: dict[str, float]
     gap_premium_over_horizon_pct: float
@@ -524,6 +579,7 @@ def _evaluate_single_product(
         risk.max_quote_age_s,
         None,
         risk.integrity_tolerances.margin_warn_pct,
+        ref_rate=r,
     )
 
     quote_age_s = (
@@ -626,9 +682,23 @@ def _evaluate_single_product(
         )
         realized_spread = realized_financing_spread(observations)
     used_default_spread = realized_spread is None
-    spread_for_pricing = (
-        realized_spread if realized_spread is not None else risk.default_financing_spread
-    )
+
+    # Financing spread priority (Contract v3, Punkt 3 / Build Contract
+    # "Formeln"): (a) realized spread from >= 2 days of own financing-level
+    # history [above]; (b) issuer-reported annualized funding rate (Citi
+    # `items[].fundingRate`, ProductSnapshot.financing_rate) minus the
+    # reference rate; (c) configs/risk.yaml's default_financing_spread. The
+    # source actually used is always recorded (reasons list, below, and
+    # CandidateEvaluation via `p.financing_spread_source`) -- never silent.
+    if realized_spread is not None:
+        spread_for_pricing = realized_spread
+        financing_spread_source = "realized_history"
+    elif product.financing_rate is not None:
+        spread_for_pricing = product.financing_rate - r
+        financing_spread_source = "issuer_funding_rate"
+    else:
+        spread_for_pricing = risk.default_financing_spread
+        financing_spread_source = "financing_spread_default"
 
     fgp = fair_gap_premium(
         spot,
@@ -651,10 +721,23 @@ def _evaluate_single_product(
         spread_for_pricing,
         r,
         fx,
+        product_type=product.product_type,
+        knockout_barrier=product.knockout_barrier,
+        as_of=evaluation_time.date(),
+        maturity=product.maturity,
+        dividend_yield=dividend_yield_for_underlying(underlying_id),
     )
 
+    is_classic = product.product_type == ProductType.TURBO_CLASSIC
     financing_cost_pct: dict[str, float] = {}
     for h in _VALID_HORIZONS:
+        # A turbo_classic's financing cost is already inside its
+        # present-valued fair value (theoretical_fair_value), not a
+        # separate daily/horizon accrual -- same rationale as
+        # decompose_ask's financing_drag=0 for classics (Build Contract W1).
+        if is_classic:
+            financing_cost_pct[f"{h}d"] = 0.0
+            continue
         cost = financing_cost_over_horizon(
             financing_level, spread_for_pricing, r, float(h), product.ratio, product.direction, fx
         )
@@ -678,6 +761,8 @@ def _evaluate_single_product(
         product=product,
         bid=bid,
         ask=ask,
+        spot=spot,
+        fx=fx,
         integrity=integrity,
         leverage_value=lev,
         leverage_bucket_value=lev_bucket,
@@ -687,6 +772,7 @@ def _evaluate_single_product(
         distance_sigma=distance_sigma,
         realized_spread=spread_for_pricing,
         used_default_spread=used_default_spread,
+        financing_spread_source=financing_spread_source,
         costs=costs,
         financing_cost_pct=financing_cost_pct,
         gap_premium_over_horizon_pct=gap_premium_horizon_pct,
@@ -733,7 +819,7 @@ def _process_products(
     next_night_is_weekend: bool,
     data_health_pass: bool,
     warnings: list[str],
-) -> list[CandidateEvaluation]:
+) -> tuple[list[CandidateEvaluation], dict[str, _PricedProduct]]:
     risk = cfg.risk
     underlying_meta = get_underlying_meta(underlying_id)
     needs_fx = underlying_meta.currency != "EUR"
@@ -850,8 +936,7 @@ def _process_products(
         )
         category, gate_reasons = evaluate_gates(gate_input, thresholds)
         reasons = list(gate_reasons)
-        if p.used_default_spread:
-            reasons.append("financing_spread_default")
+        reasons.append(f"financing_spread_source:{p.financing_spread_source}")
         if (
             signal is not None
             and signal.direction_hint is not None
@@ -901,7 +986,7 @@ def _process_products(
             cost_rank_score=cost_rank_score,
         )
 
-    return _sort_candidates(list(finalized.values()), signal)
+    return _sort_candidates(list(finalized.values()), signal), priced
 
 
 # --------------------------------------------------------------------------
@@ -992,6 +1077,643 @@ def _maybe_send_email(
 
 
 # --------------------------------------------------------------------------
+# EV pipeline (Contract v3 Abschnitt B): forecast -> paths -> EV -> gates ->
+# ledger + shadow sample -> ACTIONABLE mail. Only runs when the caller passes
+# an ``rng`` to ``run_scan`` (see that function's docstring) -- with
+# ``rng=None`` (the default, and every pre-existing ``run_scan`` caller/test)
+# this step is skipped entirely and behavior is byte-for-byte unchanged from
+# the WATCH-only milestone.
+# --------------------------------------------------------------------------
+
+
+def default_forecast_models() -> list[ForecastModel]:
+    """``models.forecast.build_default_models()`` plus, when present, W9's
+    challenger models -- imported lazily so a missing/not-yet-built
+    ``models/challengers.py`` degrades to "feature disabled" (logged) rather
+    than blocking the scan (Contract v3: "wenn eine Datei noch fehlt,
+    importiere sie lazy ... und behandle ImportError sauber")."""
+    models: list[ForecastModel] = list(build_default_models())
+    try:
+        from turboedge.models import challengers as challengers_mod
+    except ImportError:
+        return models
+    builder = getattr(challengers_mod, "build_challenger_models", None)
+    if builder is None:
+        return models
+    try:
+        extra = list(builder())
+    except Exception as exc:  # pragma: no cover - defensive, W9 module not owned here
+        logger.warning("challenger_models_build_failed", error=str(exc))
+        return models
+    logger.info("challenger_models_loaded", count=len(extra))
+    models.extend(extra)
+    return models
+
+
+def _premium_uncertainty_term(premium_over_fair: float, mean_net_return: float) -> float:
+    """Additional, analytic uncertainty term from halving the exit issuer
+    markup (Contract v3, Punkt 1 "Aufschlag-Handhabung").
+
+    A full second Monte Carlo simulation per candidate was judged not worth
+    its cost here (Contract v3 Abschnitt B performance note already caps
+    simulation volume elsewhere) -- instead this closed-form first-order
+    approximation is used, derived from ``simulation/payoff.py``'s own exit
+    formula ``exit_value = fair_value * (1 + premium_over_fair)``: halving
+    the premium scales the alive-path exit value by
+    ``(1 + premium/2) / (1 + premium)``, so the implied change in mean net
+    return is ``(premium/2) * (mean_net_return + 1) / (1 + premium)``.
+    Always returned as a non-negative magnitude; the caller *subtracts* it
+    from the LCB (never adds), so this can only make gating more
+    conservative, matching the direction every other documented
+    simplification in this codebase already leans (fewer, not riskier,
+    proposals on an approximation's account).
+    """
+    denom = 1.0 + premium_over_fair
+    if abs(denom) < 1e-9:
+        return abs(premium_over_fair) / 2.0
+    return abs((premium_over_fair / 2.0) * (mean_net_return + 1.0) / denom)
+
+
+@dataclass(frozen=True)
+class EvPipelineResult:
+    """Outcome of :func:`_run_ev_pipeline`."""
+
+    candidates: list[CandidateEvaluation]
+    ledger_entries: list[LedgerEntry]
+    forecast_records: list[ForecastRecord]
+    new_cluster_positions: list[OpenClusterPosition]
+    newly_actionable: list[CandidateEvaluation]
+    evaluations_by_isin: dict[str, ProductHorizonEvaluation] = field(default_factory=dict)
+
+
+def _select_ev_pool(
+    candidates: Sequence[CandidateEvaluation],
+    priced: dict[str, _PricedProduct],
+    *,
+    rng: np.random.Generator,
+    max_candidates_per_bucket: int,
+    min_liquidity_factor: float,
+    shadow_sample_per_stratum: int,
+) -> tuple[set[str], set[str]]:
+    """Return ``(prefiltered_isins, shadow_isins)`` (Contract v3 Abschnitt B
+    "Performance"): ``prefiltered_isins`` are the cheapest
+    ``max_candidates_per_bucket`` WATCH candidates per (direction,
+    leverage_bucket) group among those with a usable ask and liquidity above
+    ``min_liquidity_factor`` -- the hard, simulation-free gates are already
+    enforced upstream (a WATCH category here means every REJECT/DATA_QUALITY
+    gate already passed). ``shadow_isins`` are drawn from the FULL priced
+    candidate pool (every category, Spec §25 selection-bias protection),
+    minus whatever is already in ``prefiltered_isins``.
+    """
+    priced_candidates = [c for c in candidates if c.isin in priced]
+
+    watch_eligible = [
+        c
+        for c in priced_candidates
+        if c.category == Category.WATCH
+        and priced[c.isin].liquidity >= min_liquidity_factor
+        and priced[c.isin].leverage_value > 0.0
+    ]
+    groups: dict[tuple[str, str], list[CandidateEvaluation]] = {}
+    for c in watch_eligible:
+        bucket = leverage_bucket_for(priced[c.isin].leverage_value)
+        groups.setdefault((c.direction.value, bucket), []).append(c)
+
+    prefiltered: set[str] = set()
+    for members in groups.values():
+        ranked = sorted(members, key=lambda c: c.cost_rank_score or float("inf"))
+        prefiltered.update(m.isin for m in ranked[:max_candidates_per_bucket])
+
+    def _strata(c: CandidateEvaluation) -> tuple[str, str, str]:
+        bucket = (
+            leverage_bucket_for(priced[c.isin].leverage_value) if c.isin in priced else "unknown"
+        )
+        return (c.category.value, c.direction.value, bucket)
+
+    shadow_sample = select_shadow_sample(priced_candidates, rng, shadow_sample_per_stratum, _strata)
+    shadow_isins = {c.isin for c in shadow_sample} - prefiltered
+    return prefiltered, shadow_isins
+
+
+def _fit_forecast_ensemble(
+    *,
+    store: Store,
+    models: Sequence[ForecastModel],
+    bars: Sequence[UnderlyingBar],
+    prediction_time: datetime,
+    horizons: Sequence[int],
+    default_new_model_weight: float,
+    warnings: list[str],
+) -> tuple[dict[int, HorizonForecast], list[ForecastRecord], dict[str, float]]:
+    """Fit every model in ``models`` (skipping ones with insufficient history,
+    logged, per Contract v3), register/update them in the model registry,
+    and combine their per-horizon forecasts into one ensemble per horizon.
+
+    Returns ``(ensemble_by_horizon, forecast_records, weights_used)``; all
+    three are empty when not a single model could be fit (e.g. too little
+    underlying history) -- callers must treat that as "no forecast this
+    scan" (Contract v3 Verbindliche Entscheidung 5: "nur Underlyings
+    scannen, für die ein Forecast UND Produkte vorliegen").
+    """
+    registry = ModelRegistry(store)
+    fitted: list[tuple[ForecastModel, list[HorizonForecast]]] = []
+    for model in models:
+        try:
+            model.fit(bars, prediction_time)
+            forecasts = model.predict(bars, prediction_time, horizons=list(horizons))
+        except Exception as exc:
+            logger.warning(
+                "forecast_model_fit_failed",
+                model_id=getattr(model, "model_id", "?"),
+                error=str(exc),
+            )
+            continue
+        fitted.append((model, forecasts))
+
+        existing = registry.get(model.model_id)
+        if existing is None:
+            status = (
+                ModelStatus.PROTECTED if model.signal_family == "tsmom" else ModelStatus.CHALLENGER
+            )
+            registry.register(
+                model.model_id,
+                model.model_hash(),
+                model.signal_family,
+                params={},
+                trial_id=None,
+                status=status,
+                initial_weight=default_new_model_weight,
+            )
+        else:
+            registry.register(
+                model.model_id,
+                model.model_hash(),
+                model.signal_family,
+                params={},
+                trial_id=None,
+                status=existing.status,
+                initial_weight=existing.weight,
+            )
+
+    if not fitted:
+        _add_warning(warnings, "forecast_unavailable_insufficient_history")
+        return {}, [], {}
+
+    registry_weights = registry.weights()
+    weight_map = {
+        model.model_id: max(registry_weights.get(model.model_id, default_new_model_weight), 1e-9)
+        for model, _ in fitted
+    }
+
+    ensemble_by_horizon: dict[int, HorizonForecast] = {}
+    forecast_records: list[ForecastRecord] = []
+    frozen_at = datetime.now(UTC)
+    for h in horizons:
+        per_model = [f for _model, flist in fitted for f in flist if f.horizon_days == h]
+        if not per_model:
+            continue
+        ensemble = combine_forecasts(per_model, weight_map)
+        ensemble_by_horizon[h] = ensemble
+        for f in per_model:
+            forecast_records.append(
+                ForecastRecord(
+                    run_id="",  # filled in by the caller (needs the enclosing run_id)
+                    underlying_id=f.underlying_id,
+                    horizon_days=h,
+                    prediction_time=f.prediction_time,
+                    frozen_at=frozen_at,
+                    p_up=f.p_up,
+                    mean=f.mean,
+                    sigma=f.sigma,
+                    quantiles=f.quantiles,
+                    expected_shortfall_05=f.expected_shortfall_05,
+                    uncertainty=f.uncertainty,
+                    model_id=f.model_id,
+                    model_hash=f.model_hash,
+                    signal_family=f.signal_family,
+                    n_train=f.n_train,
+                    n_effective=f.n_effective,
+                    component_weights={},
+                    config_hash="",
+                    git_commit=None,
+                )
+            )
+        forecast_records.append(
+            ForecastRecord(
+                run_id="",
+                underlying_id=ensemble.underlying_id,
+                horizon_days=h,
+                prediction_time=ensemble.prediction_time,
+                frozen_at=frozen_at,
+                p_up=ensemble.p_up,
+                mean=ensemble.mean,
+                sigma=ensemble.sigma,
+                quantiles=ensemble.quantiles,
+                expected_shortfall_05=ensemble.expected_shortfall_05,
+                uncertainty=ensemble.uncertainty,
+                model_id=ensemble.model_id,
+                model_hash=ensemble.model_hash,
+                signal_family=ensemble.signal_family,
+                n_train=ensemble.n_train,
+                n_effective=ensemble.n_effective,
+                component_weights=dict(weight_map),
+                config_hash="",
+                git_commit=None,
+            )
+        )
+    return ensemble_by_horizon, forecast_records, weight_map
+
+
+def _run_ev_pipeline(
+    *,
+    cfg: TurboEdgeConfig,
+    store: Store,
+    run_id: str,
+    underlying_id: str,
+    signal: SignalSnapshot | None,
+    usable_bars: Sequence[UnderlyingBar],
+    candidates: Sequence[CandidateEvaluation],
+    priced: dict[str, _PricedProduct],
+    prediction_time: datetime,
+    evaluation_time: datetime,
+    r: float,
+    config_hash_value: str,
+    git_commit_value: str | None,
+    rng: np.random.Generator,
+    forecast_models: Sequence[ForecastModel],
+    cluster_id: str,
+    cluster_open_positions: Sequence[OpenClusterPosition],
+    warnings: list[str],
+) -> EvPipelineResult:
+    """Forecast -> paths -> EV -> gates -> ledger (+ shadow sample), the core
+    of Contract v3 Abschnitt B. See the module docstring's step list; this
+    function implements steps 1-4 for one underlying (step 5, the mail, is
+    sent by the caller once it knows which candidates newly became
+    ACTIONABLE this run -- see ``newly_actionable`` on the result)."""
+    forecast_cfg = cfg.forecast
+    ranking_cfg = cfg.ranking
+    empty_result = EvPipelineResult(
+        candidates=list(candidates),
+        ledger_entries=[],
+        forecast_records=[],
+        new_cluster_positions=list(cluster_open_positions),
+        newly_actionable=[],
+    )
+
+    prefiltered_isins, shadow_isins = _select_ev_pool(
+        candidates,
+        priced,
+        rng=rng,
+        max_candidates_per_bucket=ranking_cfg.scan_filter.max_candidates_per_bucket,
+        min_liquidity_factor=ranking_cfg.scan_filter.min_liquidity_factor,
+        shadow_sample_per_stratum=cfg.learning.shadow_sample_per_stratum,
+    )
+    ev_pool_isins = prefiltered_isins | shadow_isins
+    if not ev_pool_isins:
+        _add_warning(warnings, "ev_pool_empty")
+        return empty_result
+
+    ensemble_by_horizon, forecast_records, _weights = _fit_forecast_ensemble(
+        store=store,
+        models=forecast_models,
+        bars=usable_bars,
+        prediction_time=prediction_time,
+        horizons=forecast_cfg.horizons,
+        default_new_model_weight=forecast_cfg.default_new_model_weight,
+        warnings=warnings,
+    )
+    if not ensemble_by_horizon:
+        return empty_result
+    forecast_records = [
+        r_.model_copy(
+            update={
+                "run_id": run_id,
+                "config_hash": config_hash_value,
+                "git_commit": git_commit_value,
+            }
+        )
+        for r_ in forecast_records
+    ]
+
+    # -- build ProductTerms + premium_over_fair for every EV-pool candidate --
+    terms_by_isin: dict[str, ProductTerms] = {}
+    premium_by_isin: dict[str, float] = {}
+    for isin in ev_pool_isins:
+        p = priced.get(isin)
+        if p is None or p.product.knockout_barrier is None or p.product.financing_level is None:
+            continue
+        try:
+            fair_value = theoretical_fair_value(
+                direction=p.product.direction,
+                product_type=p.product.product_type,
+                spot=p.spot,
+                financing_level=p.product.financing_level,
+                knockout_barrier=p.product.knockout_barrier,
+                ratio=p.product.ratio,
+                fx=p.fx,
+                ref_rate=r,
+                financing_spread=p.realized_spread,
+                as_of=evaluation_time.date(),
+                maturity=p.product.maturity,
+                dividend_yield=dividend_yield_for_underlying(underlying_id),
+            )
+        except ValueError as exc:
+            logger.warning("premium_over_fair_unavailable", isin=isin, error=str(exc))
+            continue
+        mid = (p.bid + p.ask) / 2.0
+        premium_over_fair = (mid - fair_value) / mid if mid > 0 else 0.0
+        premium_by_isin[isin] = premium_over_fair
+        terms_by_isin[isin] = ProductTerms(
+            isin=isin,
+            direction=p.product.direction,
+            product_type=p.product.product_type,
+            financing_level=p.product.financing_level,
+            knockout_barrier=p.product.knockout_barrier,
+            ratio=p.product.ratio,
+            fx=p.fx,
+            entry_ask=p.ask,
+            entry_bid=p.bid,
+            maturity=p.product.maturity,
+            financing_spread=p.realized_spread,
+            ref_rate=r,
+            exit_spread_pct=p.spread_pct_value,
+            premium_over_fair=premium_over_fair,
+        )
+
+    if not terms_by_isin:
+        _add_warning(warnings, "ev_pool_no_valid_product_terms")
+        return empty_result
+
+    spot0 = statistics.median(priced[isin].spot for isin in terms_by_isin)
+    horizons = sorted(ensemble_by_horizon)
+    cluster_cfg: ClusterConfig = ranking_cfg.cluster
+    baseline_cluster_risk = compute_cluster_risk(
+        cluster_open_positions,
+        OpenClusterPosition(
+            underlying_id=underlying_id,
+            cluster_id=cluster_id,
+            capital_fraction=0.0,
+            counts_as_active_position=False,
+        ),
+        cfg=cluster_cfg,
+    )
+
+    evaluations = evaluate_product_horizons(
+        terms_by_isin,
+        ensemble_by_horizon,
+        usable_bars,
+        underlying_id=underlying_id,
+        spot0=spot0,
+        start=prediction_time,
+        as_of=evaluation_time.date(),
+        cluster_id=cluster_id,
+        rng=rng,
+        horizons=horizons,
+        cfg=build_ev_config(cfg),
+        cluster_risk=baseline_cluster_risk,
+        liquidity_factor_by_isin={isin: priced[isin].liquidity for isin in terms_by_isin},
+        leverage_by_isin={isin: priced[isin].leverage_value for isin in terms_by_isin},
+        fair_value_fn=theoretical_fair_value,
+    )
+
+    best_by_isin: dict[str, ProductHorizonEvaluation] = {}
+    for ev in evaluations:
+        current = best_by_isin.get(ev.isin)
+        if current is None or ev.score > current.score:
+            best_by_isin[ev.isin] = ev
+
+    thresholds = GateThresholds.from_risk_config(cfg.risk)
+    updated_candidates: dict[str, CandidateEvaluation] = {c.isin: c for c in candidates}
+    ledger_entries: list[LedgerEntry] = []
+    newly_actionable: list[CandidateEvaluation] = []
+    running_cluster_positions = list(cluster_open_positions)
+
+    for isin in sorted(best_by_isin, key=lambda i: best_by_isin[i].score, reverse=True):
+        ev = best_by_isin[isin]
+        p = priced[isin]
+        original = updated_candidates[isin]
+        premium_term = _premium_uncertainty_term(premium_by_isin.get(isin, 0.0), ev.mean_net_return)
+        adjusted_lcb = ev.lcb_net_return - premium_term
+
+        candidate_position = OpenClusterPosition(
+            underlying_id=underlying_id,
+            cluster_id=cluster_id,
+            capital_fraction=ev.suggested_position_fraction,
+            counts_as_active_position=True,
+        )
+        cluster_pass = compute_cluster_risk_pass(
+            running_cluster_positions, candidate_position, cfg=cluster_cfg
+        )
+
+        gate_input = GateInput(
+            integrity=p.integrity,
+            bid_only=p.product.bid_only,
+            knocked_out=p.product.knocked_out,
+            quote_age_s=p.quote_age_s,
+            spread_pct=p.spread_pct_value,
+            leverage=p.leverage_value,
+            distance_to_barrier_sigma=p.distance_sigma,
+            data_health_pass=True,
+            lcb_ev=adjusted_lcb,
+            p_ko=ev.p_ko,
+            cluster_risk_pass=cluster_pass,
+        )
+        category, gate_reasons = evaluate_gates(gate_input, thresholds)
+        # Non-gate diagnostic annotations from the pre-EV pass (financing
+        # spread source, counter-baseline-signal) stay relevant; the pre-EV
+        # *gate* reasons (e.g. "lcb_ev_unavailable_phase_lt_4") are now
+        # stale/misleading now that real lcb_ev/p_ko/cluster_risk_pass exist
+        # and are dropped in favor of the fresh `gate_reasons` below.
+        carried_over = [
+            reason
+            for reason in original.reasons
+            if reason.startswith("financing_spread_source:") or reason == "counter_baseline_signal"
+        ]
+        reasons = [
+            *carried_over,
+            *gate_reasons,
+            f"ev_horizon={ev.horizon_days}d",
+            f"premium_over_fair={premium_by_isin.get(isin, 0.0):.4f}",
+            f"premium_uncertainty_term={premium_term:.5f}",
+            "p_ko_conservative_see_docs",
+        ]
+        updated = original.model_copy(
+            update={"category": category, "reasons": reasons, "lcb_ev": adjusted_lcb}
+        )
+        updated_candidates[isin] = updated
+
+        if category == Category.ACTIONABLE:
+            running_cluster_positions.append(candidate_position)
+            newly_actionable.append(updated)
+
+        is_shadow = isin in shadow_isins
+        lev_bucket = original.leverage_bucket or "unknown"
+        stratum = f"{original.category.value}|{original.direction.value}|{lev_bucket}"
+        exit_due = (
+            evaluation_time
+            + timedelta(days=round(ev.horizon_days * _CALENDAR_DAYS_PER_TRADING_DAY))
+        ).date()
+        entry_quote_ts = p.product.quote_timestamp or evaluation_time
+        feature_snapshot = {
+            "leverage": p.leverage_value,
+            "spread_pct": p.spread_pct_value,
+            "signal_score": signal.score if signal is not None else 0.0,
+            "premium_over_fair": premium_by_isin.get(isin, 0.0),
+            "cost_rank_score": original.cost_rank_score or 0.0,
+        }
+        ledger_entries.append(
+            LedgerEntry(
+                run_id=run_id,
+                candidate_id=original.candidate_id,
+                signal_id=signal.signal_id if signal is not None else f"{run_id}-{underlying_id}",
+                signal_version_hash=(
+                    signal.signal_version_hash if signal is not None else "unavailable"
+                ),
+                trial_id=_ROUTINE_TRIAL_ID,
+                prediction_time=prediction_time,
+                underlying=underlying_id,
+                direction=p.product.direction,
+                horizon_days=ev.horizon_days,
+                regime_bucket=None,
+                cluster_id=cluster_id,
+                feature_hash=sha256_json(feature_snapshot),
+                model_hash=ensemble_by_horizon[ev.horizon_days].model_hash,
+                config_hash=config_hash_value,
+                git_commit=git_commit_value,
+                selected_wkn=p.product.wkn,
+                selected_isin=isin,
+                issuer=p.product.issuer,
+                entry_bid=p.bid,
+                entry_ask=p.ask,
+                entry_spread=p.spread_pct_value,
+                entry_quote_timestamp=entry_quote_ts,
+                entry_underlying_timestamp=evaluation_time,
+                financing_level_entry=p.product.financing_level,
+                barrier_entry=p.product.knockout_barrier,
+                ratio=p.product.ratio,
+                fx=p.fx,
+                predicted_return=ev.mean_net_return,
+                p_profit=ev.p_profit,
+                p_ko=ev.p_ko,
+                expected_shortfall=ev.es95,
+                lcb_ev=adjusted_lcb,
+                uncertainty=ensemble_by_horizon[ev.horizon_days].uncertainty + premium_term,
+                shrinkage_intensity=ev.shrinkage_intensity,
+                category=category,
+                is_shadow=is_shadow,
+                shadow_stratum=stratum if is_shadow else None,
+                suggested_position_fraction=ev.suggested_position_fraction,
+                exit_due=exit_due,
+                alternatives=_pick_alternatives(isin, p, priced),
+                feature_snapshot=feature_snapshot,
+                status=LedgerEntryStatus.OPEN,
+            )
+        )
+
+    return EvPipelineResult(
+        candidates=[updated_candidates[c.isin] for c in candidates],
+        ledger_entries=ledger_entries,
+        forecast_records=forecast_records,
+        new_cluster_positions=running_cluster_positions,
+        newly_actionable=newly_actionable,
+        evaluations_by_isin=best_by_isin,
+    )
+
+
+def _pick_alternatives(
+    isin: str, p: _PricedProduct, priced: dict[str, _PricedProduct], limit: int = 3
+) -> list[str]:
+    """Up to ``limit`` counterfactual ISINs (Master Spec §24): same
+    direction and leverage bucket, a different issuer, ranked by how close
+    their leverage is to ``isin``'s own."""
+    same_group = [
+        other_isin
+        for other_isin, other in priced.items()
+        if other_isin != isin
+        and other.product.direction == p.product.direction
+        and other.leverage_bucket_value == p.leverage_bucket_value
+        and other.product.issuer != p.product.issuer
+    ]
+    same_group.sort(
+        key=lambda other_isin: abs(priced[other_isin].leverage_value - p.leverage_value)
+    )
+    return same_group[:limit]
+
+
+def _maybe_send_trade_proposals(
+    *,
+    store: Store,
+    notifier: GmailNotifier | None,
+    underlying_id: str,
+    newly_actionable: Sequence[CandidateEvaluation],
+    priced: dict[str, _PricedProduct],
+    evaluations_by_isin: dict[str, ProductHorizonEvaluation],
+    warnings: list[str],
+    clock: Callable[[], datetime],
+) -> list[SendResult]:
+    """Send one §34 trade-proposal email per newly-ACTIONABLE candidate
+    (Contract v3 Abschnitt C), deduplicated per candidate + rounded key
+    metrics (a materially changed score/LCB/P(KO)/horizon produces a new
+    hash and is sent again; an unchanged repeat is not)."""
+    if notifier is None or not newly_actionable:
+        return []
+    dedup = NotificationDeduplicator(store)
+    results: list[SendResult] = []
+    for candidate in newly_actionable:
+        p = priced.get(candidate.isin)
+        ev = evaluations_by_isin.get(candidate.isin)
+        if p is None or ev is None:
+            continue
+        context = TradeProposalContext(
+            underlying_id=underlying_id,
+            issuer=p.product.issuer,
+            wkn=p.product.wkn,
+            isin=candidate.isin,
+            direction=p.product.direction.value,
+            horizon_days=ev.horizon_days,
+            ask=p.ask,
+            bid=p.bid,
+            spread_pct=p.spread_pct_value,
+            leverage=p.leverage_value,
+            distance_to_barrier_pct=p.distance_pct,
+            distance_to_barrier_sigma=p.distance_sigma,
+            p_profit=ev.p_profit,
+            expected_net_return=ev.mean_net_return,
+            lcb_net_return=candidate.lcb_ev if candidate.lcb_ev is not None else ev.lcb_net_return,
+            p_ko=ev.p_ko,
+            es95=ev.es95,
+            spread_cost_pct=p.costs.spread_pct,
+            financing_cost_pct=p.financing_cost_pct.get(f"{ev.horizon_days}d", 0.0),
+            gap_premium_pct=p.costs.gap_premium_pct,
+            issuer_margin_pct=p.costs.issuer_margin_pct,
+            suggested_position_fraction=ev.suggested_position_fraction,
+            reasons=candidate.reasons,
+            no_model_beats_null_disclosure=_NO_MODEL_BEATS_NULL_DISCLOSURE,
+        )
+        subject, body = render_trade_proposal(context)
+        key_values = {
+            "score": round(ev.score, 4),
+            "lcb": round(candidate.lcb_ev or 0.0, 4),
+            "p_ko": round(ev.p_ko, 3),
+            "horizon": ev.horizon_days,
+        }
+        n_hash = notification_hash(candidate.candidate_id, "ACTIONABLE", key_values)
+        if not dedup.should_send(n_hash):
+            continue
+        recipients = notifier.credentials.recipients if notifier.credentials is not None else []
+        spec = EmailMessageSpec(subject=subject, body_text=body, to=recipients)
+        try:
+            result = notifier.send(spec)
+        except NotificationError as exc:
+            logger.error("trade_proposal_send_failed", isin=candidate.isin, error=str(exc))
+            _add_warning(warnings, f"trade_proposal_send_failed:{exc}")
+            continue
+        dedup.mark_sent(n_hash, candidate.candidate_id, "ACTIONABLE", subject, sent_at=clock())
+        results.append(result)
+    return results
+
+
+# --------------------------------------------------------------------------
 # orchestration
 # --------------------------------------------------------------------------
 
@@ -1012,6 +1734,10 @@ def _run_scan_body(
     prediction_time: datetime,
     config_hash_value: str,
     git_commit_value: str | None,
+    rng: np.random.Generator | None,
+    forecast_models: Sequence[ForecastModel] | None,
+    cluster_id: str | None,
+    cluster_open_positions: Sequence[OpenClusterPosition],
 ) -> ScanResult:
     warnings: list[str] = []
     underlying_id = options.underlying_id
@@ -1111,7 +1837,7 @@ def _run_scan_body(
     r = estr_adapter.get_estr()
     next_night_is_weekend = _is_friday_in_berlin(evaluation_time)
 
-    candidates = _process_products(
+    candidates, priced = _process_products(
         cfg=cfg,
         store=store,
         run_id=run_id,
@@ -1129,11 +1855,63 @@ def _run_scan_body(
         warnings=warnings,
     )
 
+    # 8.5) forecast -> paths -> EV -> gates -> ledger + shadow sample
+    # (Contract v3 Abschnitt B). Only runs when the caller supplied an `rng`
+    # (`run_scan(..., rng=...)`) -- with `rng=None` (the default) this whole
+    # step is skipped and every candidate keeps its pre-EV WATCH/REJECT/
+    # DATA_QUALITY category unchanged (byte-for-byte identical to the
+    # WATCH-only milestone).
+    ledger_entries_written = 0
+    forecasts_written = 0
+    actionable_notifications: list[SendResult] = []
+    new_cluster_positions: list[OpenClusterPosition] = list(cluster_open_positions)
+    if rng is not None and usable_bars:
+        models = list(forecast_models) if forecast_models is not None else default_forecast_models()
+        effective_cluster_id = cluster_id if cluster_id is not None else f"single_{underlying_id}"
+        ev_result = _run_ev_pipeline(
+            cfg=cfg,
+            store=store,
+            run_id=run_id,
+            underlying_id=underlying_id,
+            signal=signal,
+            usable_bars=usable_bars,
+            candidates=candidates,
+            priced=priced,
+            prediction_time=prediction_time,
+            evaluation_time=evaluation_time,
+            r=r,
+            config_hash_value=config_hash_value,
+            git_commit_value=git_commit_value,
+            rng=rng,
+            forecast_models=models,
+            cluster_id=effective_cluster_id,
+            cluster_open_positions=cluster_open_positions,
+            warnings=warnings,
+        )
+        candidates = ev_result.candidates
+        if ev_result.forecast_records:
+            forecasts_written = store.append_forecasts(ev_result.forecast_records)
+        if ev_result.ledger_entries:
+            ledger_entries_written = ForwardLedger(store).record(ev_result.ledger_entries)
+        new_cluster_positions = ev_result.new_cluster_positions
+        actionable_notifications = _maybe_send_trade_proposals(
+            store=store,
+            notifier=notifier,
+            underlying_id=underlying_id,
+            newly_actionable=ev_result.newly_actionable,
+            priced=priced,
+            evaluations_by_isin=ev_result.evaluations_by_isin,
+            warnings=warnings,
+            clock=clock,
+        )
+    elif rng is not None:
+        _add_warning(warnings, "ev_skipped_no_underlying_bars")
+
     counts: dict[Category, int] = dict.fromkeys(Category, 0)
     for candidate in candidates:
         counts[candidate.category] += 1
 
-    # 8) persist candidates + optional email
+    # 8) persist candidates + optional scan-report email
     store.append_candidates(candidates)
 
     notification = _maybe_send_email(
@@ -1157,6 +1935,10 @@ def _run_scan_body(
         warnings=warnings,
         health=health_records,
         notification=notification,
+        ledger_entries_written=ledger_entries_written,
+        forecasts_written=forecasts_written,
+        actionable_notifications=actionable_notifications,
+        new_cluster_positions=new_cluster_positions,
     )
 
 
@@ -1173,6 +1955,10 @@ def run_scan(
     notifier: GmailNotifier | None,
     run_id: str,
     clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+    rng: np.random.Generator | None = None,
+    forecast_models: Sequence[ForecastModel] | None = None,
+    cluster_id: str | None = None,
+    cluster_open_positions: Sequence[OpenClusterPosition] = (),
 ) -> ScanResult:
     """Run one full scan for ``options.underlying_id``.
 
@@ -1181,6 +1967,22 @@ def run_scan(
     exception message) if any step raises -- in the error case the original
     exception is re-raised after the run row is closed out, so callers (e.g.
     the CLI) can still map it to a non-zero exit code.
+
+    ``rng`` (Contract v3 Abschnitt B integration wave): when ``None`` (the
+    default), the forecast/EV/ledger/ACTIONABLE-mail step (§34) never runs
+    -- every candidate's category comes purely from the WATCH-only cost/
+    integrity gates, exactly as in the pre-integration milestone (every
+    pre-existing caller of this function, including ``turboedge scan``,
+    keeps this behavior unchanged). Passing a seeded
+    ``numpy.random.Generator`` (CLAUDE.md rule 16: never a bare unseeded
+    source) enables the full pipeline -- this is what ``turboedge scan-all``
+    (the production entry point ``pipeline.yml`` schedules) always does.
+    ``forecast_models`` defaults to
+    :func:`models.forecast.build_default_models` plus any available W9
+    challenger models; ``cluster_id``/``cluster_open_positions`` let a
+    multi-underlying caller (``scan-all``) thread real cross-underlying
+    correlation-cluster state through consecutive calls -- see
+    ``pipeline/scan_all.py``.
     """
     prediction_time = clock()
     hash_value = config_hash(cfg)
@@ -1210,6 +2012,10 @@ def run_scan(
             prediction_time=prediction_time,
             config_hash_value=hash_value,
             git_commit_value=commit,
+            rng=rng,
+            forecast_models=forecast_models,
+            cluster_id=cluster_id,
+            cluster_open_positions=cluster_open_positions,
         )
     except Exception as exc:
         store.finish_run(run_id, status="error", error=str(exc), finished_at=clock())
@@ -1220,8 +2026,10 @@ def run_scan(
 
 __all__ = [
     "EstrSource",
+    "EvPipelineResult",
     "PriceSource",
     "ScanOptions",
     "ScanResult",
+    "default_forecast_models",
     "run_scan",
 ]

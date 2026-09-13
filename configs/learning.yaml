@@ -1,0 +1,31 @@
+# TurboEdge-DE self-learning wiring (Build Contract v3, Abschnitt A).
+# learning/posterior.py and learning/trials.py keep their own defaults in
+# their own modules; this file is the YAML surface for them plus the
+# exponential ensemble-reweighting hyperparameters (Master Spec Section 21).
+
+# learning.ensemble_weights.update_weights / ModelRegistry.update_weights.
+eta: 0.5
+w_min: 0.01
+
+# Max candidates drawn per (category, direction, leverage_bucket) stratum for
+# the forward-ledger's shadow sample (learning.ledger.select_shadow_sample,
+# Master Spec Section 25 selection-bias protection).
+shadow_sample_per_stratum: 3
+
+# learning/posterior.py: StrategyPosterior's Normal-Inverse-Gamma prior
+# (Master Spec Section 21) -- weak, wide prior centered at zero net return.
+posterior:
+  mu0: 0.0
+  kappa0: 1.0
+  alpha0: 2.0
+  prior_variance: 0.0025 # 0.05^2, i.e. a 5% net-return prior standard deviation
+  shrink_n0: 20.0
+  backtest_downweight: 0.1
+
+# learning/trials.py: quarterly research adaptation budget (Master Spec
+# Section 27.2, CLAUDE.md rule 24). Matches governance.yaml's
+# research_adjustment_budget_per_quarter -- kept in sync manually since each
+# module owns its own config (Build Contract v2 rule); a mismatch here is a
+# configuration bug to fix, not something the loader reconciles silently.
+trials:
+  quarterly_budget: 6

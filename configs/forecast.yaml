@@ -1,0 +1,26 @@
+# TurboEdge-DE forecast engine wiring (Build Contract v3, Abschnitt A).
+# Individual models (models/directional.py: TsmomForecastConfig,
+# LogisticDirectionModelConfig, NullModelConfig) keep their own hyperparameter
+# defaults IN THEIR OWN MODULE; this file only holds what is external to any
+# single model: the horizon ladder and the walk-forward split geometry
+# (Master Spec Section 28).
+
+# Horizons (trading days) every forecast/EV evaluation runs over. Matches
+# models/forecast.py's HORIZONS constant -- kept here, not hard-coded, so a
+# future narrower/wider ladder is a config change, not a code change.
+horizons: [3, 5, 7, 10, 14]
+
+# Walk-forward geometry (backtest.walkforward.walk_forward_evaluate):
+# minimum bars before the first fold is fit, refit step size, and the
+# purge/embargo window (trading days) around each fold boundary. embargo
+# defaults to the longest horizon (14d) so no test fold can leak information
+# from a training bar less than one full horizon away (CLAUDE.md rule 7).
+min_train: 250
+step: 10
+embargo: 14
+
+# Weight assigned to a model freshly registered in model_registry (no prior
+# model_weight_history yet) before the learning loop has any evidence to
+# reweight it -- equal-weight until performance data exists (Master Spec
+# Section 21).
+default_new_model_weight: 1.0

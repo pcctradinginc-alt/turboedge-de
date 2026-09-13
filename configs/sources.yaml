@@ -57,6 +57,24 @@ citi:
   max_pages: 10
   user_agent: "TurboEdge-DE-Research/0.1 (+https://github.com/pcctradinginc-alt/turboedge-de)"
 
+# gettex (Boerse Muenchen) leverage-product feed (gettex.wsd.com), confirmed
+# live/working in Round 3 data-source research (see docs/data_sources.md):
+# plain JSON REST, no auth, no anti-bot signature, no robots.txt restriction
+# found. Multi-issuer aggregator (BNP Paribas, Goldman Sachs, HSBC, UniCredit
+# market-maker quotes all observed live in one feed) -- but exposes no
+# ratio/currency/maturity/quanto field for any issuer; adapters/gettex.py
+# derives-and-verifies ratio from leverage+financing-level+bid/ask instead of
+# guessing it (CLAUDE.md rule 29). max_pages=20 at rowsPerPage=100 covers
+# 2000 rows/underlying -- a documented partial-universe subset of DAX's
+# ~13,855-row open-end-turbo book (healthcheck WARNs with covered/total).
+gettex:
+  enabled: true
+  base_url: "https://gettex.wsd.com"
+  timeout_s: 20.0
+  min_interval_s: 1.5
+  max_pages: 20
+  user_agent: "TurboEdge-DE-Research/0.1 (+https://github.com/pcctradinginc-alt/turboedge-de)"
+
 # ECB Data API - EUR short-term rate (EST/EU000A2X2A25), used as the risk-free
 # reference rate for financing spread inference.
 ecb:

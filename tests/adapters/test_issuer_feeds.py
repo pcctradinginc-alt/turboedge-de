@@ -25,6 +25,8 @@ import structlog.testing
 from turboedge.adapters.base import AdapterHttpError, HttpClient
 from turboedge.adapters.issuer_feeds import (
     _BNP_DEFAULT_BASE_URL,
+    _BNP_DERIVATIVE_TYPE_CATALOG,
+    _BNP_DERIVATIVE_TYPE_IDS,
     _CITI_DEFAULT_BASE_URL,
     _CITI_UNDERLYING_ISINS,
     BnpParibasTurboAdapter,
@@ -37,7 +39,7 @@ from turboedge.adapters.issuer_feeds import (
 )
 from turboedge.adapters.registry import PRODUCT_ADAPTER_FACTORIES, ProductSourceAdapter
 from turboedge.config import SourceConfig
-from turboedge.storage.schemas import Direction, HealthStatus, ProductSnapshot
+from turboedge.storage.schemas import Direction, HealthStatus, ProductSnapshot, ProductType
 
 FIXTURES_DIR = Path(__file__).resolve().parent.parent / "fixtures" / "issuer_feeds"
 
@@ -131,12 +133,13 @@ def _citi_product(
     ratio: float = 0.01,
     maturity_date: str | None = None,
     reference_price_method: str = "Closing Price",
+    product_type: str = "MiniFuture",
 ) -> dict[str, Any]:
     return {
         "isin": isin,
         "wkn": isin[-6:],
         "currencyCode": "EUR",
-        "productType": "MiniFuture",
+        "productType": product_type,
         "subTypeTranslation": sub_type,
         "referencePriceMethod": reference_price_method,
         "maturityDate": maturity_date,
@@ -240,6 +243,86 @@ def test_bnp_ask_absent_treated_as_none_and_quote_presence_false() -> None:
     assert all(s.quote_presence is False for s in snapshots)
     # quality_score reflects "no usable ask" (0.3), never the "fresh" (1.0) case.
     assert all(s.quality_score == pytest.approx(0.3) for s in snapshots)
+
+
+@respx.mock
+def test_bnp_dated_maturity_timestamp_still_never_guess_parsed() -> None:
+    """Build Contract W1 measurement (2026-09-11/12): a live, full-coverage
+    pull of BNP's entire DAX book (4304/4304 rows, every derivativeTypeId
+    this adapter requests) found `maturityDateTimestamp == -1` on every
+    single row -- BNP is not currently issuing any dated leverage product on
+    DAX (or, per a separate probe, on any of its 14 index underlyings). No
+    real dated-maturity fixture could therefore be captured from a live pull
+    (there is currently nothing live to capture). This test instead uses the
+    existing synthetic-record builder (`_bnp_product`, already used
+    throughout this file for pagination/error-path coverage that a real
+    fixture cannot exercise) to pin down the still-necessary defensive
+    behavior for the day a dated row does appear: the unit/epoch format
+    remains genuinely unconfirmed, so it must stay un-guess-parsed
+    (CLAUDE.md rule 29) -- `maturity` stays `None`, `open_end` is `False`,
+    and (with no name-based signal either) `product_type` falls back to
+    `UNKNOWN` rather than being silently treated as `TURBO_OPEN_END`.
+    """
+    respx.get(BNP_INDEXES_URL).mock(
+        return_value=httpx.Response(
+            200, json=_load_fixture("bnp_paribas", "underlying_indexes.json")
+        )
+    )
+    respx.post(BNP_LEVERAGE_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json=_bnp_page_response(
+                [_bnp_product("DE00CLASS001", maturity_ts=1234567890)], total=1
+            ),
+        )
+    )
+    adapter = _bnp_adapter(clock=_fixed_clock(datetime(2026, 9, 11, 22, 5, tzinfo=UTC)))
+
+    with structlog.testing.capture_logs() as logs:
+        snapshots = adapter.fetch_products(["DAX"])
+
+    assert len(snapshots) == 1
+    snapshot = snapshots[0]
+    assert snapshot.maturity is None
+    assert snapshot.open_end is False
+    assert snapshot.product_type == ProductType.UNKNOWN
+
+    warnings = [e for e in logs if e.get("event") == "bnp_maturity_timestamp_format_unconfirmed"]
+    assert len(warnings) == 1
+    assert warnings[0]["isin"] == "DE00CLASS001"
+    assert warnings[0]["maturity_timestamp"] == 1234567890
+
+
+@respx.mock
+def test_bnp_mini_future_classified_by_live_naming_convention_even_with_no_buffer() -> None:
+    """BNP's real live naming convention (confirmed 2026-09-11 research
+    session) is "Mini Long auf den DAX(R)" / "Mini Short auf den DAX(R)" --
+    it never contains the word "future", so the pre-existing Mini Future
+    keyword list never actually matched it and the adapter never even passed
+    a name to `classify_product_type` at all. Both gaps are fixed together
+    here: the adapter now passes `productName`, and
+    `universe/classify.py`'s keyword list now recognizes "mini long"/"mini
+    short". A record with `strike == ko` (would otherwise structurally look
+    like a bufferless TURBO_OPEN_END) must still classify as MINI_FUTURE
+    once its real name says so -- the documented "name wins even when the
+    buffer is temporarily zero" behavior actually firing end-to-end.
+    """
+    respx.get(BNP_INDEXES_URL).mock(
+        return_value=httpx.Response(
+            200, json=_load_fixture("bnp_paribas", "underlying_indexes.json")
+        )
+    )
+    record = _bnp_product("DE00MINIL001", strike=20000.0, ko=20000.0)
+    record["productName"] = "Mini Long auf den DAX®"
+    respx.post(BNP_LEVERAGE_URL).mock(
+        return_value=httpx.Response(200, json=_bnp_page_response([record], total=1))
+    )
+    adapter = _bnp_adapter(clock=_fixed_clock(datetime(2026, 9, 11, 22, 5, tzinfo=UTC)))
+
+    snapshots = adapter.fetch_products(["DAX"])
+
+    assert len(snapshots) == 1
+    assert snapshots[0].product_type == ProductType.MINI_FUTURE
 
 
 @respx.mock
@@ -405,6 +488,59 @@ def test_bnp_pagination_stops_early_when_a_short_page_is_returned() -> None:
     assert route.call_count == 1  # a short page (< page_size) stops pagination immediately
     assert len(snapshots) == 1
     assert "DAX" not in adapter._partial_universe
+
+
+@respx.mock
+def test_bnp_offset_cap_on_later_page_returns_partial_not_raise() -> None:
+    """Befund 1 (e) live finding: BNP's backend hard-errors any request past
+    an undocumented offset ceiling (confirmed live at offset=10000). A page
+    AFTER the first hitting this (or any other transient HTTP failure) must
+    not discard already-successfully-fetched pages -- pagination stops and
+    the partial result is returned, surfaced via the existing
+    bnp_partial_universe WARN, exactly as a max_pages cutoff already is."""
+    respx.get(BNP_INDEXES_URL).mock(
+        return_value=httpx.Response(
+            200, json=_load_fixture("bnp_paribas", "underlying_indexes.json")
+        )
+    )
+    page1 = [_bnp_product("DE000OFFCAP1"), _bnp_product("DE000OFFCAP2", direction="short")]
+    respx.post(BNP_LEVERAGE_URL).mock(
+        side_effect=[
+            httpx.Response(200, json=_bnp_page_response(page1, total=100)),
+            httpx.Response(500),  # simulates the offset-ceiling 500 on page 2
+        ]
+    )
+    adapter = _bnp_adapter(
+        max_pages=5,
+        page_size=2,
+        max_retries=1,
+        clock=_fixed_clock(datetime(2026, 9, 13, 12, 0, tzinfo=UTC)),
+    )
+
+    with structlog.testing.capture_logs() as logs:
+        snapshots = adapter.fetch_products(["DAX"])
+
+    assert {s.isin for s in snapshots} == {"DE000OFFCAP1", "DE000OFFCAP2"}
+    assert adapter._partial_universe["DAX"] == (2, 100)
+    offset_error_events = [e for e in logs if e.get("event") == "bnp_pagination_offset_error"]
+    assert len(offset_error_events) == 1
+    assert offset_error_events[0]["offset"] == 2  # page_index=1 * page_size=2
+
+
+@respx.mock
+def test_bnp_first_page_http_error_still_raises() -> None:
+    """Unlike a later page (see the offset-cap test above), a failure on the
+    very first page is a genuine reachability failure with nothing to
+    salvage -- must still raise, exactly as before this fix."""
+    respx.get(BNP_INDEXES_URL).mock(
+        return_value=httpx.Response(
+            200, json=_load_fixture("bnp_paribas", "underlying_indexes.json")
+        )
+    )
+    respx.post(BNP_LEVERAGE_URL).mock(return_value=httpx.Response(500))
+    adapter = _bnp_adapter(max_retries=1)
+    with pytest.raises(AdapterHttpError):
+        adapter.fetch_products(["DAX"])
 
 
 @respx.mock
@@ -582,6 +718,33 @@ def test_citi_fetch_products_parses_real_fixture() -> None:
     assert all(s.ratio > 0 for s in snapshots)
     assert all(s.financing_level is not None and s.financing_level > 0 for s in snapshots)
     assert not adapter.last_errors
+
+
+@respx.mock
+def test_citi_product_type_field_used_for_classification() -> None:
+    """Citi exposes an explicit, unambiguous `productType` field (observed
+    values "OpenEndTurbo"/"MiniFuture" -- live probe, 2026-09-11 research
+    session) that the adapter now passes to `classify_product_type` as its
+    name-based signal, in addition to the structural barrier comparison.
+    A `strike == koBarrier` row explicitly labelled "OpenEndTurbo" must
+    classify as TURBO_OPEN_END (name and structure agree); a `MiniFuture`
+    row with a real buffer must stay MINI_FUTURE (unchanged from before this
+    fix, since structure alone already got it right for that case).
+    """
+    items = [
+        _citi_product("DE00OPENE001", product_type="OpenEndTurbo", strike=20000.0, ko=20000.0),
+        _citi_product("DE00MINIL002", product_type="MiniFuture", strike=20000.0, ko=20300.0),
+    ]
+    respx.post(CITI_SEARCH_URL).mock(
+        return_value=httpx.Response(200, json=_citi_search_response(items, total_elements_count=2))
+    )
+    adapter = _citi_adapter(clock=_fixed_clock(datetime(2026, 9, 11, 22, 5, tzinfo=UTC)))
+
+    snapshots = adapter.fetch_products(["DAX"])
+    by_isin = {s.isin: s for s in snapshots}
+
+    assert by_isin["DE00OPENE001"].product_type == ProductType.TURBO_OPEN_END
+    assert by_isin["DE00MINIL002"].product_type == ProductType.MINI_FUTURE
 
 
 @respx.mock
@@ -884,3 +1047,133 @@ def test_bnp_fixture_and_synthetic_builders_produce_valid_json() -> None:
     json.dumps(record)
     citi_record = copy.deepcopy(_citi_product("DE000ZZZZZZ2"))
     json.dumps(citi_record)
+
+
+# ===========================================================================
+# Befund 1 (2026-09-13): BNP derivativeTypeId coverage -- "Unlimited Turbo"
+# (ids 67/68) added, every discovered id documented include/exclude
+# ===========================================================================
+
+
+def test_bnp_derivative_type_catalog_includes_unlimited_turbo() -> None:
+    """The single largest coverage gap this session found: BNP's 'Unlimited
+    Turbo' product line (ids 67/68) is structurally an open-end turbo
+    (strike==knockOut, maturity=-1, live-verified) but was never requested
+    before this fix."""
+    assert 67 in _BNP_DERIVATIVE_TYPE_IDS
+    assert 68 in _BNP_DERIVATIVE_TYPE_IDS
+    assert _BNP_DERIVATIVE_TYPE_CATALOG[67].name == "Unlimited Long"
+    assert _BNP_DERIVATIVE_TYPE_CATALOG[67].included is True
+    assert _BNP_DERIVATIVE_TYPE_CATALOG[68].name == "Unlimited Short"
+    assert _BNP_DERIVATIVE_TYPE_CATALOG[68].included is True
+
+
+def test_bnp_derivative_type_catalog_excludes_non_turbo_families_with_reasons() -> None:
+    """Every id this session's live census found for BNP's DAX book that is
+    NOT a turbo/mini-future/open-end-KO product must be explicitly excluded
+    (never requested) with a documented, non-empty reason -- Optionsscheine,
+    Faktor-Zertifikate, and Discount/Bonus/Express families per Befund 1's
+    explicit scope decision."""
+    excluded_by_name = {
+        entry.name: (tid, entry)
+        for tid, entry in _BNP_DERIVATIVE_TYPE_CATALOG.items()
+        if not entry.included
+    }
+    expected_excluded_names = {
+        "Discount",
+        "Call",
+        "Put",
+        "Bonus",
+        "Discount Call",
+        "Reverse Bonus",
+        "Discount Put",
+        "Capped Bonus",
+        "Capped Reverse Bonus",
+        "Memory Express Zertifikat",
+        "Discount Call Plus",
+        "Discount Put Plus",
+        "Bonus Call",
+        "Strukturierte Anleihe",
+        "Andere Zinsanleihe",
+        "Fix Kupon Express",
+        "Express-Zertifikat",
+        "Faktor Long",
+        "Faktor Short",
+        "Inline",
+    }
+    assert expected_excluded_names <= excluded_by_name.keys()
+    for name in expected_excluded_names:
+        tid, entry = excluded_by_name[name]
+        assert entry.reason.strip(), f"id {tid} ({name}) has no documented exclusion reason"
+        assert tid not in _BNP_DERIVATIVE_TYPE_IDS
+
+
+def test_bnp_derivative_type_catalog_every_entry_has_a_reason() -> None:
+    for tid, entry in _BNP_DERIVATIVE_TYPE_CATALOG.items():
+        assert entry.name.strip(), f"id {tid} has no name"
+        assert entry.reason.strip(), f"id {tid} has no reason"
+
+
+@respx.mock
+def test_bnp_unlimited_turbo_real_fixture_classified_as_turbo_open_end() -> None:
+    """Real-captured (2026-09-13) BNP DAX rows under the new ids 67/68 --
+    structurally identical to ids 7/9's open-end turbo (strike==knockOut,
+    maturity=-1) -- must classify as TURBO_OPEN_END, not UNKNOWN, and price
+    exactly like any other open-end turbo (positive ratio, financing_level,
+    both directions present in the fixture)."""
+    respx.get(BNP_INDEXES_URL).mock(
+        return_value=httpx.Response(
+            200, json=_load_fixture("bnp_paribas", "underlying_indexes.json")
+        )
+    )
+    respx.post(BNP_LEVERAGE_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json=_load_fixture(
+                "bnp_paribas", "productlist_leverage_dax_unlimited_turbo_sample.json"
+            ),
+        )
+    )
+    adapter = _bnp_adapter(clock=_fixed_clock(datetime(2026, 9, 13, 12, 0, tzinfo=UTC)))
+    snapshots = adapter.fetch_products(["DAX"])
+
+    assert snapshots
+    assert not adapter.last_errors
+    assert all(s.product_type == ProductType.TURBO_OPEN_END for s in snapshots)
+    assert all(s.open_end is True for s in snapshots)
+    assert all(s.ratio > 0 for s in snapshots)
+    assert all(s.financing_level is not None and s.financing_level > 0 for s in snapshots)
+    directions = {s.direction for s in snapshots}
+    assert directions == {Direction.LONG, Direction.SHORT}
+
+
+@respx.mock
+def test_bnp_excluded_product_type_rows_are_rejected_not_mispriced() -> None:
+    """Defense in depth (Befund 1 (c)/(d)): even though Call/Bonus/Faktor ids
+    are never requested by this adapter (see the catalog tests above), a
+    real-captured (2026-09-13) sample of exactly those rows -- as if they
+    had somehow reached this adapter -- must be cleanly rejected via the
+    normal schema-drift error path (missing strike/knockOut/ratio, or an
+    unmapped direction like 'call'), never silently priced as if they were
+    turbo products."""
+    respx.get(BNP_INDEXES_URL).mock(
+        return_value=httpx.Response(
+            200, json=_load_fixture("bnp_paribas", "underlying_indexes.json")
+        )
+    )
+    respx.post(BNP_LEVERAGE_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json=_load_fixture(
+                "bnp_paribas", "productlist_leverage_dax_excluded_product_types_sample.json"
+            ),
+        )
+    )
+    adapter = _bnp_adapter(clock=_fixed_clock(datetime(2026, 9, 13, 12, 0, tzinfo=UTC)))
+    snapshots = adapter.fetch_products(["DAX"])
+
+    # Not one Call/Bonus row produced a (necessarily wrong) snapshot -- every
+    # single row in this fixture is missing a required turbo field.
+    assert snapshots == []
+    assert len(adapter.last_errors) > 0
+    assert all(isinstance(e, IssuerRowError) for e in adapter.last_errors)

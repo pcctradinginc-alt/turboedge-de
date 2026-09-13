@@ -1,0 +1,9 @@
+# TurboEdge-DE state-management wiring (Build Contract v3, Abschnitt A).
+# state/retention.py keeps its own default in its own module; this is the
+# YAML surface for it.
+
+retention:
+  # `turboedge db compact` reduces product_snapshots rows older than this
+  # many days to one row per (isin, UTC calendar day), except ISINs present
+  # in forward_ledger (kept in full, state/retention.py).
+  keep_days: 45

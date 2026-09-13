@@ -1,0 +1,362 @@
+name: Pipeline
+
+# ONE workflow for every state-changing job (scan/eod/weekly/monthly). State
+# (DuckDB + snapshots/registry/ledger/trials) is carried between runs as an
+# encrypted (`turboedge state pack`, TURBOEDGE_STATE_KEY) workflow artifact
+# (90-day retention) rather than the previous scan-report.yml GitHub Actions
+# cache, which silently expires after 7 days of inactivity -- see
+# `turboedge.state` (Build Contract v2, W3).
+#
+# This is a public repository: GitHub Actions logs, job summaries and
+# artifacts are visible to anyone. TURBOEDGE_PUBLIC_LOGS=1 (below) makes the
+# CLI redact ISIN/WKN/prices from stdout and structured logs (see
+# `turboedge.logging.redact_enabled`); no unencrypted report is ever
+# uploaded as an artifact; the job summary carries only counts from
+# `reports/summary.json` (a Wave 2 convention: `{"mode": ..., "counts": {...}}`).
+#
+# The setup/restore/unpack (~100 lines) and job-summary (~35 lines) steps
+# that used to be duplicated across all four mode jobs now live in local
+# composite actions under `.github/actions/`:
+#   - `turboedge-state`         checkout->this: setup uv/Python, verify
+#                                 TURBOEDGE_STATE_KEY, restore + unpack state.
+#   - `turboedge-state-summary` writes the job summary (counts + an optional
+#                                 state-restore note).
+#   - `turboedge-state-pack`    packs and uploads the `turboedge-state-enc`
+#                                 artifact; callers gate this with
+#                                 `if: success()` so a failed mode step never
+#                                 uploads a broken state over the last good
+#                                 artifact history.
+# Each job keeps only its own `Checkout code` step plus whatever is unique to
+# its mode -- see the comments on the composite actions themselves for why
+# the restore step never silently starts from an empty state, and for the
+# `--limit 50` search-depth choice.
+
+on:
+  schedule:
+    # All times UTC, Monday-Friday unless noted.
+    - cron: "40 7 * * 1-5" # scan
+    - cron: "10 10 * * 1-5" # scan
+    - cron: "45 13 * * 1-5" # scan
+    - cron: "50 15 * * 1-5" # scan
+    - cron: "10 18 * * 1-5" # scan
+    - cron: "40 21 * * 1-5" # eod
+    - cron: "0 6 * * 6" # weekly (Saturday)
+    - cron: "30 6 1 * *" # monthly (1st of month)
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Pipeline mode to run"
+        required: true
+        type: choice
+        options:
+          - scan
+          - eod
+          - weekly
+          - monthly
+      allow_fresh_state:
+        description: >-
+          Force a fresh, empty state if no usable turboedge-state-enc
+          artifact can be found (deliberate reset only -- leave false for a
+          normal manual run; see `.github/actions/turboedge-state/action.yml`)
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: turboedge-state
+  cancel-in-progress: false
+
+env:
+  TURBOEDGE_PUBLIC_LOGS: "1"
+
+jobs:
+  # ---------------------------------------------------------------------
+  # Resolve which mode this trigger corresponds to, once, so every
+  # downstream job can gate on a single `needs.resolve-mode.outputs.mode`
+  # comparison instead of re-deriving it. All trigger-derived values are
+  # threaded through `env:` rather than interpolated directly into `run:`.
+  # ---------------------------------------------------------------------
+  resolve-mode:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      mode: ${{ steps.resolve.outputs.mode }}
+    steps:
+      - name: Resolve mode from trigger
+        id: resolve
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          SCHEDULE_CRON: ${{ github.event.schedule }}
+          DISPATCH_MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+          case "$EVENT_NAME" in
+            schedule)
+              case "$SCHEDULE_CRON" in
+                "40 7 * * 1-5"|"10 10 * * 1-5"|"45 13 * * 1-5"|"50 15 * * 1-5"|"10 18 * * 1-5")
+                  mode="scan" ;;
+                "40 21 * * 1-5") mode="eod" ;;
+                "0 6 * * 6") mode="weekly" ;;
+                "30 6 1 * *") mode="monthly" ;;
+                *)
+                  echo "::error::unrecognized schedule cron: $SCHEDULE_CRON"
+                  exit 2
+                  ;;
+              esac
+              ;;
+            workflow_dispatch)
+              mode="$DISPATCH_MODE"
+              ;;
+            *)
+              echo "::error::unsupported trigger event: $EVENT_NAME"
+              exit 2
+              ;;
+          esac
+          case "$mode" in
+            scan|eod|weekly|monthly) ;;
+            *)
+              echo "::error::invalid resolved mode: $mode"
+              exit 2
+              ;;
+          esac
+          echo "Resolved mode: $mode"
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+
+  # ---------------------------------------------------------------------
+  # scan -- Mo-Fr, 5x/day
+  # ---------------------------------------------------------------------
+  scan:
+    needs: resolve-mode
+    if: needs.resolve-mode.outputs.mode == 'scan'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Restore TurboEdge state
+        id: state
+        uses: ./.github/actions/turboedge-state
+        with:
+          state_key: ${{ secrets.TURBOEDGE_STATE_KEY }}
+          mode: scan
+          allow_fresh_state: ${{ inputs.allow_fresh_state }}
+          github_token: ${{ github.token }}
+
+      - name: Run scan
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          TURBOEDGE_EMAIL_TO: ${{ secrets.TURBOEDGE_EMAIL_TO }}
+        run: uv run turboedge --log-format json scan-all --email
+
+      - name: Job summary
+        if: always()
+        uses: ./.github/actions/turboedge-state-summary
+        with:
+          mode: scan
+          state_note: ${{ steps.state.outputs.state_note }}
+
+      - name: Pack and upload state
+        if: success()
+        uses: ./.github/actions/turboedge-state-pack
+        with:
+          state_key: ${{ secrets.TURBOEDGE_STATE_KEY }}
+
+  # ---------------------------------------------------------------------
+  # eod -- Mo-Fr, once, after market close: label -> learn -> reevaluate ->
+  # compact
+  # ---------------------------------------------------------------------
+  eod:
+    needs: resolve-mode
+    if: needs.resolve-mode.outputs.mode == 'eod'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Restore TurboEdge state
+        id: state
+        uses: ./.github/actions/turboedge-state
+        with:
+          state_key: ${{ secrets.TURBOEDGE_STATE_KEY }}
+          mode: eod
+          allow_fresh_state: ${{ inputs.allow_fresh_state }}
+          github_token: ${{ github.token }}
+
+      - name: Label due forward-ledger entries
+        run: uv run turboedge --log-format json label
+
+      - name: Learn (posteriors, model weights, drift)
+        run: uv run turboedge --log-format json learn
+
+      - name: Reevaluate open positions
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          TURBOEDGE_EMAIL_TO: ${{ secrets.TURBOEDGE_EMAIL_TO }}
+        run: uv run turboedge --log-format json position reevaluate --email
+
+      - name: Compact product_snapshots retention
+        run: uv run turboedge --log-format json db compact
+
+      - name: Job summary
+        if: always()
+        uses: ./.github/actions/turboedge-state-summary
+        with:
+          mode: eod
+          state_note: ${{ steps.state.outputs.state_note }}
+
+      - name: Pack and upload state
+        if: success()
+        uses: ./.github/actions/turboedge-state-pack
+        with:
+          state_key: ${{ secrets.TURBOEDGE_STATE_KEY }}
+
+  # ---------------------------------------------------------------------
+  # weekly -- Saturday: research tournament + keepalive (re-enable every
+  # workflow so GitHub's 60-day-idle auto-disable never silences the
+  # scheduler on this public repo).
+  #
+  # Two anti-idle mechanisms, both needed:
+  #   - "Keepalive" (API `enable` call) only helps if this `weekly` job
+  #     itself still runs -- it does nothing once the scheduler has already
+  #     been disabled.
+  #   - GitHub's 60-day-idle disable is driven by *repository activity*
+  #     (commits), not by workflow run history, so re-enabling workflows via
+  #     the API is not itself activity that resets the idle clock. The
+  #     "Heartbeat commit" step below makes an actual commit, but only once
+  #     the repo has genuinely gone quiet for 30+ days -- see its comment.
+  #
+  # `weekly` is the only job with `contents: write` (to push the heartbeat
+  # commit) and `actions: write` (to call the workflow enable API); every
+  # other job only reads artifacts/state.
+  # ---------------------------------------------------------------------
+  weekly:
+    needs: resolve-mode
+    if: needs.resolve-mode.outputs.mode == 'weekly'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Restore TurboEdge state
+        id: state
+        uses: ./.github/actions/turboedge-state
+        with:
+          state_key: ${{ secrets.TURBOEDGE_STATE_KEY }}
+          mode: weekly
+          allow_fresh_state: ${{ inputs.allow_fresh_state }}
+          github_token: ${{ github.token }}
+
+      - name: Run weekly research tournament
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          TURBOEDGE_EMAIL_TO: ${{ secrets.TURBOEDGE_EMAIL_TO }}
+        run: uv run turboedge --log-format json research tournament --email
+
+      - name: Keepalive -- re-enable every workflow (public repos auto-disable after 60 days idle)
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for wf in pipeline.yml source-health.yml tests.yml; do
+            gh api -X PUT "repos/${GITHUB_REPOSITORY}/actions/workflows/${wf}/enable"
+          done
+
+      - name: Heartbeat commit if the repo has been idle for 30+ days
+        # Runs whether or not the tournament/keepalive steps above
+        # succeeded (only skipped if the job itself was cancelled) --
+        # keeping the scheduler alive matters especially on a red run,
+        # since that is exactly when nobody else may be pushing commits.
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          last_commit_ts=$(git log -1 --format=%ct origin/main)
+          now_ts=$(date -u +%s)
+          age_days=$(( (now_ts - last_commit_ts) / 86400 ))
+          echo "Last commit on origin/main is ${age_days} day(s) old."
+          if (( age_days < 30 )); then
+            echo "Repository is active (<30 days since last commit) -- no heartbeat commit needed."
+            exit 0
+          fi
+          heartbeat_iso=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          echo "${heartbeat_iso}" > ".github/last-heartbeat"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add ".github/last-heartbeat"
+          git commit -m "chore: heartbeat commit to keep scheduled workflows enabled [skip ci]"
+          git push origin HEAD:main
+
+      - name: Job summary
+        if: always()
+        uses: ./.github/actions/turboedge-state-summary
+        with:
+          mode: weekly
+          state_note: ${{ steps.state.outputs.state_note }}
+
+      - name: Pack and upload state
+        if: success()
+        uses: ./.github/actions/turboedge-state-pack
+        with:
+          state_key: ${{ secrets.TURBOEDGE_STATE_KEY }}
+
+  # ---------------------------------------------------------------------
+  # monthly -- 1st of month: success report
+  # ---------------------------------------------------------------------
+  monthly:
+    needs: resolve-mode
+    if: needs.resolve-mode.outputs.mode == 'monthly'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Restore TurboEdge state
+        id: state
+        uses: ./.github/actions/turboedge-state
+        with:
+          state_key: ${{ secrets.TURBOEDGE_STATE_KEY }}
+          mode: monthly
+          allow_fresh_state: ${{ inputs.allow_fresh_state }}
+          github_token: ${{ github.token }}
+
+      - name: Run monthly report
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          TURBOEDGE_EMAIL_TO: ${{ secrets.TURBOEDGE_EMAIL_TO }}
+        run: uv run turboedge --log-format json report monthly --email
+
+      - name: Job summary
+        if: always()
+        uses: ./.github/actions/turboedge-state-summary
+        with:
+          mode: monthly
+          state_note: ${{ steps.state.outputs.state_note }}
+
+      - name: Pack and upload state
+        if: success()
+        uses: ./.github/actions/turboedge-state-pack
+        with:
+          state_key: ${{ secrets.TURBOEDGE_STATE_KEY }}

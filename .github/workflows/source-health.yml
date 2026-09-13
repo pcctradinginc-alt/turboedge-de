@@ -9,6 +9,12 @@ on:
 permissions:
   contents: read
 
+env:
+  # Public repository: source-health messages/statuses aren't candidate
+  # detail, but this keeps the convention uniform across every workflow --
+  # see `turboedge.logging.redact_enabled` / Build Contract v2 W3.
+  TURBOEDGE_PUBLIC_LOGS: "1"
+
 jobs:
   health-check:
     runs-on: ubuntu-latest
@@ -39,10 +45,6 @@ jobs:
           TURBOEDGE_EMAIL_TO: ${{ secrets.TURBOEDGE_EMAIL_TO }}
         run: uv run turboedge --log-format json sources health --json-out reports/source_health.json --email-on-fail
 
-      - name: Upload reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: source-health-report
-          path: reports/
-          retention-days: 14
+      # No report artifact upload (public repo -- see pipeline.yml's header
+      # comment): the JSON written above stays local to the runner and is
+      # discarded when it's cleaned up.

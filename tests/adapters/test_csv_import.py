@@ -503,7 +503,7 @@ class TestCsvImportAdapter:
     def test_stale_quote_detection(self, tmp_path: Path) -> None:
         csv_file = tmp_path / "products.csv"
         # Use a timestamp 20 minutes ago (1200 seconds, beyond default 900s threshold)
-        old_time = (datetime.now(UTC) - timedelta(seconds=1200)).isoformat()
+        old_time = (TEST_NOW - timedelta(seconds=1200)).isoformat()
         csv_file.write_text(
             "isin;issuer;underlying;direction;financing_level;knockout_barrier;ratio;bid;ask;quote_timestamp\n"
             f"DE000ABC0013;Bank13;DAX;long;18000,00;18000,00;0,01;4,80;4,86;{old_time}\n"

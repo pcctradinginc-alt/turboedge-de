@@ -133,15 +133,178 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.0] — 2026-09-13
+
+### Added
+
+- **Forecast engine** (`models/forecast.py`, `models/directional.py` —
+  `NullModel`, `TsmomForecastModel`, `LogisticDirectionModel`;
+  `models/quantile.py` — `RidgeReturnModel`; `models/calibration.py`,
+  `models/ensemble.py`; `features/returns.py`, `features/volatility.py`,
+  `features/trend.py`; `backtest/purged_cv.py`, `backtest/walkforward.py`,
+  `backtest/metrics.py`, `backtest/significance.py`). `HorizonForecast`
+  (p_up, mean, sigma, quantiles, expected shortfall, uncertainty) per
+  underlying/horizon, walk-forward evaluated with purged/embargoed
+  expanding-window CV. **Measured 2026-09-12 (Workstream W4): no model
+  beats the null-model benchmark out-of-sample — see "Measured results"
+  below and `docs/measured_results.md`.**
+- **Six pre-registered challenger signal families**
+  (`models/challengers.py`: `VolTargetedTsmom`, `LowVolRegimeTrend`,
+  `ShortHorizonReversal`, `VixTermStructure`, `CrossAssetLeadLag`,
+  `SeasonalityTurnOfMonth`; `features/cross_asset.py` for the VIX-term and
+  cross-asset lead/lag feature sets). Pre-registered (Workstream W9,
+  trial IDs `W9-2026Q3-001`–`006`) before measurement, per Master Spec §27
+  / CLAUDE.md rule 26. **Measured 2026-09-13: 0 of 80 measured cells beat
+  the null model after Benjamini-Hochberg deflation; all six recorded
+  `dormant`.** See `SIGNAL_REGISTRY.md` §3.
+- **Path simulation** (`simulation/{bootstrap,overnight,paths,barrier,payoff}.py`):
+  `simulate_paths` (block_bootstrap / regime_bootstrap / monte_carlo /
+  new `vol_scaled_bootstrap`), overnight/weekend gap modeling,
+  `first_hit_index` barrier-touch detection, `brownian_bridge_hit_probability`
+  analytic control, `simulate_product_payoff` (net returns, KO handling,
+  MFE/MAE, ES95) against `ProductTerms` (classic/open-end/mini-future KO
+  residual handling per direction).
+- **Evaluation/ranking layer** (`ranking/{ev,shrinkage,lcb,utility,sizing,cluster,liquidity}.py`):
+  product × horizon net-EV evaluation, winner's-curse shrinkage, lower
+  confidence bound (LCB), utility-based ranking, Kelly-fraction position
+  sizing, correlation-cluster risk limits.
+- **Forward ledger & learning loop** (`learning/{ledger,labeler,counterfactual,posterior,registry,ensemble_weights,trials,drift}.py`):
+  `ForwardLedger` (record/label/query, stratified shadow sampling),
+  `label_due_entries` (real-bid labeling, never optimistic on ambiguous
+  paths), `StrategyPosterior` (Normal-Inverse-Gamma per signal_family ×
+  horizon), `ModelRegistry` (champion/challenger/dormant/protected status,
+  weight updates), `new_trial_id` with quarterly budget check,
+  `PageHinkley` drift detection, `learning/failed_hypotheses.py`
+  (append-only hypothesis graveyard, `state/registry/failed_hypotheses.json`).
+- **Monthly and weekly reports** (`reporting/{monthly,weekly,html,console,_common,redaction}.py`):
+  monthly status report (works even with zero trades), weekly research
+  tournament report.
+- **Encrypted state persistence and pipeline scheduler**
+  (`state/{__init__,crypto,archive}.py`, `cli_state.py`,
+  `.github/workflows/pipeline.yml`): `turboedge state pack`/`unpack`
+  (AES via `TURBOEDGE_STATE_KEY`, scrypt-derived, integrity-checked),
+  `turboedge db compact` retention, and a single consolidated
+  `pipeline.yml` workflow (modes `scan`/`eod`/`weekly`/`monthly`,
+  scheduled Mon–Fri + weekly/monthly, encrypted `turboedge-state-enc`
+  artifact instead of the previous 7-day Actions cache) replacing
+  `scan-report.yml` (removed). `TURBOEDGE_PUBLIC_LOGS=1` redacts
+  ISIN/WKN/prices from stdout and structured logs on this public repo.
+- **gettex adapter validation**: multi-issuer (BNP Paribas, UniCredit,
+  Goldman Sachs, HSBC observed) live quotes with a leverage-implied
+  bid/ask-to-underlying ratio derived and independently verified against
+  gettex's own reference price. Live-validated 2026-09-13: DAX 1695/3000
+  rows (56.5%) ratio-derived+verified, median deviation from reference
+  spot 0.0497%; NDX 98/3000 (3.3%), median deviation 0.0140%. See
+  `docs/measured_results.md` §4 and `gettex_adapter_validation.md`.
+
+### Changed
+
+- **`simulate_paths` default `method` changed from `block_bootstrap` to
+  `vol_scaled_bootstrap`** — data-driven, per Workstream W5's calibration
+  comparison against 558 realized DAX start dates (2015–2025):
+  `vol_scaled_bootstrap` has ~2.7–2.8× lower mean absolute KO-probability
+  calibration error than the old default in both the trading-relevant
+  (k=1.5–2σ) and full tested range. `regime_bootstrap`'s dormant-bucket
+  bug (`min_bucket_days=250` never actually restricted the sample; 0%
+  activation, silently degenerating to `block_bootstrap`) was also fixed
+  (`min_bucket_days` lowered to 150), guarded by a new regression test.
+  Both methods still **over-predict** P(KO) at small-to-moderate barrier
+  distances — a known, conservative (not calibrated) residual bias; see
+  `docs/measured_results.md` §3.
+- **`simulate_product_payoff` vectorized** to remove the per-path/per-day
+  Python loop for MFE/MAE on the simple fair-value fast path that W5
+  flagged as a scaling bottleneck when scanning many products. Measured
+  by the payoff-vectorization workstream, same machine, same process,
+  before/after, no change in results:
+  - Per-call at 300 paths: 6.13 ms (scalar reference implementation) →
+    0.12 ms (vectorized) — **~51×**.
+  - Full realistic scan workload (4000 products × 5 horizons × 2000
+    paths = 20,000 calls, varying financing levels, no result caching):
+    7.2–7.4 s total (0.36 ms/call), against ~700–820 s extrapolated for
+    the old implementation — **roughly 95–110×**, comfortably inside the
+    90 s budget for that workload.
+  - Correctness, not just speed, is verified:
+    `tests/simulation/test_payoff.py::test_vectorized_matches_reference_implementation`
+    compares the vectorized path against the retained scalar reference
+    implementation across all three product types × long/short,
+    element-wise at `atol=rtol=1e-9` for `net_returns`/`ko`/`mfe`/`mae`
+    plus every summary statistic — this is why the speedup did not
+    change any result reported elsewhere in this changelog.
+  - Remaining bottlenecks after the change (per cProfile): `np.quantile`
+    overhead, `maximum`/`minimum.accumulate`, the fair-value array calls,
+    and `first_hit_index`. No Python per-path loop remains.
+- **Score-formula correction** in `ranking/utility.py`'s final ranking
+  score (`score_jh`, Master Spec §18): the literal spec formula
+  (`score = LCB(U) * liquidity_factor * calibration_factor *
+  strategy_posterior_factor * positive_memory_factor`) is only
+  order-preserving when `LCB(U) >= 0` — for `LCB(U) < 0`, multiplying a
+  negative number by a smaller quality factor moves it toward zero
+  (backwards: a worse-quality candidate would rank *above* an otherwise
+  identical better one). Fixed by dividing (`LCB(U) / max(f, eps)`)
+  instead of multiplying when `LCB(U) < 0`, restoring "worse factor →
+  worse score" on both sides of zero; documented as a deliberate,
+  reasoned deviation from the literal spec text, not a new research
+  hypothesis (no separate trial_id opened). See the docstring of
+  `ranking/utility.py::score` for the full derivation.
+- **DuckDB schema migration** extended additively for every new table
+  introduced by the forward ledger, forecasts, position evaluations, and
+  schema-migration log (see `storage/schemas.py`/`storage/duckdb.py`);
+  existing `Store.init_schema()` migration behavior (§0.1.0) unchanged.
+
+### Fixed
+
+- `regime_bootstrap`'s silent 0%-activation dormancy (see "Changed" above).
+
+### Measured results
+
+- **Workstream W4 (2026-09-12):** protected-TSMOM-derived forecast
+  distribution and null-model walk-forward comparison, 4 underlyings × 5
+  horizons (20/20 combinations) plus one reduced-scope logistic data
+  point. **No model beat the null model out-of-sample** (worse Brier in
+  20/20 cells; ECE worse by 5–15× in nearly every cell; PSR ≈0.97–1.00 for
+  both models, an artifact of the 2010–2026 bull market, not evidence of
+  skill).
+- **Workstream W9 (2026-09-13):** six pre-registered challenger signal
+  families, 80 measured (family, underlying, horizon) cells. **0 of 80
+  cleared Benjamini-Hochberg FDR (α=0.10)** on Brier or return difference
+  vs. null; best single-cell edge 1.85 bp against a required 10 bp; 0/80
+  cleared realistic Turbo round-trip costs. All six recorded `dormant`.
+- **Workstream W5 (2026-09-12):** KO-probability path-model calibration
+  against 558 realized DAX start dates (2015–2025). Every method
+  over-predicts P(KO) at trading-relevant barrier distances; best
+  (`vol_scaled_bootstrap`) still over-predicts by a mean signed diff of
+  −0.019 at k=1.5–2σ — a conservative, quantified residual bias, not a
+  calibrated probability.
+- Full numbers, methods and sample sizes: `docs/measured_results.md`
+  (new). **Net effect on system behavior: the system currently outputs
+  "no trade" — no model has a measured advantage over doing nothing, and
+  thresholds are not lowered to manufacture suggestions.**
+
+### Migration
+
+- `SCHEMA_VERSION` bumped for the additive tables above (forward ledger,
+  forecasts, position evaluations, schema-migration log); existing
+  databases migrate automatically via `Store.init_schema()` on next run,
+  consistent with the additive-migration policy established in 0.1.0.
+
+---
+
 ## [Unreleased]
 
-### Planned (Phase 2–8)
+### Added
 
-- **Phase 2:** Multi-horizon underlying forecast, logistic regression, calibration, walk-forward validation
-- **Phase 3:** Path models (bootstrap, regime-conditioned, Monte Carlo), overnight gap modeling, barrier detection, KO probability
-- **Phase 4:** Product × horizon net-EV simulation, shrinkage, LCB, cluster risk analysis, ranking → ACTIONABLE gate unlocked
-- **Phase 5:** Daily manual position re-evaluation, HOLD/REDUCE/EXIT emails, tracking PnL and maximum favorable/adverse excursion
-- **Phase 6:** Alternative data (Eurex, Euwax, Cboe, ECB, FRED, CFTC)
-- **Phase 7:** Bayesian strategy posterior, ensemble weights, positive memory, drift detection
-- **Phase 8:** Experimental data (GDELT, SEC, EIA, attention alpha, lead/lag signals)
+- **CLI wiring for the Wave-2 integration** (`cli.py`, `cli_learn.py`,
+  Build Contract v3 §E), landed in parallel with this changelog entry:
+  `scan-all`, `label`, `learn`, `position reevaluate`, `report monthly`,
+  `research tournament`, `forecast`, `backtest` are now real CLI
+  subcommands (`uv run turboedge --help`), backed by the previously
+  library-only `pipeline/scan_all.py`, `positions/reevaluate.py`,
+  `reporting/{weekly,monthly}.py`, `learning/*`, `backtest/walkforward.py`.
+  `.github/workflows/pipeline.yml`'s four modes (`scan`/`eod`/`weekly`/
+  `monthly`) call these exact command names and are no longer blocked on
+  this wiring.
+
+### Planned
+
+- Further data sources (Eurex, Euwax, Cboe, FRED, CFTC) — no current plan.
 

@@ -231,6 +231,96 @@ Failed products marked DATA_QUALITY; not included in scoring.
 
 ---
 
-## 11. Change Log for Research Framework
+## 11. Research Trials This Quarter (2026 Q3)
+
+Trials consumed against the §1.2 quarterly adaptation budget (max 6/quarter)
+in 2026 Q3. Full numbers: `docs/measured_results.md`; per-signal detail:
+`SIGNAL_REGISTRY.md` §3; raw registry: `state/registry/failed_hypotheses.json`.
+
+### 11.1 Trials consumed
+
+- **W4 (2026-09-12):** measurement of the protected TSMOM baseline's
+  distributional mapping (`TsmomForecastModel`) and one reduced-scope
+  `LogisticDirectionModel` data point against the `NullModel` benchmark.
+  This was a **measurement of existing signals**, not a new feature
+  promotion — it does not itself consume a trial_id under §1.1 ("jede
+  Research-Änderung", i.e. a change, gets a trial_id), but it is the
+  evidentiary basis every W9 trial below was pre-registered against.
+- **W9 (2026-09-13): 6 trial_ids consumed**, one per pre-registered
+  signal family (§1.1's unit is the hypothesis/feature, not each
+  underlying/horizon cell it is measured on):
+
+  | trial_id | feature | quarter | status |
+  |---|---|---|---|
+  | W9-2026Q3-001 | `voltarget_tsmom` | 2026Q3 | dormant |
+  | W9-2026Q3-002 | `lowvol_regime_trend` | 2026Q3 | dormant |
+  | W9-2026Q3-003 | `reversal_short_horizon` | 2026Q3 | dormant |
+  | W9-2026Q3-004 | `vix_term_structure` | 2026Q3 | dormant |
+  | W9-2026Q3-005 | `cross_asset_leadlag` | 2026Q3 | dormant |
+  | W9-2026Q3-006 | `seasonality_turn_of_month` | 2026Q3 | dormant |
+
+  **6 of 6 trials in the 2026Q3 budget are consumed by W9 alone** (§1.2:
+  max 6/quarter). No further new signal-family trials should be opened
+  this quarter without either a documented regime-change justification
+  (§6.3 / Master Spec §23) or explicit governance review to raise the
+  budget.
+
+### 11.2 Effective number of hypotheses tested (for deflation)
+
+For Benjamini-Hochberg and DSR purposes, the **effective trial count for
+2026Q3 research is 80** — the actual number of (family, underlying,
+horizon) cells measured in W9 (not the 6 trial_ids, and not the 110
+originally pre-registered cells; §3.1's own convention is "the actual
+count measured, which may be smaller than what was pre-registered").
+`turboedge.backtest.significance.benjamini_hochberg` was applied
+separately to the 80 Brier-diff and 80 return-diff p-values;
+`turboedge.backtest.significance.deflated_sharpe_ratio` was computed per
+family with `n_trials=80`. This is the honest deflation denominator; using
+the smaller 6-trial_id count instead would understate the multiple-testing
+penalty.
+
+### 11.3 Ladder Rule applied — no promotions
+
+Applying §2 (Ladder Rule) to every trial above:
+
+- **§2.1 (z-score / DSR / PSR):** 0 of 80 measured cells cleared
+  Benjamini-Hochberg FDR at α=0.10 on either Brier-score or
+  signal-direction-return difference vs. null. DSR was ≈1.000 for every
+  family, but this is explicitly not informative in isolation (see
+  `docs/measured_results.md` §2 — it is a sample-period artifact shared
+  by the null model itself, not evidence of skill).
+- **§2.2 (minimum effect size, ≥10 bps / ≥0.0010 net-EV):** the single
+  best effect across the entire 2026Q3 sweep is **1.85 bp**
+  (`vix_term_structure`, its most favorable cell) — roughly 5× below the
+  10 bp minimum, and every family's own best single cell
+  (`incremental_net_ev` in `state/registry/failed_hypotheses.json`) is
+  1–2 orders of magnitude below the 0.0010 floor.
+- **Conclusion: 0 of 6 W9 trials promoted.** None reached even the
+  ordinary ladder, let alone the stricter mean-reversion-specific bar
+  pre-registered for `reversal_short_horizon` (Master Spec §3.4: BH-sig.
+  AND deflated z≥2.0 AND DSR≥0.6 — moot, since it did not clear the
+  ordinary bar either). Per §6.2/§6.3, all six are logged `dormant` (not
+  yet eligible for archival to "rejected" — that requires 2 quarters with
+  0 promotions and a confirmed, unrelated regime change, per §6.3).
+
+### 11.4 Registry reference
+
+All six 2026Q3 trial outcomes are recorded in
+`state/registry/failed_hypotheses.json` (`turboedge.learning.failed_hypotheses`,
+never hand-edited), each with `trial_id`, `feature`, `status: "dormant"`,
+`incremental_net_ev` (best single cell, not mean), `effective_sample`
+(summed OOS prediction count across that family's measured cells,
+34,542–48,304 per family), and `horizons`. Master Spec §23 ("Positive
+Muster verstärken, negative Muster nicht löschen" / Rule 31): these
+entries are retained, not deleted, so none of the six is blindly retried
+next quarter without a documented regime-change justification.
+
+---
+
+## 12. Change Log for Research Framework
 
 - **2026-09-10:** Framework v1.0.0 established for Phase 0+1. Trial budget: 6/quarter. Ruin threshold: 20% / 12mo / 5% probability.
+- **2026-09-13:** §11 added — 2026Q3 research trials (W4 measurement, W9's
+  6 pre-registered challenger families) recorded; 0 promotions; existing
+  versioned values (budget, ladder thresholds, ruin metric, sizing caps)
+  unchanged.

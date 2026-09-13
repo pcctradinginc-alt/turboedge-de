@@ -583,7 +583,7 @@ def test_second_scan_later_day_uses_realized_financing_spread(
         options=ScanOptions(underlying_id="DAX"),
     )
     candidate_day1 = next(c for c in result_day1.candidates if c.isin == "DE000ROLL001")
-    assert "financing_spread_default" in candidate_day1.reasons
+    assert "financing_spread_source:financing_spread_default" in candidate_day1.reasons
     assert candidate_day1.realized_financing_spread == pytest.approx(
         cfg.risk.default_financing_spread
     )
@@ -610,7 +610,8 @@ def test_second_scan_later_day_uses_realized_financing_spread(
         options=ScanOptions(underlying_id="DAX"),
     )
     candidate_day2 = next(c for c in result_day2.candidates if c.isin == "DE000ROLL001")
-    assert "financing_spread_default" not in candidate_day2.reasons
+    assert "financing_spread_source:financing_spread_default" not in candidate_day2.reasons
+    assert "financing_spread_source:realized_history" in candidate_day2.reasons
     assert candidate_day2.realized_financing_spread == pytest.approx(true_spread, abs=1e-4)
 
 

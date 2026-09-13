@@ -22,12 +22,13 @@ BNP Paribas (``derivate.bnpparibas.com``)
   header is required (confirmed live with a bare, cookie-less client).
   ``productSetIds`` **must** be ``null`` -- a guessed non-null default
   silently returns ``total: 0`` for every query (no HTTP error at all).
-- Pagination: ``offset``/``limit``. A dedicated live probe in this session
-  confirmed ``limit`` up to (at least) 1000 is honored by the server (the
-  DAX book currently totals ~4340 across all derivative-type variants), so a
-  page size of 1000 comfortably covers the full book within a handful of
-  pages -- well under ``max_pages`` from ``SourceConfig``. If ``total``
-  still exceeds ``max_pages * _BNP_PAGE_SIZE`` for some underlying, this is
+- Pagination: ``offset``/``limit``. A dedicated live probe confirmed
+  ``limit`` up to (at least) 1000 is honored by the server (the DAX book
+  totals ~11,529 rows post-Befund-1 across every *included*
+  derivative-type id -- see Pitfall 4 below), so a page size of 1000
+  comfortably covers the full book within a handful of pages -- well under
+  ``max_pages`` from ``SourceConfig``. If ``total`` still exceeds
+  ``max_pages * _BNP_PAGE_SIZE`` for some underlying, this is
   logged as ``bnp_partial_universe`` (WARN) with covered/total counts and
   surfaced via :meth:`BnpParibasTurboAdapter.healthcheck`, never silently
   truncated. The same live probe confirmed no server-side leverage-range or
@@ -42,6 +43,28 @@ BNP Paribas (``derivate.bnpparibas.com``)
   adapter, which normalizes every row honestly (including knocked-out ones,
   via the ``knocked_out``/``bid_only`` fields) and lets those later stages
   decide.
+- Pitfall 4b / Befund 1 (e) (2026-09-13 live finding): BNP's backend enforces
+  an undocumented hard ``offset`` ceiling -- confirmed live for the *same*
+  query, same derivativeTypeIds, same underlying: ``offset=9000`` -> ``200
+  OK``, ``offset=10000`` -> ``500`` (a generic "internal server error" page,
+  no structured error body). This is independent of ``derivativeTypeIds``
+  breadth or ``limit``; it only ever mattered once this session's own
+  Unlimited-Turbo coverage fix pushed DAX (11,529) and Nasdaq 100 (10,167)
+  both *past* 10,000 rows -- the pre-fix ~4,304-row DAX book never reached
+  it. :meth:`BnpParibasTurboAdapter._fetch_all_pages` treats an HTTP error on
+  any page *after* the first as this ceiling (not a fatal outage): it stops
+  pagination and returns whatever was already collected rather than raising
+  and discarding it, logging ``bnp_pagination_offset_error`` distinctly from
+  a plain HTTP failure; the existing ``bnp_partial_universe`` WARN then
+  reports the resulting covered/total gap exactly as it already does for a
+  ``max_pages``-limited fetch. An error on the very *first* page is still a
+  genuine reachability failure and still raises
+  (``AdapterHttpError``, unchanged). No ``configs/sources.yaml`` value can
+  raise this ceiling -- it is server-side and outside ``max_pages``'s
+  control entirely; the DAX/Nasdaq 100 tail beyond row 10,000 (~1,529 /
+  ~167 rows respectively) is therefore structurally unreachable via this
+  endpoint's pagination as it exists today, not a coverage gap this adapter
+  can close.
 - Pitfall 1 (session-critical): outside BNP's active quoting session, the
   ``ask`` key is dropped from the JSON object **entirely** (not ``null`` --
   absent). Code that does ``p["ask"]`` crashes; this adapter always uses
@@ -70,6 +93,86 @@ BNP Paribas (``derivate.bnpparibas.com``)
   ``pipeline/scan.py._resolve_spot`` uses *that* timestamp (never
   ``quote_timestamp``) to decide whether ``underlying_price_ref`` is fresh
   enough to use in place of the cross-issuer consensus spot.
+- Pitfall 4 / Befund 1 (2026-09-13 live derivativeTypeId census): the
+  previous ``_BNP_DERIVATIVE_TYPE_IDS`` filter (7/9/23/24 plus six
+  historically-zero dated-turbo placeholders) covered only ~4,304 of DAX's
+  live book and ~2,124 of Nasdaq 100's -- **not** the full turbo/KO universe
+  this project's cost/product-selection edge (Spec Section 15/17) depends on.
+  A full live census was run this session: a group-testing/bisection scan
+  over ``derivativeTypeIds`` 1-699 (each candidate's ``total`` probed via a
+  ``limit=1`` query, recursively split whenever a batch's ``total > 0``,
+  politely rate-limited to <=1 request/s) found **26 distinct ids actually
+  populated** for DAX, whose ``total``s summed to exactly the unfiltered
+  wide-range total (39,351) -- i.e. the scan is provably exhaustive over that
+  range, not a sample. Every id's plain-text name (``derivativeTypeName``)
+  and 1-3 ``productName``/structural samples (``first.strikeAbsolute``,
+  ``first.knockOutAbsolute``, ``config.derivativeDirectionName``) were
+  fetched to classify it. Result -- see ``_BNP_DERIVATIVE_TYPE_CATALOG``
+  below for the complete id-by-id table with each inclusion/exclusion
+  decision and its live-observed structural evidence; in summary:
+
+  - **Included** (turbo/mini-future/open-end-KO family -- this project's
+    intrinsic/barrier/financing pricing model applies): 7 (Turbo Long), 9
+    (Turbo Short), 23 (MINI Long), 24 (MINI Short) -- already present -- plus
+    **67 (Unlimited Long) and 68 (Unlimited Short), newly added**. These two
+    were the single largest gap: live-verified ``first.strikeAbsolute ==
+    first.knockOutAbsolute`` (open-end turbo structure, barrier==financing
+    level) and ``maturityDateTimestamp == -1`` on every sampled row, exactly
+    like ids 7/9 -- BNP's "Unlimited Turbo" is structurally identical to its
+    "Turbo"/classic open-end turbo, just a separate product-line brand. They
+    account for 7,225 of DAX's ~11,529-row post-fix book and 8,043 of Nasdaq
+    100's ~10,167-row post-fix book (measured live, 2026-09-13) -- i.e. the
+    *majority* of both underlyings' true turbo universe was being silently
+    excluded before this fix.
+  - **Excluded** (never added to the request filter, so never fetched at
+    all -- not merely rejected after the fact): plain warrants/Optionsscheine
+    (Call id 11, Put id 12, Inline id 677 -- live-verified
+    ``knockOutAbsolute=null``, no KO barrier, priced on pure optionality);
+    Faktor-Zertifikate (Faktor Long id 515, Faktor Short id 528 --
+    live-verified ``knockOutAbsolute=null``/``ratio=null``, daily-reset
+    compounding leverage, not a strike/barrier product at all -- explicitly
+    out of scope per Befund 1's decision criteria, this system prices
+    barrier/intrinsic KO products only); Discount/Bonus/Express families
+    (Discount id 10, Discount Call id 15, Discount Put id 17, Discount Call
+    Plus id 75, Discount Put Plus id 76, Bonus id 13, Reverse Bonus id 16,
+    Capped Bonus id 21, Capped Reverse Bonus id 25, Bonus Call id 92, Memory
+    Express Zertifikat id 33, Express-Zertifikat id 433, Fix Kupon Express id
+    410 -- all live-verified with ``strikeAbsolute``/``knockOutAbsolute``
+    either ``null`` or not representing an instant knock-out, i.e. a
+    conditional/path-observed payoff trigger or a fixed-coupon note, not a
+    turbo); two bond/note types (Strukturierte Anleihe id 318, Andere
+    Zinsanleihe id 330 -- capital-protection/coupon notes, no barrier at
+    all). None of these were added to ``_BNP_DERIVATIVE_TYPE_IDS`` -- this is
+    a deliberate scope decision (turbo/KO products only), not an oversight;
+    seeing a request/response cycle for these live confirmed a defense-in-
+    depth property too, kept even though these ids are never requested: any
+    of these rows, if it ever appeared, would already fail
+    :meth:`BnpParibasTurboAdapter._build_snapshot`'s required-field checks
+    (missing ``first.strikeAbsolute``/``first.knockOutAbsolute``/
+    ``first.ratio``, or an unmapped ``derivativeDirectionName`` like
+    ``"call"``/``None``) and land in ``last_errors`` rather than being
+    mispriced -- see
+    ``tests/fixtures/issuer_feeds/bnp_paribas/productlist_leverage_dax_excluded_product_types_sample.json``
+    for a real-captured Call/Bonus sample and
+    ``test_bnp_excluded_product_type_rows_are_rejected_not_mispriced``.
+  - **Unchanged** (already in the filter, still zero live rows every time
+    checked -- 238/239/580/581/669/670): not present among the 26 nonzero
+    ids this census found either, reconfirming the pre-existing module note
+    below (BNP is not currently issuing any dated/other-family leverage
+    product on any index it covers) -- kept in the request purely as
+    zero-cost forward-compatibility for a dated-turbo product that could
+    reappear.
+
+  ``max_pages``/pagination headroom (Befund 1 (e)): at ``_BNP_PAGE_SIZE``
+  =1000 and the existing (unchanged, ``configs/sources.yaml``-owned)
+  ``max_pages=20``, up to 20,000 rows/underlying are reachable. Both
+  post-fix totals measured live (DAX 11,529, Nasdaq 100 10,167) fit
+  comfortably within that (12 pages needed at most) -- **no** ``max_pages``
+  increase is currently required for either enabled underlying. Were Euro
+  Stoxx 50/S&P 500 enabled in ``configs/universe.yaml`` and their true
+  (Unlimited-Turbo-inclusive) totals to exceed 20,000, ``max_pages`` would
+  need raising above 20 -- flagged here rather than changed, since
+  ``configs/sources.yaml`` is out of this change's scope.
 
 Citi / CitiFirst (``de.citifirst.com``)
 -----------------------------------------
@@ -312,14 +415,148 @@ _BNP_ISSUER = "BNP Paribas"
 _BNP_DEFAULT_BASE_URL = "https://derivate.bnpparibas.com/apiv2/api/v1"
 _BNP_UNDERLYING_INDEXES_PATH = "/underlying/indexes"
 _BNP_PRODUCTLIST_LEVERAGE_PATH = "/productlist/leverage"
-# Default derivative-type filter covering turbo/mini/KO variants -- the exact
-# numeric -> label mapping was never decoded from the bundle; each row
-# self-describes via `derivativeTypeName` (e.g. "Turbo Long", "MINI Short").
-_BNP_DERIVATIVE_TYPE_IDS: tuple[int, ...] = (7, 9, 23, 24, 238, 239, 580, 669, 670, 581)
-# Confirmed live (this session's coordinator-requested pagination probe):
-# limit up to (at least) 1000 is honored by the server unchanged. The DAX
-# book currently totals ~4340 across all derivative-type variants, so 1000
-# keeps full coverage within ~5 pages, well under `max_pages` from config.
+
+
+@dataclass(frozen=True, slots=True)
+class _BnpDerivativeType:
+    """One ``derivativeTypeId`` BNP's productlist/leverage API recognizes.
+
+    ``name`` is BNP's own ``derivativeTypeName`` (confirmed live). ``included``
+    decides whether :data:`_BNP_DERIVATIVE_TYPE_IDS` (derived from this table
+    below, single source of truth) requests it at all. ``reason`` records the
+    live structural evidence behind that decision -- see module docstring
+    "Pitfall 4 / Befund 1" for the full research narrative and methodology.
+    """
+
+    name: str
+    included: bool
+    reason: str
+
+
+# Full live census (2026-09-13, this session): a rate-limited (<=1 req/s)
+# group-testing/bisection scan of derivativeTypeIds 1-699 against BNP's DAX
+# book found exactly these 26 ids populated (their `total`s sum to 39,351,
+# matching the unfiltered wide-range total exactly -- the scan is exhaustive
+# over 1-699, not a sample) plus the 6 below that stayed at zero both then
+# and in this session's re-check (238/239/580/581/669/670, kept anyway as
+# zero-cost forward-compat -- see module docstring). CLAUDE.md rule 29 (never
+# silently guess pricing-critical scope): every id BNP actually serves is
+# listed here with its plain-text name and an explicit, evidenced
+# include/exclude decision -- none are silently dropped by omission.
+_BNP_DERIVATIVE_TYPE_CATALOG: dict[int, _BnpDerivativeType] = {
+    7: _BnpDerivativeType("Turbo Long", True, "open-end turbo; strike==knockOut confirmed live"),
+    9: _BnpDerivativeType("Turbo Short", True, "open-end turbo; strike==knockOut confirmed live"),
+    10: _BnpDerivativeType(
+        "Discount", False, "no KO barrier; knockOutAbsolute=null live, fixed-cap payoff"
+    ),
+    11: _BnpDerivativeType(
+        "Call",
+        False,
+        "vanilla Optionsschein; knockOutAbsolute=null, direction='call' unmapped, no KO barrier",
+    ),
+    12: _BnpDerivativeType(
+        "Put",
+        False,
+        "vanilla Optionsschein; knockOutAbsolute=null, direction='put' unmapped, no KO barrier",
+    ),
+    13: _BnpDerivativeType(
+        "Bonus",
+        False,
+        "conditional barrier-observation payoff, not instant KO; strike/knockOut both null live",
+    ),
+    15: _BnpDerivativeType("Discount Call", False, "Discount family, no KO barrier"),
+    16: _BnpDerivativeType("Reverse Bonus", False, "Bonus family, no instant KO barrier"),
+    17: _BnpDerivativeType("Discount Put", False, "Discount family, no KO barrier"),
+    21: _BnpDerivativeType("Capped Bonus", False, "Bonus family, no instant KO barrier"),
+    23: _BnpDerivativeType(
+        "MINI Long", True, "mini future (structural buffer); production since 2026-09-11"
+    ),
+    24: _BnpDerivativeType(
+        "MINI Short", True, "mini future (structural buffer); production since 2026-09-11"
+    ),
+    25: _BnpDerivativeType("Capped Reverse Bonus", False, "Bonus family, no instant KO barrier"),
+    33: _BnpDerivativeType(
+        "Memory Express Zertifikat", False, "Express family, path-dependent coupon, no KO barrier"
+    ),
+    67: _BnpDerivativeType(
+        "Unlimited Long",
+        True,
+        "open-end turbo (BNP's 'Unlimited Turbo' brand); strike==knockOut, maturity=-1 confirmed "
+        "live -- 7,225 DAX / 8,043 NDX rows, the largest single coverage gap found this session",
+    ),
+    68: _BnpDerivativeType(
+        "Unlimited Short",
+        True,
+        "open-end turbo (BNP's 'Unlimited Turbo' brand); strike==knockOut, maturity=-1 confirmed "
+        "live -- see id 67",
+    ),
+    75: _BnpDerivativeType("Discount Call Plus", False, "Discount family, no KO barrier"),
+    76: _BnpDerivativeType("Discount Put Plus", False, "Discount family, no KO barrier"),
+    92: _BnpDerivativeType("Bonus Call", False, "Bonus family, no instant KO barrier"),
+    238: _BnpDerivativeType(
+        "(reserved -- dated-turbo hypothesis)",
+        True,
+        "zero live rows in every check to date; kept as zero-cost forward-compat, see docstring",
+    ),
+    239: _BnpDerivativeType(
+        "(reserved -- dated-turbo hypothesis)",
+        True,
+        "zero live rows in every check to date; kept as zero-cost forward-compat, see docstring",
+    ),
+    318: _BnpDerivativeType(
+        "Strukturierte Anleihe", False, "capital-protection note, no KO barrier"
+    ),
+    330: _BnpDerivativeType("Andere Zinsanleihe", False, "coupon note, no KO barrier"),
+    410: _BnpDerivativeType("Fix Kupon Express", False, "Express family, no KO barrier"),
+    433: _BnpDerivativeType("Express-Zertifikat", False, "Express family, no KO barrier"),
+    515: _BnpDerivativeType(
+        "Faktor Long",
+        False,
+        "daily-reset compounding leverage; knockOutAbsolute=null/ratio=null live, no strike/"
+        "barrier structure this project's pricing model can represent -- explicitly out of "
+        "scope per Befund 1",
+    ),
+    528: _BnpDerivativeType(
+        "Faktor Short",
+        False,
+        "daily-reset compounding leverage; see id 515",
+    ),
+    580: _BnpDerivativeType(
+        "(reserved -- dated-turbo hypothesis)",
+        True,
+        "zero live rows in every check to date; kept as zero-cost forward-compat, see docstring",
+    ),
+    581: _BnpDerivativeType(
+        "(reserved -- dated-turbo hypothesis)",
+        True,
+        "zero live rows in every check to date; kept as zero-cost forward-compat, see docstring",
+    ),
+    669: _BnpDerivativeType(
+        "(reserved -- dated-turbo hypothesis)",
+        True,
+        "zero live rows in every check to date; kept as zero-cost forward-compat, see docstring",
+    ),
+    670: _BnpDerivativeType(
+        "(reserved -- dated-turbo hypothesis)",
+        True,
+        "zero live rows in every check to date; kept as zero-cost forward-compat, see docstring",
+    ),
+    677: _BnpDerivativeType(
+        "Inline", False, "range/corridor Optionsschein; all structural fields null live"
+    ),
+}
+
+# Derived, single source of truth: every id the request filter actually
+# sends, sorted for a deterministic/reviewable request body.
+_BNP_DERIVATIVE_TYPE_IDS: tuple[int, ...] = tuple(
+    sorted(tid for tid, entry in _BNP_DERIVATIVE_TYPE_CATALOG.items() if entry.included)
+)
+# Confirmed live: limit up to (at least) 1000 is honored by the server
+# unchanged. Post-Befund-1 (2026-09-13, with the Unlimited Turbo ids 67/68
+# added), the DAX book totals ~11,529 and Nasdaq 100 ~10,167 across every
+# included derivative-type id -- 1000 keeps full coverage within <=12 pages,
+# still well under `max_pages` (20) from config; see module docstring
+# "Pitfall 4 / Befund 1" for the max_pages headroom analysis.
 _BNP_PAGE_SIZE = 1000
 
 _BNP_DIRECTION_MAP: dict[str, Direction] = {"long": Direction.LONG, "short": Direction.SHORT}
@@ -439,7 +676,9 @@ class BnpParibasTurboAdapter:
                 logger.warning("bnp_underlying_unresolved", underlying_id=underlying_id)
                 continue
 
-            raw_items, total, response_date = self._fetch_all_pages(instrument_id)
+            raw_items, total, response_date = self._fetch_all_pages(
+                instrument_id, underlying_id=underlying_id
+            )
             covered = len(raw_items)
             if total is not None and covered < total:
                 self._partial_universe[underlying_id] = (covered, total)
@@ -463,7 +702,7 @@ class BnpParibasTurboAdapter:
         return snapshots
 
     def _fetch_all_pages(
-        self, instrument_id: int
+        self, instrument_id: int, *, underlying_id: str
     ) -> tuple[list[dict[str, Any]], int | None, datetime | None]:
         url = f"{self._base_url}{_BNP_PRODUCTLIST_LEVERAGE_PATH}"
         headers = _bnp_headers(self._http.user_agent)
@@ -499,7 +738,41 @@ class BnpParibasTurboAdapter:
                 ],
                 "allowLeverageGrouping": False,
             }
-            raw = self._http.post_json(url, json=body, headers=headers)
+            try:
+                raw = self._http.post_json(url, json=body, headers=headers)
+            except AdapterHttpError:
+                if page_index == 0:
+                    # First page failing is a genuine outage/reachability
+                    # problem for this underlying -- nothing to salvage,
+                    # propagate exactly as before this fix (see
+                    # test_bnp_http_500_retries_then_raises_adapter_http_error).
+                    raise
+                # Befund 1 (e) live finding (2026-09-13): BNP's own backend
+                # enforces an undocumented hard offset ceiling around 10000
+                # (confirmed live: offset=9000 -> 200 OK, offset=10000 -> 500,
+                # for the SAME query, no server-side error body beyond a
+                # generic "internal server error" page) -- independent of
+                # max_pages/derivativeTypeIds breadth, and newly *reachable*
+                # by this session's own coverage fix (DAX 11,529 / Nasdaq 100
+                # 10,167 both now exceed it; the pre-fix ~4,304-row DAX book
+                # never did). Crashing the whole fetch here would silently
+                # zero out every already-successfully-fetched page too (a
+                # BNP-outage single-point-of-failure risk for THIS adapter,
+                # same family as the gettex/reference_spot finding elsewhere
+                # this session) -- instead, stop pagination and return what
+                # was already collected, letting the existing
+                # bnp_partial_universe WARN (fetch_products, keyed off
+                # `total` from the last successful page) report the honest
+                # covered/total gap, exactly as it already does for a
+                # max_pages-limited fetch.
+                logger.warning(
+                    "bnp_pagination_offset_error",
+                    underlying_id=underlying_id,
+                    offset=offset,
+                    page_index=page_index,
+                    covered_so_far=len(collected),
+                )
+                break
             if not isinstance(raw, dict) or "productListResponse" not in raw:
                 raise AdapterError(f"unexpected BNP productlist/leverage response shape: {raw!r}")
             result = raw["productListResponse"]
@@ -590,6 +863,31 @@ class BnpParibasTurboAdapter:
         open_end = maturity_ts == -1
         # Dated-maturity timestamp unit/epoch format was never observed/
         # confirmed by research -- never guess-parsed (CLAUDE.md rule 29).
+        #
+        # Build Contract W1 (2026-09-11/12 measurement): a live, full-
+        # coverage pull of BNP's entire DAX book under every derivativeTypeId
+        # this adapter requests (7/9/23/24/238/239/580/581/669/670) found
+        # `maturityDateTimestamp == -1` on all 4304/4304 rows -- i.e. BNP's
+        # *currently issued* DAX turbo/mini book is 100% open-end right now.
+        # A separate live probe of the six derivativeTypeIds never observed
+        # in the DAX book (238/239/580/581/669/670 -- plausible dated-
+        # "TURBO_CLASSIC"/other-family candidates) returned zero rows across
+        # *all 14* of BNP's index underlyings, not just DAX. So a dated
+        # (non -1) row is not merely rare in this adapter's sample -- it
+        # appears BNP is not currently issuing any dated leverage product on
+        # any index it covers. This does not retire the "unconfirmed format"
+        # concern (a dated row could reappear at any time as BNP's live book
+        # changes, and would still need this same never-guess handling), but
+        # it does mean the maturity-parsing gap below is presently inert
+        # (never triggered by observed data), not the root cause of any
+        # currently-observed mispricing -- see the Build Contract measurement
+        # report for the actual mechanism found instead.
+        #
+        # Befund 1 follow-up (2026-09-13): the two newly-added ids (67/68,
+        # "Unlimited Long"/"Unlimited Short") were independently re-checked
+        # live and found `maturityDateTimestamp == -1` on every sampled row
+        # too -- consistent with the rest of the currently-issued DAX/Nasdaq
+        # 100 book, not a new exception to this note.
         maturity: date | None = None
         if not open_end:
             logger.warning(
@@ -599,6 +897,13 @@ class BnpParibasTurboAdapter:
             )
 
         product_type = classify_product_type(
+            # BNP's own product name (e.g. "Mini Long auf den DAX(R)",
+            # "Turbo Short auf den DAX(R)") as an explicit name-based signal,
+            # in addition to the structural barrier-vs-financing-level
+            # comparison -- see universe/classify.py's Mini Future keyword
+            # list (confirmed live, 2026-09-11 research session, this
+            # adapter never actually passed a name before this fix).
+            type_text=p.get("productName"),
             financing_level=financing_level,
             knockout_barrier=knockout_barrier,
             open_end=open_end,
@@ -1026,6 +1331,14 @@ class CitiFirstTurboAdapter:
         open_end = maturity is None
 
         product_type = classify_product_type(
+            # Citi exposes an explicit, unambiguous product-family field
+            # (observed values: "OpenEndTurbo", "MiniFuture" -- live probe,
+            # 2026-09-11 research session) -- pass it as the name-based
+            # signal in addition to the structural barrier comparison, same
+            # rationale as the BNP adapter above. "MiniFuture" (no space)
+            # still matches classify_product_type's "minifuture" keyword
+            # after lowercasing.
+            type_text=it.get("productType"),
             financing_level=strike,
             knockout_barrier=ko_barrier,
             open_end=open_end,
@@ -1113,6 +1426,14 @@ class CitiFirstTurboAdapter:
         observation_time = quote_timestamp if quote_timestamp is not None else now
         source_timestamp = quote_timestamp
 
+        # Contract v3 "Finanzierungsspread-Prioritaet" (b): Citi's own
+        # annualized funding rate (decimal, e.g. 0.0622 for 6.22% p.a.),
+        # when present -- `financing_spread = fundingRate - ref_rate` is
+        # computed downstream (pipeline/scan.py) only when it is not None
+        # and no realized-history spread is available; never guessed here.
+        funding_rate_raw = it.get("fundingRate")
+        financing_rate = float(funding_rate_raw) if funding_rate_raw is not None else None
+
         return ProductSnapshot(
             isin=isin,
             wkn=wkn,
@@ -1143,6 +1464,7 @@ class CitiFirstTurboAdapter:
             product_age_days=None,
             underlying_price_ref=None,
             underlying_price_ref_timestamp=None,
+            financing_rate=financing_rate,
             raw_hash=_raw_hash(it),
             observation_time=observation_time,
             available_at=now,

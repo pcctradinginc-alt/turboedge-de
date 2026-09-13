@@ -12,17 +12,19 @@ Two structural limitations, both a consequence of this function's fixed,
 contract-specified signature (it receives a single ``ProductSnapshot`` plus
 a scalar ``consensus``, not an FX-rate table or a full cost decomposition):
 
-- FX conversion: the intrinsic-value plausibility check only runs when the
+- FX conversion: the fair-value plausibility check only runs when the
   product's ``underlying_currency`` matches its ``currency`` (i.e. an
   implicit fx=1 is safe). A genuinely cross-currency product (e.g. a EUR
-  certificate on SPX) gets a warning instead of a possibly-wrong intrinsic
+  certificate on SPX) gets a warning instead of a possibly-wrong fair-value
   comparison, since no FX rate is available here.
 - Margin plausibility: without ``fair_gap_premium``/``financing_spread``
   inputs this layer cannot compute the full issuer-margin decomposition
   from ``pricing/issuer_margin.py``. ``margin_warn_pct`` is instead applied
-  to the coarser ``(mid - intrinsic) / ask`` "raw premium" ratio as an early
-  warning signal; the precise ``issuer_margin_pct`` check belongs to the
-  scan pipeline once ``decompose_ask`` has run.
+  to the coarser ``(mid - fair_value) / ask`` "raw premium" ratio (Build
+  Contract W1: ``pricing/fair_value.theoretical_fair_value``, not plain
+  intrinsic value, so a ``turbo_classic``'s real carry is not mistaken for
+  an anomaly) as an early warning signal; the precise ``issuer_margin_pct``
+  check belongs to the scan pipeline once ``decompose_ask`` has run.
 """
 
 from __future__ import annotations
@@ -30,7 +32,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from turboedge.pricing.intrinsic import implied_underlying, intrinsic_value
+from turboedge.pricing.fair_value import dividend_yield_for_underlying, theoretical_fair_value
+from turboedge.pricing.intrinsic import implied_underlying
 from turboedge.storage.schemas import Direction, ProductSnapshot, ProductType
 
 # Barrier == financing_level is expected for turbo_open_end / turbo_classic;
@@ -71,8 +74,18 @@ def check_product(
     max_quote_age_s: float,
     known_issuers: frozenset[str] | None,
     margin_warn_pct: float,
+    *,
+    ref_rate: float = 0.0,
 ) -> IntegrityReport:
-    """Run every integrity check from Master Spec §6 against one product snapshot."""
+    """Run every integrity check from Master Spec §6 against one product snapshot.
+
+    ``ref_rate`` (annual, decimal) is only used by the fair-value/premium
+    plausibility check below, and only matters for a ``turbo_classic``
+    (Build Contract W1: it discounts the fixed strike to ``now.date()``);
+    it has no effect on ``turbo_open_end``/``mini_future`` (fair value ==
+    intrinsic, no discounting), so its ``0.0`` default is safe for every
+    caller/test that only ever prices those product types.
+    """
     failures: list[str] = []
     warnings: list[str] = []
 
@@ -135,7 +148,17 @@ def check_product(
             elif side_ok and p.knocked_out:
                 warnings.append("marked_knocked_out_but_spot_still_active")
 
-    # -- intrinsic value / premium plausibility ---------------------------
+    # -- fair value / premium plausibility ---------------------------
+    # Build Contract W1: plausibility is checked against the same
+    # theoretical fair value pricing/issuer_margin.decompose_ask uses, not
+    # plain intrinsic value -- for turbo_open_end/mini_future (everything
+    # observed live so far) the two are identical, so this is a no-op on
+    # today's data; for a turbo_classic (fixed strike/maturity), a real,
+    # legitimate carry/present-value gap between the two means an
+    # intrinsic-only check would misfire "bid_below_intrinsic" /
+    # "premium_pct_high" on an honestly-priced product (exactly the failure
+    # mode this milestone's measurement found -- see the Build Contract
+    # report).
     spot_ref = consensus if consensus is not None else p.underlying_price_ref
     same_currency = p.underlying_currency is None or p.underlying_currency == p.currency
     if (
@@ -145,17 +168,43 @@ def check_product(
         and spot_ref is not None
     ):
         if same_currency:
-            intrinsic = intrinsic_value(spot_ref, p.financing_level, p.ratio, p.direction, fx=1.0)
-            tolerance = max(
-                intrinsic * _INTRINSIC_PLAUSIBILITY_TOLERANCE_PCT, _INTRINSIC_PLAUSIBILITY_ABS_FLOOR
-            )
-            if p.bid < intrinsic - tolerance:
-                failures.append("bid_below_intrinsic")
-            mid = (p.bid + p.ask) / 2.0
-            if p.ask > 0:
-                premium_pct = (mid - intrinsic) / p.ask
-                if premium_pct > margin_warn_pct:
-                    warnings.append("premium_pct_high")
+            fair_value: float | None
+            try:
+                fair_value = theoretical_fair_value(
+                    direction=p.direction,
+                    product_type=p.product_type,
+                    spot=spot_ref,
+                    financing_level=p.financing_level,
+                    knockout_barrier=(
+                        p.knockout_barrier if p.knockout_barrier is not None else p.financing_level
+                    ),
+                    ratio=p.ratio,
+                    fx=1.0,
+                    ref_rate=ref_rate,
+                    financing_spread=0.0,
+                    as_of=now.date(),
+                    maturity=p.maturity,
+                    dividend_yield=dividend_yield_for_underlying(p.underlying_id),
+                )
+            except ValueError:
+                # turbo_classic with an unresolvable maturity (e.g. the BNP
+                # timestamp-format gap, adapters/issuer_feeds.py) -- never
+                # guess a fair value; skip this plausibility pass rather
+                # than silently falling back to (possibly wrong) intrinsic.
+                fair_value = None
+                warnings.append("fair_value_unavailable_for_plausibility_check")
+            if fair_value is not None:
+                tolerance = max(
+                    fair_value * _INTRINSIC_PLAUSIBILITY_TOLERANCE_PCT,
+                    _INTRINSIC_PLAUSIBILITY_ABS_FLOOR,
+                )
+                if p.bid < fair_value - tolerance:
+                    failures.append("bid_below_intrinsic")
+                mid = (p.bid + p.ask) / 2.0
+                if p.ask > 0:
+                    premium_pct = (mid - fair_value) / p.ask
+                    if premium_pct > margin_warn_pct:
+                        warnings.append("premium_pct_high")
         else:
             warnings.append("fx_conversion_unavailable_for_intrinsic_check")
 

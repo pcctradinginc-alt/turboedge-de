@@ -25,6 +25,15 @@ _MINI_FUTURE_KEYWORDS: tuple[str, ...] = (
     "minifuture",
     "smart turbo",
     "turbo pro",
+    # BNP Paribas' actual live product-name convention (confirmed live,
+    # 2026-09-11 research session, e.g. "Mini Long auf den DAX(R)"/"Mini
+    # Short auf den DAX(R)") never contains the word "future" at all --
+    # without these two, the name-based branch below never actually fires
+    # for BNP (it happened to still classify correctly via the structural
+    # barrier-vs-financing-level fallback, but the name signal this branch
+    # exists for was silently unused).
+    "mini long",
+    "mini short",
 )
 
 

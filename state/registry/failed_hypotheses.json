@@ -1,0 +1,98 @@
+[
+  {
+    "effective_sample": 34542,
+    "feature": "cross_asset_leadlag",
+    "horizons": [
+      "10d",
+      "14d",
+      "3d",
+      "5d",
+      "7d"
+    ],
+    "incremental_net_ev": 8.4e-05,
+    "recorded_at": "2026-09-13T11:32:37.825674Z",
+    "regime_change_note": null,
+    "status": "dormant",
+    "trial_id": "W9-2026Q3-005"
+  },
+  {
+    "effective_sample": 48304,
+    "feature": "lowvol_regime_trend",
+    "horizons": [
+      "10d",
+      "14d",
+      "3d",
+      "5d",
+      "7d"
+    ],
+    "incremental_net_ev": 7.1e-05,
+    "recorded_at": "2026-09-13T11:32:37.826608Z",
+    "regime_change_note": null,
+    "status": "dormant",
+    "trial_id": "W9-2026Q3-002"
+  },
+  {
+    "effective_sample": 48304,
+    "feature": "reversal_short_horizon",
+    "horizons": [
+      "10d",
+      "14d",
+      "3d",
+      "5d",
+      "7d"
+    ],
+    "incremental_net_ev": 0.00015,
+    "recorded_at": "2026-09-13T11:32:37.827145Z",
+    "regime_change_note": null,
+    "status": "dormant",
+    "trial_id": "W9-2026Q3-003"
+  },
+  {
+    "effective_sample": 48304,
+    "feature": "seasonality_turn_of_month",
+    "horizons": [
+      "10d",
+      "14d",
+      "3d",
+      "5d",
+      "7d"
+    ],
+    "incremental_net_ev": 6.8e-05,
+    "recorded_at": "2026-09-13T11:32:37.827251Z",
+    "regime_change_note": null,
+    "status": "dormant",
+    "trial_id": "W9-2026Q3-006"
+  },
+  {
+    "effective_sample": 48304,
+    "feature": "vix_term_structure",
+    "horizons": [
+      "10d",
+      "14d",
+      "3d",
+      "5d",
+      "7d"
+    ],
+    "incremental_net_ev": 0.000185,
+    "recorded_at": "2026-09-13T11:32:37.827352Z",
+    "regime_change_note": null,
+    "status": "dormant",
+    "trial_id": "W9-2026Q3-004"
+  },
+  {
+    "effective_sample": 48304,
+    "feature": "voltarget_tsmom",
+    "horizons": [
+      "10d",
+      "14d",
+      "3d",
+      "5d",
+      "7d"
+    ],
+    "incremental_net_ev": 0.0,
+    "recorded_at": "2026-09-13T11:32:37.827466Z",
+    "regime_change_note": null,
+    "status": "dormant",
+    "trial_id": "W9-2026Q3-001"
+  }
+]

@@ -72,7 +72,17 @@ def test_classify_product_type_mini_future_by_barrier_buffer() -> None:
 
 @pytest.mark.parametrize(
     "label",
-    ["Mini Future", "Smart Turbo", "Turbo Pro", "mini-future"],
+    [
+        "Mini Future",
+        "Smart Turbo",
+        "Turbo Pro",
+        "mini-future",
+        # BNP Paribas' actual live naming convention (confirmed live,
+        # 2026-09-11 research session): "Mini Long auf den DAX(R)" / "Mini
+        # Short auf den DAX(R)" -- never contains the word "future".
+        "Mini Long auf den DAX®",
+        "Mini Short auf den DAX®",
+    ],
 )
 def test_classify_product_type_mini_future_by_name(label: str) -> None:
     result = classify_product_type(

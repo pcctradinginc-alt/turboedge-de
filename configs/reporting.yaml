@@ -1,0 +1,30 @@
+# TurboEdge-DE reporting wiring (Build Contract v3, Abschnitt A).
+# reporting/monthly.py and reporting/weekly.py keep their own defaults in
+# their own modules; this file is only the YAML surface for them.
+
+monthly:
+  # Below this many labeled trades, return-based metrics are marked
+  # unreliable and Sharpe/Sortino/PSR/DSR are withheld entirely (Master Spec
+  # Section 9.3/27.4: "keine Sharpe-Ratio aus 3 Trades").
+  min_trades_for_stats: 10
+  wilson_confidence: 0.95
+  ci_confidence: 0.95
+  n_bootstrap: 2000
+  bootstrap_seed: 1234
+  es_alpha: 0.05
+
+weekly:
+  lookback_days: 60
+  min_trades_for_comparison: 10
+  fdr_alpha: 0.10
+  ladder_min_zscore: 1.645
+  ladder_min_dsr: 0.6
+  ladder_min_psr: 0.95
+  ladder_min_ev_improvement: 0.0010
+  ladder_min_winrate_improvement: 0.02
+  reweight_eta: 0.5
+  reweight_w_min: 0.01
+  protected_signal_family: "tsmom"
+  demotion_sharpe_threshold: 0.0
+  demotion_regret_threshold: 0.0050
+  demotion_ece_threshold: 0.15

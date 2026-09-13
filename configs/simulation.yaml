@@ -1,0 +1,23 @@
+# TurboEdge-DE path simulation wiring (Build Contract v3, Abschnitt A).
+# Consumed by simulation/paths.py (via ranking/ev.py's EvConfig, assembled by
+# config.build_ev_config) for every (direction, horizon, scenario) PathSet the
+# scan pipeline builds.
+
+# Simulated paths per (direction, horizon, scenario). ranking/ev.py's own
+# default (2000) -- kept identical here rather than silently drifting.
+n_paths: 2000
+
+# simulation/paths.py's default method: vol_scaled_bootstrap (measured best
+# P(KO) calibration at the trading-relevant 1.5-2 sigma barrier distance,
+# see simulation/paths.py module docstring / scratchpad/w5_simulation_validation.md).
+method: "vol_scaled_bootstrap"
+
+block_size: 5
+lookback_days: 750
+
+# Seed for the top-level numpy.random.Generator the scan pipeline threads
+# through every simulation call (CLAUDE.md rule 16: all randomness via a
+# seedable, injected Generator). The CLI reseeds per run_id for genuine
+# variety across scans while keeping any single run fully reproducible from
+# its logged config_hash + this seed.
+seed: 20260101

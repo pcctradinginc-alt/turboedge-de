@@ -14,13 +14,14 @@ already-valid instances of these models.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from datetime import date, datetime
 from enum import StrEnum
-from typing import Annotated
+from typing import Annotated, Any
 from uuid import uuid4
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
 SCHEMA_VERSION = "1.1.0"
 
@@ -97,6 +98,58 @@ class PositionStatus(StrEnum):
     CLOSED = "closed"
 
 
+# -- W6 learning enums (Master Spec §20-27, §46; Build Contract v2 W6) -------
+
+
+class LedgerEntryStatus(StrEnum):
+    """Lifecycle of one `forward_ledger` row (Master Spec §25)."""
+
+    OPEN = "open"
+    LABELED = "labeled"
+    EXPIRED_NO_DATA = "expired_no_data"
+
+
+class ExitReason(StrEnum):
+    """How a forward-ledger entry's exit was determined (labeler.py)."""
+
+    HORIZON = "horizon"  # normal exit at horizon, real bid quote found
+    KO = "ko"  # knocked out before/at horizon
+    NO_EXIT_QUOTE_CONSERVATIVE = "no_exit_quote_conservative"  # ambiguous, conservative value used
+    EXPIRED_NO_DATA = "expired_no_data"  # neither quote nor bars available at all
+
+
+class ModelStatus(StrEnum):
+    """`model_registry.status` (Master Spec §20-21)."""
+
+    PROTECTED = "protected"  # never demoted/deleted (e.g. TSMOM baseline)
+    CHAMPION = "champion"
+    CHALLENGER = "challenger"
+    DORMANT = "dormant"
+
+
+class TrialStatus(StrEnum):
+    """`research_trials.status` (Master Spec §27.1, GOVERNANCE.md §1.3)."""
+
+    EXPERIMENTAL = "experimental"
+    PROMOTED = "promoted"
+    DORMANT = "dormant"
+    REJECTED = "rejected"
+
+
+class ShadowPortfolioKind(StrEnum):
+    """`shadow_portfolio.portfolio` values (Master Spec §46)."""
+
+    TOP1 = "top1"
+    TOP3 = "top3"
+    TOP5 = "top5"
+    RANDOM_VALID_TURBO = "random_valid_turbo"
+    LOWEST_SPREAD = "lowest_spread"
+    LOWEST_FINANCING_COST = "lowest_financing_cost"
+    HIGHEST_LEVERAGE = "highest_leverage"
+    LOWEST_LEVERAGE = "lowest_leverage"
+    MEDIAN_PRODUCT = "median_product"
+
+
 # Core models ----------------------------------------------------------------
 
 
@@ -167,6 +220,12 @@ class ProductSnapshot(Provenance):
     # independent timestamp for its reference price (e.g. Citi, which never
     # populates `underlying_price_ref` at all) -- never guessed.
     underlying_price_ref_timestamp: OptionalTzAwareDatetime = None
+    # Issuer-reported annualized financing rate, decimal (e.g. 0.0622 for
+    # 6.22% p.a.) -- Citi's `items[].fundingRate` (Contract v3 "Finanzierungs-
+    # spread-Prioritaet" (b)): the issuer's own funding spread is then
+    # `financing_rate - ref_rate`. Additive, optional: `None` for sources
+    # that do not expose this field (e.g. BNP, gettex) -- never guessed.
+    financing_rate: float | None = None
     raw_hash: str  # sha256 of the raw source record, for reproducibility
 
 
@@ -375,3 +434,304 @@ class NotificationRecord(BaseModel):
     category: str
     sent_at: TzAwareDatetime
     subject: str
+
+
+# -- W6: Forward Ledger, Learning & Governance models -------------------------
+#
+# Master Spec §20-27 ("Self-Learning Architektur" through "Research
+# Governance") and §46 ("Shadow Portfolio"). These are the durable,
+# append-only records that make the system's learning reproducible and
+# auditable (CLAUDE.md rules 31-33). Storage lives in `storage/duckdb.py`
+# (`forward_ledger`, `ledger_labels`, `strategy_posteriors`, `model_registry`,
+# `model_weight_history`, `research_trials`, `drift_events`,
+# `shadow_portfolio`); business logic lives in `turboedge/learning/*`.
+
+
+def compute_entry_id(run_id: str, candidate_id: str, horizon_days: int) -> str:
+    """Forward-ledger primary key: sha256(run_id|candidate_id|horizon)[:20].
+
+    Deterministic so the same (run_id, candidate_id, horizon_days) triple
+    always produces the same `entry_id`, which is what makes
+    `ForwardLedger.record` idempotent (Build Contract v2, W6 requirement 1/2).
+    """
+    payload = f"{run_id}|{candidate_id}|{horizon_days}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:20]
+
+
+class LedgerEntry(BaseModel):
+    """One append-only `forward_ledger` row: everything knowable at prediction
+    time about one (candidate, horizon) pair -- ACTIONABLE, WATCH, REJECT or a
+    stratified shadow sample of otherwise-discarded candidates (Master Spec
+    §25: "Nicht nur ACTIONABLE-Kandidaten speichern... stratified Shadow
+    Sample verworfener Kandidaten ist Pflicht").
+
+    Never mutated after `ForwardLedger.record()` inserts it, except for the
+    `status` transition `open -> labeled` performed by
+    `ForwardLedger.attach_label()` (the substantive prediction fields below
+    are immutable; the exit-side facts live in the separate, also-append-only
+    `LedgerLabel`).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    # -- identity / provenance (Spec §25 + §48 reproducibility) --------------
+    entry_id: str = ""  # filled by the validator below if left empty
+    run_id: str
+    candidate_id: str
+    signal_id: str
+    signal_version_hash: str
+    trial_id: str
+    prediction_time: TzAwareDatetime
+    underlying: str
+    direction: Direction
+    horizon_days: int = Field(gt=0)
+    regime_bucket: str | None = None
+    cluster_id: str | None = None
+    feature_hash: str
+    model_hash: str
+    config_hash: str
+    git_commit: str | None = None
+
+    # -- selected product / entry terms --------------------------------------
+    selected_wkn: str | None = None
+    selected_isin: IsinStr
+    issuer: str
+    entry_bid: float | None = None
+    entry_ask: PositiveFloat
+    entry_spread: float = Field(ge=0)
+    entry_quote_timestamp: TzAwareDatetime
+    entry_underlying_timestamp: TzAwareDatetime
+    financing_level_entry: float | None = None
+    barrier_entry: float | None = None
+    ratio: PositiveFloat
+    fx: PositiveFloat
+
+    # -- prediction / gating (Spec §19 gates, §15 winner's curse) ------------
+    predicted_return: float
+    p_profit: UnitFloat
+    p_ko: UnitFloat
+    expected_shortfall: float
+    lcb_ev: float
+    uncertainty: float = Field(ge=0)
+    shrinkage_intensity: UnitFloat
+
+    # -- Build Contract v2 W6 additions --------------------------------------
+    category: Category
+    is_shadow: bool
+    shadow_stratum: str | None = None
+    suggested_position_fraction: float | None = Field(default=None, ge=0)
+    exit_due: date
+    # Counterfactual set (Master Spec §24): ISINs of same-underlying,
+    # same-direction alternatives with similar leverage/barrier, different
+    # issuers -- evaluated post-hoc by `learning/counterfactual.py`.
+    alternatives: list[IsinStr] = Field(default_factory=list)
+    # Feature vector frozen at `prediction_time`, for positive/negative
+    # memory (Spec §22/§23) and full reproducibility (Spec §48). Stored as a
+    # JSON column by storage/duckdb.py.
+    feature_snapshot: dict[str, float] = Field(default_factory=dict)
+    status: LedgerEntryStatus = LedgerEntryStatus.OPEN
+
+    @model_validator(mode="after")
+    def _fill_entry_id(self) -> LedgerEntry:
+        if not self.entry_id:
+            self.entry_id = compute_entry_id(self.run_id, self.candidate_id, self.horizon_days)
+        return self
+
+
+class LedgerLabel(BaseModel):
+    """Append-only exit-side counterpart of one `LedgerEntry`, attached once
+    the entry's `exit_due` date has passed (`learning/labeler.py`).
+
+    CLAUDE.md rule 17: ambiguous bars are never optimistically resolved --
+    `ambiguous_path=True` always pairs with a conservative (never-optimistic)
+    `realized_selected_pnl`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    entry_id: str
+    labeled_at: TzAwareDatetime
+    exit_bid: float | None = None
+    exit_quote_timestamp: OptionalTzAwareDatetime = None
+    financing_level_exit: float | None = None
+    exit_reason: ExitReason
+    realized_selected_pnl: float | None = None  # net return: exit_bid/entry_ask - 1
+    underlying_pnl: float | None = None
+    median_turbo_pnl: float | None = None
+    best_turbo_pnl: float | None = None
+    ideal_turbo_pnl: float | None = None
+    mfe: float | None = None
+    mae: float | None = None
+    ko_hit: bool
+    time_to_ko_days: int | None = None
+    ambiguous_path: bool
+
+
+class ModelRegistryEntry(BaseModel):
+    """One row of `model_registry` (Master Spec §20-21, `learning/registry.py`).
+
+    `status=PROTECTED` (the TSMOM baseline) is never deleted or set to
+    another status by the registry -- CLAUDE.md rule 10.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    model_id: str
+    model_hash: str
+    signal_family: str
+    status: ModelStatus
+    weight: float = Field(ge=0)
+    params: dict[str, Any] = Field(default_factory=dict)
+    trial_id: str | None = None
+    created_at: TzAwareDatetime
+    updated_at: TzAwareDatetime
+
+
+class ResearchTrial(BaseModel):
+    """One row of `research_trials` (Master Spec §27.1, `learning/trials.py`)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    trial_id: str
+    kind: str
+    description: str
+    created_at: TzAwareDatetime
+    quarter: str  # e.g. "2026Q3"
+    status: TrialStatus = TrialStatus.EXPERIMENTAL
+
+
+class ShadowPosition(BaseModel):
+    """One row of `shadow_portfolio` (Master Spec §46): one baseline
+    portfolio's paper position for one scan run, so a monthly report can
+    compare "intelligent ranking" against trivial baselines."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    portfolio: ShadowPortfolioKind
+    isin: IsinStr
+    horizon_days: int = Field(gt=0)
+    entry_ask: PositiveFloat
+    exit_due: date
+    realized_net_return: float | None = None
+    created_at: TzAwareDatetime
+
+
+class DriftEvent(BaseModel):
+    """One row of `drift_events` (Master Spec §30, `learning/drift.py`).
+
+    CLAUDE.md rule 32: drift reduces weights, it never auto-deletes a model
+    -- `action` records the *recommendation* (e.g. "weight_reduction"), the
+    actual weight change is applied by `learning/ensemble_weights.py`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    event_id: str
+    detected_at: TzAwareDatetime
+    stream_id: str  # e.g. "calibration_error:tsmom:7d"
+    signal_family: str | None = None
+    metric: str  # e.g. "calibration_error", "return"
+    ph_statistic: float
+    threshold: float
+    action: str
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
+# -- Integration wave (Contract v3): forecasts, position reevaluation, ---------
+# walk-forward persistence. Additive tables/models only (storage/duckdb.py).
+
+
+class ForecastRecord(BaseModel):
+    """One persisted `models.forecast.HorizonForecast` (ensemble or single
+    model), frozen at scan time (Contract v3 Abschnitt B step 1: "Ergebnis +
+    model_hash ... in ... neuer Tabelle forecasts persistieren").
+
+    Reproducibility fields (`config_hash`/`git_commit`) mirror
+    `SignalSnapshot` so a forecast is as fully traceable as the TSMOM signal
+    it accompanies (CLAUDE.md rule 33).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    underlying_id: str
+    horizon_days: int = Field(gt=0)
+    prediction_time: TzAwareDatetime
+    frozen_at: TzAwareDatetime
+    p_up: UnitFloat
+    mean: float
+    sigma: float = Field(ge=0)
+    quantiles: dict[str, float]
+    expected_shortfall_05: float
+    uncertainty: float = Field(ge=0)
+    model_id: str
+    model_hash: str
+    signal_family: str
+    n_train: int = Field(ge=0)
+    n_effective: float = Field(ge=0)
+    component_weights: dict[str, float] = Field(default_factory=dict)
+    config_hash: str
+    git_commit: str | None = None
+
+
+class PositionEvaluationStatus(StrEnum):
+    """`position_evaluations.status` (Contract v3 Abschnitt D)."""
+
+    HOLD = "HOLD"
+    REDUCE = "REDUCE"
+    EXIT = "EXIT"
+    INVALIDATED = "INVALIDATED"
+
+
+class PositionEvaluation(BaseModel):
+    """One daily re-evaluation of an open manual position (Contract v3
+    Abschnitt D, `positions/reevaluate.py`). Append-only: a new row per
+    ``(position_id, as_of)``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    position_id: str
+    as_of: TzAwareDatetime
+    wkn: str
+    isin: IsinStr | None = None
+    underlying_id: str | None = None
+    status: PositionEvaluationStatus
+    reasons: list[str]
+    current_bid: float | None = None
+    quote_timestamp: OptionalTzAwareDatetime = None
+    remaining_horizon_days: int | None = None
+    remaining_lcb_ev: float | None = None
+    remaining_p_ko: float | None = None
+    remaining_p_profit: float | None = None
+    unrealized_return: float | None = None
+    data_quality_ok: bool
+    config_hash: str
+    git_commit: str | None = None
+
+
+class WalkforwardResultRecord(BaseModel):
+    """One persisted `backtest.walkforward.WalkForwardResult` row (Contract
+    v3 coordinator addition): makes W4's walk-forward evaluation readable by
+    `reporting/weekly.run_research_tournament` once that module is updated to
+    query it (see Kurzbericht)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    model_id: str
+    model_hash: str | None = None
+    signal_family: str
+    underlying_id: str
+    horizon_days: int = Field(gt=0)
+    evaluated_at: TzAwareDatetime
+    n_folds: int = Field(ge=0)
+    brier: float
+    brier_null: float | None = None
+    log_loss: float
+    ece: float
+    hit_rate: float
+    mean_oos_return: float
+    psr: float
+    n_effective: float = Field(ge=0)
+    config_hash: str
+    git_commit: str | None = None
+    params: dict[str, Any] = Field(default_factory=dict)

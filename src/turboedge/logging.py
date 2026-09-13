@@ -10,13 +10,74 @@ from __future__ import annotations
 import logging
 import os
 import sys
-from typing import Literal
+from collections.abc import MutableMapping
+from typing import Any, Literal
 
 import structlog
 
 LogFormat = Literal["console", "json"]
 
 _VALID_FORMATS: frozenset[str] = frozenset({"console", "json"})
+
+# Public-repo log hygiene (CLAUDE.md rule 18 / Build Contract W3): every
+# GitHub Actions log, job summary and artifact on a public repo is visible
+# to anyone. When TURBOEDGE_PUBLIC_LOGS is truthy, `redact_public_fields`
+# (registered below) masks these keys wherever they appear in a structlog
+# event -- ISIN/WKN identify a specific candidate, the rest are prices/
+# levels that could reveal an ACTIONABLE trade suggestion before the user
+# reads it by email.
+_PUBLIC_LOG_ENV = "TURBOEDGE_PUBLIC_LOGS"
+_TRUTHY: frozenset[str] = frozenset({"1", "true", "yes", "on"})
+_REDACTED_FIELDS: frozenset[str] = frozenset(
+    {
+        "isin",
+        "wkn",
+        "bid",
+        "ask",
+        "entry_ask",
+        "entry_bid",
+        "price",
+        "example_isins",
+        "underlying_price_ref",
+    }
+)
+_REDACTED_SCALAR = "***redacted***"
+
+
+def redact_enabled() -> bool:
+    """``True`` when ``TURBOEDGE_PUBLIC_LOGS`` is set to a truthy value.
+
+    Convention shared across the CLI (``turboedge.reporting.redaction.
+    redact_console_enabled`` delegates to this) and every scheduled
+    ``pipeline.yml`` job, which sets ``TURBOEDGE_PUBLIC_LOGS=1``: candidate
+    ISIN/WKN/prices must never appear in a public log or console table, only
+    in the (private) email report. Absent or any other value -> ``False``
+    (local/interactive use keeps full detail).
+    """
+    return os.environ.get(_PUBLIC_LOG_ENV, "").strip().lower() in _TRUTHY
+
+
+def redact_public_fields(
+    logger: object, method_name: str, event_dict: MutableMapping[str, Any]
+) -> MutableMapping[str, Any]:
+    """structlog processor: mask :data:`_REDACTED_FIELDS` when
+    :func:`redact_enabled` is true. Checked per log call (not cached at
+    ``configure_logging()`` time), so toggling the env var at runtime works.
+    A list/tuple/set value (e.g. ``example_isins``) is replaced by a count
+    rather than the fixed scalar placeholder, since "how many" is itself
+    useful diagnostic information that carries no product detail.
+    """
+    if not redact_enabled():
+        return event_dict
+    for key in _REDACTED_FIELDS:
+        if key not in event_dict:
+            continue
+        value = event_dict[key]
+        if isinstance(value, list | tuple | set):
+            event_dict[key] = f"***redacted:{len(value)} item(s)***"
+        else:
+            event_dict[key] = _REDACTED_SCALAR
+    return event_dict
 
 
 def _resolve_format(fmt: LogFormat | None) -> LogFormat:
@@ -52,6 +113,7 @@ def configure_logging(fmt: LogFormat | None = None, *, level: str | None = None)
     shared_processors: list[structlog.types.Processor] = [
         structlog.contextvars.merge_contextvars,
         structlog.processors.add_log_level,
+        redact_public_fields,
         structlog.processors.TimeStamper(fmt="iso", utc=True),
         structlog.processors.StackInfoRenderer(),
         structlog.processors.format_exc_info,

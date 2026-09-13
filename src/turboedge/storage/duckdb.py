@@ -30,14 +30,30 @@ from turboedge.storage.schemas import (
     Category,
     CostDecomposition,
     Direction,
+    DriftEvent,
+    ExitReason,
+    ForecastRecord,
     Instrument,
+    LedgerEntry,
+    LedgerEntryStatus,
+    LedgerLabel,
     ManualPosition,
+    ModelRegistryEntry,
+    ModelStatus,
     NotificationRecord,
+    PositionEvaluation,
+    PositionEvaluationStatus,
     PositionStatus,
     ProductSnapshot,
+    ProductType,
+    ResearchTrial,
+    ShadowPortfolioKind,
+    ShadowPosition,
     SignalSnapshot,
     SourceHealthRecord,
+    TrialStatus,
     UnderlyingBar,
+    WalkforwardResultRecord,
 )
 
 logger = structlog.get_logger(__name__)
@@ -116,6 +132,7 @@ _DDL_STATEMENTS: tuple[str, ...] = (
         product_age_days INTEGER,
         underlying_price_ref DOUBLE,
         underlying_price_ref_timestamp TIMESTAMPTZ,
+        financing_rate DOUBLE,
         raw_hash VARCHAR NOT NULL,
         observation_time TIMESTAMPTZ NOT NULL,
         available_at TIMESTAMPTZ NOT NULL,
@@ -233,6 +250,215 @@ _DDL_STATEMENTS: tuple[str, ...] = (
         subject VARCHAR NOT NULL
     )
     """,
+    # -- W6: Forward Ledger, Learning & Governance (Master Spec §20-27, §46) --
+    """
+    CREATE TABLE IF NOT EXISTS forward_ledger (
+        entry_id VARCHAR PRIMARY KEY,
+        run_id VARCHAR NOT NULL,
+        candidate_id VARCHAR NOT NULL,
+        signal_id VARCHAR NOT NULL,
+        signal_version_hash VARCHAR NOT NULL,
+        trial_id VARCHAR NOT NULL,
+        prediction_time TIMESTAMPTZ NOT NULL,
+        underlying VARCHAR NOT NULL,
+        direction VARCHAR NOT NULL,
+        horizon_days INTEGER NOT NULL,
+        regime_bucket VARCHAR,
+        cluster_id VARCHAR,
+        feature_hash VARCHAR NOT NULL,
+        model_hash VARCHAR NOT NULL,
+        config_hash VARCHAR NOT NULL,
+        git_commit VARCHAR,
+        category VARCHAR NOT NULL,
+        selected_wkn VARCHAR,
+        selected_isin VARCHAR NOT NULL,
+        issuer VARCHAR NOT NULL,
+        entry_bid DOUBLE,
+        entry_ask DOUBLE NOT NULL,
+        entry_spread DOUBLE NOT NULL,
+        entry_quote_timestamp TIMESTAMPTZ NOT NULL,
+        entry_underlying_timestamp TIMESTAMPTZ NOT NULL,
+        financing_level_entry DOUBLE,
+        barrier_entry DOUBLE,
+        ratio DOUBLE NOT NULL,
+        fx DOUBLE NOT NULL,
+        predicted_return DOUBLE NOT NULL,
+        p_profit DOUBLE NOT NULL,
+        p_ko DOUBLE NOT NULL,
+        expected_shortfall DOUBLE NOT NULL,
+        lcb_ev DOUBLE NOT NULL,
+        uncertainty DOUBLE NOT NULL,
+        shrinkage_intensity DOUBLE NOT NULL,
+        is_shadow BOOLEAN NOT NULL,
+        shadow_stratum VARCHAR,
+        suggested_position_fraction DOUBLE,
+        exit_due DATE NOT NULL,
+        alternatives VARCHAR NOT NULL,
+        feature_snapshot VARCHAR NOT NULL,
+        status VARCHAR NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS ledger_labels (
+        entry_id VARCHAR PRIMARY KEY,
+        labeled_at TIMESTAMPTZ NOT NULL,
+        exit_bid DOUBLE,
+        exit_quote_timestamp TIMESTAMPTZ,
+        financing_level_exit DOUBLE,
+        exit_reason VARCHAR NOT NULL,
+        realized_selected_pnl DOUBLE,
+        underlying_pnl DOUBLE,
+        median_turbo_pnl DOUBLE,
+        best_turbo_pnl DOUBLE,
+        ideal_turbo_pnl DOUBLE,
+        mfe DOUBLE,
+        mae DOUBLE,
+        ko_hit BOOLEAN NOT NULL,
+        time_to_ko_days INTEGER,
+        ambiguous_path BOOLEAN NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS strategy_posteriors (
+        signal_family VARCHAR NOT NULL,
+        horizon_days INTEGER NOT NULL,
+        mu0 DOUBLE NOT NULL,
+        kappa DOUBLE NOT NULL,
+        alpha DOUBLE NOT NULL,
+        beta DOUBLE NOT NULL,
+        n DOUBLE NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL,
+        PRIMARY KEY (signal_family, horizon_days)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS model_registry (
+        model_id VARCHAR PRIMARY KEY,
+        model_hash VARCHAR NOT NULL,
+        signal_family VARCHAR NOT NULL,
+        status VARCHAR NOT NULL,
+        weight DOUBLE NOT NULL,
+        params VARCHAR NOT NULL,
+        trial_id VARCHAR,
+        created_at TIMESTAMPTZ NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS model_weight_history (
+        model_id VARCHAR NOT NULL,
+        weight DOUBLE NOT NULL,
+        utility DOUBLE,
+        trial_id VARCHAR,
+        recorded_at TIMESTAMPTZ NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS research_trials (
+        trial_id VARCHAR PRIMARY KEY,
+        kind VARCHAR NOT NULL,
+        description VARCHAR NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL,
+        quarter VARCHAR NOT NULL,
+        status VARCHAR NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS drift_events (
+        event_id VARCHAR PRIMARY KEY,
+        detected_at TIMESTAMPTZ NOT NULL,
+        stream_id VARCHAR NOT NULL,
+        signal_family VARCHAR,
+        metric VARCHAR NOT NULL,
+        ph_statistic DOUBLE NOT NULL,
+        threshold DOUBLE NOT NULL,
+        action VARCHAR NOT NULL,
+        details VARCHAR NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS shadow_portfolio (
+        run_id VARCHAR NOT NULL,
+        portfolio VARCHAR NOT NULL,
+        isin VARCHAR NOT NULL,
+        horizon_days INTEGER NOT NULL,
+        entry_ask DOUBLE NOT NULL,
+        exit_due DATE NOT NULL,
+        realized_net_return DOUBLE,
+        created_at TIMESTAMPTZ NOT NULL,
+        PRIMARY KEY (run_id, portfolio, isin, horizon_days)
+    )
+    """,
+    # -- Integration wave (Contract v3): forecasts, position reevaluation, ----
+    # walk-forward persistence. Additive only.
+    """
+    CREATE TABLE IF NOT EXISTS forecasts (
+        run_id VARCHAR NOT NULL,
+        underlying_id VARCHAR NOT NULL,
+        horizon_days INTEGER NOT NULL,
+        prediction_time TIMESTAMPTZ NOT NULL,
+        frozen_at TIMESTAMPTZ NOT NULL,
+        p_up DOUBLE NOT NULL,
+        mean DOUBLE NOT NULL,
+        sigma DOUBLE NOT NULL,
+        quantiles VARCHAR NOT NULL,
+        expected_shortfall_05 DOUBLE NOT NULL,
+        uncertainty DOUBLE NOT NULL,
+        model_id VARCHAR NOT NULL,
+        model_hash VARCHAR NOT NULL,
+        signal_family VARCHAR NOT NULL,
+        n_train INTEGER NOT NULL,
+        n_effective DOUBLE NOT NULL,
+        component_weights VARCHAR NOT NULL,
+        config_hash VARCHAR NOT NULL,
+        git_commit VARCHAR,
+        PRIMARY KEY (run_id, underlying_id, horizon_days, model_id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS position_evaluations (
+        position_id VARCHAR NOT NULL,
+        as_of TIMESTAMPTZ NOT NULL,
+        wkn VARCHAR NOT NULL,
+        isin VARCHAR,
+        underlying_id VARCHAR,
+        status VARCHAR NOT NULL,
+        reasons VARCHAR NOT NULL,
+        current_bid DOUBLE,
+        quote_timestamp TIMESTAMPTZ,
+        remaining_horizon_days INTEGER,
+        remaining_lcb_ev DOUBLE,
+        remaining_p_ko DOUBLE,
+        remaining_p_profit DOUBLE,
+        unrealized_return DOUBLE,
+        data_quality_ok BOOLEAN NOT NULL,
+        config_hash VARCHAR NOT NULL,
+        git_commit VARCHAR,
+        PRIMARY KEY (position_id, as_of)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS walkforward_results (
+        model_id VARCHAR NOT NULL,
+        model_hash VARCHAR,
+        signal_family VARCHAR NOT NULL,
+        underlying_id VARCHAR NOT NULL,
+        horizon_days INTEGER NOT NULL,
+        evaluated_at TIMESTAMPTZ NOT NULL,
+        n_folds INTEGER NOT NULL,
+        brier DOUBLE NOT NULL,
+        brier_null DOUBLE,
+        log_loss DOUBLE NOT NULL,
+        ece DOUBLE NOT NULL,
+        hit_rate DOUBLE NOT NULL,
+        mean_oos_return DOUBLE NOT NULL,
+        psr DOUBLE NOT NULL,
+        n_effective DOUBLE NOT NULL,
+        config_hash VARCHAR NOT NULL,
+        git_commit VARCHAR,
+        params VARCHAR NOT NULL
+    )
+    """,
 )
 
 _ALL_TABLES: tuple[str, ...] = (
@@ -245,6 +471,17 @@ _ALL_TABLES: tuple[str, ...] = (
     "source_health",
     "positions_manual",
     "notifications_sent",
+    "forward_ledger",
+    "ledger_labels",
+    "strategy_posteriors",
+    "model_registry",
+    "model_weight_history",
+    "research_trials",
+    "drift_events",
+    "shadow_portfolio",
+    "forecasts",
+    "position_evaluations",
+    "walkforward_results",
 )
 
 # Append-only log of every additive column migration `Store.init_schema()`
@@ -739,6 +976,81 @@ class Store:
         ).fetchall()
         return [(_from_db_dt(row[0]), float(row[1])) for row in rows]
 
+    def product_snapshots_in_range(
+        self, isin: str, start: datetime, end: datetime
+    ) -> list[ProductSnapshot]:
+        """All ``product_snapshots`` for ``isin`` whose effective timestamp
+        (``quote_timestamp`` if present, else ``observation_time``) falls
+        within ``[start, end]`` (inclusive), ordered ascending.
+
+        Used by ``learning/labeler.py`` (exit-quote search, MFE/MAE) and
+        ``learning/counterfactual.py`` (evaluating alternative products
+        under the same exit rules).
+        """
+        rows = self._conn.execute(
+            f"SELECT {', '.join(_PRODUCT_SNAPSHOT_COLUMNS)} FROM product_snapshots "
+            "WHERE isin = ? AND COALESCE(quote_timestamp, observation_time) BETWEEN ? AND ? "
+            "ORDER BY COALESCE(quote_timestamp, observation_time) ASC",
+            [isin, _to_utc(start), _to_utc(end)],
+        ).fetchall()
+        return [_row_to_product_snapshot(row) for row in rows]
+
+    def latest_product_snapshot_at_or_before(
+        self, isin: str, as_of: datetime
+    ) -> ProductSnapshot | None:
+        """The most recent ``product_snapshots`` row for ``isin`` whose
+        effective timestamp is ``<= as_of`` (strict no-look-ahead --
+        CLAUDE.md rule 5), or ``None`` if none exists.
+
+        Used by ``learning/counterfactual.py`` to reconstruct an
+        alternative product's own entry terms (ask, barrier) as of the
+        original prediction time, since the ledger only stores the
+        alternative's ISIN, not its terms.
+        """
+        row = self._conn.execute(
+            f"SELECT {', '.join(_PRODUCT_SNAPSHOT_COLUMNS)} FROM product_snapshots "
+            "WHERE isin = ? AND COALESCE(quote_timestamp, observation_time) <= ? "
+            "ORDER BY COALESCE(quote_timestamp, observation_time) DESC LIMIT 1",
+            [isin, _to_utc(as_of)],
+        ).fetchone()
+        return _row_to_product_snapshot(row) if row is not None else None
+
+    def get_instrument(self, isin: str) -> Instrument | None:
+        """Master-data row for one ISIN (``product_type`` etc.), or
+        ``None`` if never upserted. Used by ``learning/labeler.py`` to
+        determine KO-residual treatment (turbo vs. mini-future)."""
+        row = self._conn.execute(
+            """
+            SELECT isin, wkn, issuer, underlying_id, underlying_raw, direction,
+                   product_type, ratio, currency, underlying_currency, quanto,
+                   open_end, maturity, first_trading_day, venue, first_seen_at,
+                   last_seen_at
+            FROM instruments WHERE isin = ?
+            """,
+            [isin],
+        ).fetchone()
+        if row is None:
+            return None
+        return Instrument(
+            isin=row[0],
+            wkn=row[1],
+            issuer=row[2],
+            underlying_id=row[3],
+            underlying_raw=row[4],
+            direction=Direction(row[5]),
+            product_type=ProductType(row[6]),
+            ratio=row[7],
+            currency=row[8],
+            underlying_currency=row[9],
+            quanto=row[10],
+            open_end=row[11],
+            maturity=row[12],
+            first_trading_day=row[13],
+            venue=row[14],
+            first_seen_at=_from_db_dt(row[15]),
+            last_seen_at=_from_db_dt(row[16]),
+        )
+
     # -- manual positions ----------------------------------------------------
 
     def insert_position(self, position: ManualPosition) -> None:
@@ -838,6 +1150,586 @@ class Store:
             ],
         )
 
+    # -- forward ledger (W6, Master Spec §25) ---------------------------------
+
+    def append_ledger_entries(self, entries: Sequence[LedgerEntry]) -> int:
+        """Insert new forward-ledger rows.
+
+        Idempotent per ``entry_id``: an entry whose ``entry_id`` already
+        exists is silently skipped rather than raising or overwriting
+        (``ON CONFLICT ... DO NOTHING``) -- the ledger is append-only
+        (CLAUDE.md rule 33; Build Contract v2 W6 requirement 2). Returns the
+        number of rows actually inserted (which can be less than
+        ``len(entries)`` if some were already present).
+        """
+        if not entries:
+            return 0
+        rows = [_ledger_entry_row(e) for e in entries]
+        before = self._conn.execute("SELECT count(*) FROM forward_ledger").fetchone()
+        before_n = int(before[0]) if before is not None else 0
+        self._conn.executemany(
+            f"INSERT INTO forward_ledger ({', '.join(_LEDGER_ENTRY_COLUMNS)}) "
+            f"VALUES ({', '.join(['?'] * len(_LEDGER_ENTRY_COLUMNS))}) "
+            "ON CONFLICT (entry_id) DO NOTHING",
+            rows,
+        )
+        after = self._conn.execute("SELECT count(*) FROM forward_ledger").fetchone()
+        after_n = int(after[0]) if after is not None else 0
+        return after_n - before_n
+
+    def get_ledger_entry(self, entry_id: str) -> LedgerEntry | None:
+        row = self._conn.execute(
+            f"SELECT {', '.join(_LEDGER_ENTRY_COLUMNS)} FROM forward_ledger WHERE entry_id = ?",
+            [entry_id],
+        ).fetchone()
+        return _row_to_ledger_entry(row) if row is not None else None
+
+    def ledger_entries_due_for_labeling(self, as_of: datetime) -> list[LedgerEntry]:
+        """Open entries whose ``exit_due`` date has arrived by ``as_of``."""
+        rows = self._conn.execute(
+            f"SELECT {', '.join(_LEDGER_ENTRY_COLUMNS)} FROM forward_ledger "
+            "WHERE status = ? AND exit_due <= ? ORDER BY exit_due ASC, entry_id ASC",
+            [LedgerEntryStatus.OPEN.value, _to_utc(as_of).date()],
+        ).fetchall()
+        return [_row_to_ledger_entry(row) for row in rows]
+
+    def attach_ledger_label(self, label: LedgerLabel) -> None:
+        """Attach the (append-only, never overwritten) exit-side label to an
+        entry.
+
+        Flips that entry's ``status`` to ``labeled``, *except* when
+        ``label.exit_reason`` is ``EXPIRED_NO_DATA`` (truly no exit
+        information could be found at all), in which case the entry's
+        ``status`` becomes ``expired_no_data`` instead -- both are terminal
+        states reachable only from ``open``.
+
+        Raises :class:`StoreError` if the entry does not exist, or already
+        has a label -- a label is a final fact, recorded once.
+        """
+        existing = self._conn.execute(
+            "SELECT 1 FROM ledger_labels WHERE entry_id = ?", [label.entry_id]
+        ).fetchone()
+        if existing is not None:
+            raise StoreError(
+                f"ledger entry {label.entry_id!r} is already labeled; labels are "
+                "append-only and are never overwritten"
+            )
+        entry_row = self._conn.execute(
+            "SELECT status FROM forward_ledger WHERE entry_id = ?", [label.entry_id]
+        ).fetchone()
+        if entry_row is None:
+            raise StoreError(f"no forward_ledger entry with entry_id={label.entry_id!r}")
+        self._conn.execute(
+            f"INSERT INTO ledger_labels ({', '.join(_LEDGER_LABEL_COLUMNS)}) "
+            f"VALUES ({', '.join(['?'] * len(_LEDGER_LABEL_COLUMNS))})",
+            _ledger_label_row(label),
+        )
+        new_status = (
+            LedgerEntryStatus.EXPIRED_NO_DATA
+            if label.exit_reason is ExitReason.EXPIRED_NO_DATA
+            else LedgerEntryStatus.LABELED
+        )
+        self._conn.execute(
+            "UPDATE forward_ledger SET status = ? WHERE entry_id = ?",
+            [new_status.value, label.entry_id],
+        )
+
+    def get_ledger_label(self, entry_id: str) -> LedgerLabel | None:
+        row = self._conn.execute(
+            f"SELECT {', '.join(_LEDGER_LABEL_COLUMNS)} FROM ledger_labels WHERE entry_id = ?",
+            [entry_id],
+        ).fetchone()
+        return _row_to_ledger_label(row) if row is not None else None
+
+    def list_ledger_entries(
+        self,
+        *,
+        run_id: str | None = None,
+        underlying: str | None = None,
+        status: LedgerEntryStatus | None = None,
+        category: Category | None = None,
+        is_shadow: bool | None = None,
+    ) -> list[tuple[LedgerEntry, LedgerLabel | None]]:
+        """Entries matching the given filters (AND-combined; an omitted
+        filter is unconstrained), paired with their label if attached yet,
+        ordered by ``prediction_time`` ascending."""
+        clauses: list[str] = []
+        params: list[Any] = []
+        if run_id is not None:
+            clauses.append("fl.run_id = ?")
+            params.append(run_id)
+        if underlying is not None:
+            clauses.append("fl.underlying = ?")
+            params.append(underlying)
+        if status is not None:
+            clauses.append("fl.status = ?")
+            params.append(status.value)
+        if category is not None:
+            clauses.append("fl.category = ?")
+            params.append(category.value)
+        if is_shadow is not None:
+            clauses.append("fl.is_shadow = ?")
+            params.append(is_shadow)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        entry_cols = ", ".join(f"fl.{c}" for c in _LEDGER_ENTRY_COLUMNS)
+        label_cols = ", ".join(f"ll.{c}" for c in _LEDGER_LABEL_COLUMNS)
+        rows = self._conn.execute(
+            f"SELECT {entry_cols}, {label_cols} FROM forward_ledger fl "
+            f"LEFT JOIN ledger_labels ll ON ll.entry_id = fl.entry_id "
+            f"{where} ORDER BY fl.prediction_time ASC, fl.entry_id ASC",
+            params,
+        ).fetchall()
+        n_entry_cols = len(_LEDGER_ENTRY_COLUMNS)
+        results: list[tuple[LedgerEntry, LedgerLabel | None]] = []
+        for row in rows:
+            entry = _row_to_ledger_entry(row[:n_entry_cols])
+            label_part = row[n_entry_cols:]
+            label = _row_to_ledger_label(label_part) if label_part[0] is not None else None
+            results.append((entry, label))
+        return results
+
+    # -- strategy posteriors (W6, Master Spec §21) -----------------------------
+
+    def get_strategy_posterior(
+        self, signal_family: str, horizon_days: int
+    ) -> tuple[float, float, float, float, float, datetime] | None:
+        """``(mu0, kappa, alpha, beta, n, updated_at)`` for one
+        ``(signal_family, horizon_days)`` pair, or ``None`` if never
+        persisted (the caller should then fall back to its own prior). ``n``
+        is a ``float`` (effective sample size) rather than an integer count,
+        since down-weighted bootstrap-prior observations (Master Spec §29)
+        can contribute a fractional amount."""
+        row = self._conn.execute(
+            "SELECT mu0, kappa, alpha, beta, n, updated_at FROM strategy_posteriors "
+            "WHERE signal_family = ? AND horizon_days = ?",
+            [signal_family, horizon_days],
+        ).fetchone()
+        if row is None:
+            return None
+        return (
+            float(row[0]),
+            float(row[1]),
+            float(row[2]),
+            float(row[3]),
+            float(row[4]),
+            _from_db_dt(row[5]),
+        )
+
+    def upsert_strategy_posterior(
+        self,
+        signal_family: str,
+        horizon_days: int,
+        *,
+        mu0: float,
+        kappa: float,
+        alpha: float,
+        beta: float,
+        n: float,
+        updated_at: datetime,
+    ) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO strategy_posteriors (
+                signal_family, horizon_days, mu0, kappa, alpha, beta, n, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (signal_family, horizon_days) DO UPDATE SET
+                mu0 = excluded.mu0, kappa = excluded.kappa, alpha = excluded.alpha,
+                beta = excluded.beta, n = excluded.n, updated_at = excluded.updated_at
+            """,
+            [signal_family, horizon_days, mu0, kappa, alpha, beta, n, _to_utc(updated_at)],
+        )
+
+    # -- model registry (W6, Master Spec §20-21) -------------------------------
+
+    def upsert_model_registry_entry(self, entry: ModelRegistryEntry) -> None:
+        """Insert or refresh one model's registry row.
+
+        ``created_at`` is preserved from any existing row on upsert (only
+        the mutable fields and ``updated_at`` change) -- mirrors
+        ``upsert_instruments``. A ``PROTECTED`` model (e.g. the TSMOM
+        baseline) is upserted the same way as any other; nothing in this
+        method ever deletes a row (CLAUDE.md rule 10).
+        """
+        existing = self._conn.execute(
+            "SELECT created_at FROM model_registry WHERE model_id = ?", [entry.model_id]
+        ).fetchone()
+        created_at = _from_db_dt(existing[0]) if existing is not None else entry.created_at
+        self._conn.execute(
+            """
+            INSERT INTO model_registry (
+                model_id, model_hash, signal_family, status, weight, params,
+                trial_id, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (model_id) DO UPDATE SET
+                model_hash = excluded.model_hash,
+                signal_family = excluded.signal_family,
+                status = excluded.status,
+                weight = excluded.weight,
+                params = excluded.params,
+                trial_id = excluded.trial_id,
+                updated_at = excluded.updated_at
+            """,
+            [
+                entry.model_id,
+                entry.model_hash,
+                entry.signal_family,
+                entry.status.value,
+                entry.weight,
+                json.dumps(entry.params, sort_keys=True),
+                entry.trial_id,
+                _to_utc(created_at),
+                _to_utc(entry.updated_at),
+            ],
+        )
+
+    def get_model_registry_entry(self, model_id: str) -> ModelRegistryEntry | None:
+        row = self._conn.execute(
+            "SELECT model_id, model_hash, signal_family, status, weight, params, "
+            "trial_id, created_at, updated_at FROM model_registry WHERE model_id = ?",
+            [model_id],
+        ).fetchone()
+        return _row_to_model_registry_entry(row) if row is not None else None
+
+    def list_model_registry_entries(
+        self, signal_family: str | None = None
+    ) -> list[ModelRegistryEntry]:
+        if signal_family is None:
+            rows = self._conn.execute(
+                "SELECT model_id, model_hash, signal_family, status, weight, params, "
+                "trial_id, created_at, updated_at FROM model_registry ORDER BY model_id ASC"
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT model_id, model_hash, signal_family, status, weight, params, "
+                "trial_id, created_at, updated_at FROM model_registry "
+                "WHERE signal_family = ? ORDER BY model_id ASC",
+                [signal_family],
+            ).fetchall()
+        return [_row_to_model_registry_entry(row) for row in rows]
+
+    def append_model_weight_history(
+        self,
+        model_id: str,
+        weight: float,
+        *,
+        utility: float | None,
+        trial_id: str | None,
+        recorded_at: datetime,
+    ) -> None:
+        self._conn.execute(
+            "INSERT INTO model_weight_history "
+            "(model_id, weight, utility, trial_id, recorded_at) VALUES (?, ?, ?, ?, ?)",
+            [model_id, weight, utility, trial_id, _to_utc(recorded_at)],
+        )
+
+    def model_weight_history(
+        self, model_id: str
+    ) -> list[tuple[datetime, float, float | None, str | None]]:
+        """``(recorded_at, weight, utility, trial_id)`` tuples for one model,
+        oldest first -- the audit trail behind ``update_weights``."""
+        rows = self._conn.execute(
+            "SELECT recorded_at, weight, utility, trial_id FROM model_weight_history "
+            "WHERE model_id = ? ORDER BY recorded_at ASC",
+            [model_id],
+        ).fetchall()
+        return [(_from_db_dt(row[0]), float(row[1]), row[2], row[3]) for row in rows]
+
+    # -- research trials (W6, Master Spec §27.1) -------------------------------
+
+    def insert_research_trial(self, trial: ResearchTrial) -> None:
+        self._conn.execute(
+            "INSERT INTO research_trials "
+            "(trial_id, kind, description, created_at, quarter, status) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                trial.trial_id,
+                trial.kind,
+                trial.description,
+                _to_utc(trial.created_at),
+                trial.quarter,
+                trial.status.value,
+            ],
+        )
+
+    def get_research_trial(self, trial_id: str) -> ResearchTrial | None:
+        row = self._conn.execute(
+            "SELECT trial_id, kind, description, created_at, quarter, status "
+            "FROM research_trials WHERE trial_id = ?",
+            [trial_id],
+        ).fetchone()
+        return _row_to_research_trial(row) if row is not None else None
+
+    def count_research_trials_in_quarter(self, quarter: str) -> int:
+        row = self._conn.execute(
+            "SELECT count(*) FROM research_trials WHERE quarter = ?", [quarter]
+        ).fetchone()
+        return int(row[0]) if row is not None else 0
+
+    def list_research_trials(self, quarter: str | None = None) -> list[ResearchTrial]:
+        if quarter is None:
+            rows = self._conn.execute(
+                "SELECT trial_id, kind, description, created_at, quarter, status "
+                "FROM research_trials ORDER BY created_at ASC"
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT trial_id, kind, description, created_at, quarter, status "
+                "FROM research_trials WHERE quarter = ? ORDER BY created_at ASC",
+                [quarter],
+            ).fetchall()
+        return [_row_to_research_trial(row) for row in rows]
+
+    def update_research_trial_status(self, trial_id: str, status: TrialStatus) -> None:
+        self._conn.execute(
+            "UPDATE research_trials SET status = ? WHERE trial_id = ?",
+            [status.value, trial_id],
+        )
+
+    # -- drift events (W6, Master Spec §30) ------------------------------------
+
+    def insert_drift_event(self, event: DriftEvent) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO drift_events (
+                event_id, detected_at, stream_id, signal_family, metric,
+                ph_statistic, threshold, action, details
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                event.event_id,
+                _to_utc(event.detected_at),
+                event.stream_id,
+                event.signal_family,
+                event.metric,
+                event.ph_statistic,
+                event.threshold,
+                event.action,
+                json.dumps(event.details, sort_keys=True),
+            ],
+        )
+
+    def list_drift_events(self, stream_id: str | None = None) -> list[DriftEvent]:
+        if stream_id is None:
+            rows = self._conn.execute(
+                "SELECT event_id, detected_at, stream_id, signal_family, metric, "
+                "ph_statistic, threshold, action, details FROM drift_events "
+                "ORDER BY detected_at ASC"
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT event_id, detected_at, stream_id, signal_family, metric, "
+                "ph_statistic, threshold, action, details FROM drift_events "
+                "WHERE stream_id = ? ORDER BY detected_at ASC",
+                [stream_id],
+            ).fetchall()
+        return [_row_to_drift_event(row) for row in rows]
+
+    # -- shadow portfolio (W6, Master Spec §46) --------------------------------
+
+    def append_shadow_positions(self, positions: Sequence[ShadowPosition]) -> int:
+        """Insert new shadow-portfolio rows, ignoring any that already exist
+        for the same ``(run_id, portfolio, isin, horizon_days)`` key."""
+        if not positions:
+            return 0
+        rows = [_shadow_position_row(p) for p in positions]
+        before = self._conn.execute("SELECT count(*) FROM shadow_portfolio").fetchone()
+        before_n = int(before[0]) if before is not None else 0
+        self._conn.executemany(
+            """
+            INSERT INTO shadow_portfolio (
+                run_id, portfolio, isin, horizon_days, entry_ask, exit_due,
+                realized_net_return, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (run_id, portfolio, isin, horizon_days) DO NOTHING
+            """,
+            rows,
+        )
+        after = self._conn.execute("SELECT count(*) FROM shadow_portfolio").fetchone()
+        after_n = int(after[0]) if after is not None else 0
+        return after_n - before_n
+
+    def update_shadow_position_realized_return(
+        self,
+        run_id: str,
+        portfolio: ShadowPortfolioKind,
+        isin: str,
+        horizon_days: int,
+        realized_net_return: float,
+    ) -> None:
+        self._conn.execute(
+            "UPDATE shadow_portfolio SET realized_net_return = ? "
+            "WHERE run_id = ? AND portfolio = ? AND isin = ? AND horizon_days = ?",
+            [realized_net_return, run_id, portfolio.value, isin, horizon_days],
+        )
+
+    def list_shadow_positions(
+        self,
+        run_id: str | None = None,
+        portfolio: ShadowPortfolioKind | None = None,
+    ) -> list[ShadowPosition]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if run_id is not None:
+            clauses.append("run_id = ?")
+            params.append(run_id)
+        if portfolio is not None:
+            clauses.append("portfolio = ?")
+            params.append(portfolio.value)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self._conn.execute(
+            f"SELECT run_id, portfolio, isin, horizon_days, entry_ask, exit_due, "
+            f"realized_net_return, created_at FROM shadow_portfolio {where} "
+            "ORDER BY created_at ASC, isin ASC",
+            params,
+        ).fetchall()
+        return [_row_to_shadow_position(row) for row in rows]
+
+    # -- forecasts (Contract v3 integration wave) ------------------------------
+
+    def append_forecasts(self, records: Sequence[ForecastRecord]) -> int:
+        """Insert forecast rows, idempotent per ``(run_id, underlying_id,
+        horizon_days, model_id)`` (one call per scan naturally writes each
+        component model's forecast plus the combined ``model_id="ensemble"``
+        row once)."""
+        if not records:
+            return 0
+        rows = [_forecast_row(r) for r in records]
+        self._conn.executemany(
+            f"INSERT INTO forecasts ({', '.join(_FORECAST_COLUMNS)}) "
+            f"VALUES ({', '.join(['?'] * len(_FORECAST_COLUMNS))}) "
+            "ON CONFLICT (run_id, underlying_id, horizon_days, model_id) DO NOTHING",
+            rows,
+        )
+        return len(rows)
+
+    def list_forecasts(
+        self,
+        *,
+        run_id: str | None = None,
+        underlying_id: str | None = None,
+        model_id: str | None = None,
+    ) -> list[ForecastRecord]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if run_id is not None:
+            clauses.append("run_id = ?")
+            params.append(run_id)
+        if underlying_id is not None:
+            clauses.append("underlying_id = ?")
+            params.append(underlying_id)
+        if model_id is not None:
+            clauses.append("model_id = ?")
+            params.append(model_id)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self._conn.execute(
+            f"SELECT {', '.join(_FORECAST_COLUMNS)} FROM forecasts {where} "
+            "ORDER BY prediction_time ASC, horizon_days ASC, model_id ASC",
+            params,
+        ).fetchall()
+        return [_row_to_forecast(row) for row in rows]
+
+    # -- position evaluations (Contract v3 Abschnitt D) -------------------------
+
+    def append_position_evaluation(self, evaluation: PositionEvaluation) -> None:
+        """Insert one evaluation row, idempotent per ``(position_id, as_of)``
+        -- a second call with the identical ``as_of`` (e.g. a re-run within
+        the same invocation) is a silent no-op rather than a constraint
+        error, mirroring ``append_ledger_entries``' idempotency."""
+        self._conn.execute(
+            f"INSERT INTO position_evaluations ({', '.join(_POSITION_EVAL_COLUMNS)}) "
+            f"VALUES ({', '.join(['?'] * len(_POSITION_EVAL_COLUMNS))}) "
+            "ON CONFLICT (position_id, as_of) DO NOTHING",
+            _position_eval_row(evaluation),
+        )
+
+    def list_position_evaluations(self, position_id: str | None = None) -> list[PositionEvaluation]:
+        if position_id is None:
+            rows = self._conn.execute(
+                f"SELECT {', '.join(_POSITION_EVAL_COLUMNS)} FROM position_evaluations "
+                "ORDER BY position_id ASC, as_of ASC"
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                f"SELECT {', '.join(_POSITION_EVAL_COLUMNS)} FROM position_evaluations "
+                "WHERE position_id = ? ORDER BY as_of ASC",
+                [position_id],
+            ).fetchall()
+        return [_row_to_position_eval(row) for row in rows]
+
+    def latest_position_evaluation(self, position_id: str) -> PositionEvaluation | None:
+        row = self._conn.execute(
+            f"SELECT {', '.join(_POSITION_EVAL_COLUMNS)} FROM position_evaluations "
+            "WHERE position_id = ? ORDER BY as_of DESC LIMIT 1",
+            [position_id],
+        ).fetchone()
+        return _row_to_position_eval(row) if row is not None else None
+
+    # -- walk-forward results (Contract v3 coordinator addition) ----------------
+
+    def append_walkforward_results(self, records: Sequence[WalkforwardResultRecord]) -> int:
+        """Append walk-forward evaluation rows (``turboedge backtest``).
+
+        Not deduplicated (unlike the append-only ledger tables): a re-run of
+        ``backtest`` for the same model/horizon is a new *measurement* worth
+        keeping in full history, not an idempotent replay -- callers that
+        only want the latest measurement should use
+        :meth:`latest_walkforward_results`.
+        """
+        if not records:
+            return 0
+        rows = [_walkforward_row(r) for r in records]
+        self._conn.executemany(
+            f"INSERT INTO walkforward_results ({', '.join(_WALKFORWARD_COLUMNS)}) "
+            f"VALUES ({', '.join(['?'] * len(_WALKFORWARD_COLUMNS))})",
+            rows,
+        )
+        return len(rows)
+
+    def list_walkforward_results(
+        self,
+        *,
+        signal_family: str | None = None,
+        underlying_id: str | None = None,
+        horizon_days: int | None = None,
+    ) -> list[WalkforwardResultRecord]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if signal_family is not None:
+            clauses.append("signal_family = ?")
+            params.append(signal_family)
+        if underlying_id is not None:
+            clauses.append("underlying_id = ?")
+            params.append(underlying_id)
+        if horizon_days is not None:
+            clauses.append("horizon_days = ?")
+            params.append(horizon_days)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self._conn.execute(
+            f"SELECT {', '.join(_WALKFORWARD_COLUMNS)} FROM walkforward_results {where} "
+            "ORDER BY evaluated_at ASC",
+            params,
+        ).fetchall()
+        return [_row_to_walkforward(row) for row in rows]
+
+    def latest_walkforward_results(
+        self, *, signal_family: str | None = None, underlying_id: str | None = None
+    ) -> list[WalkforwardResultRecord]:
+        """Most recent :class:`WalkforwardResultRecord` per ``(model_id,
+        horizon_days)``, optionally filtered -- what
+        ``reporting/weekly.run_research_tournament`` would read once it is
+        wired to prefer this table over forward-ledger-only data (see
+        Kurzbericht)."""
+        all_rows = self.list_walkforward_results(
+            signal_family=signal_family, underlying_id=underlying_id
+        )
+        latest: dict[tuple[str, int], WalkforwardResultRecord] = {}
+        for r in all_rows:
+            key = (r.model_id, r.horizon_days)
+            existing = latest.get(key)
+            if existing is None or r.evaluated_at > existing.evaluated_at:
+                latest[key] = r
+        return sorted(latest.values(), key=lambda r: (r.model_id, r.horizon_days))
+
 
 # --------------------------------------------------------------------------
 # row (de)serialization helpers
@@ -873,6 +1765,7 @@ _PRODUCT_SNAPSHOT_COLUMNS: tuple[str, ...] = (
     "product_age_days",
     "underlying_price_ref",
     "underlying_price_ref_timestamp",
+    "financing_rate",
     "raw_hash",
     "observation_time",
     "available_at",
@@ -917,6 +1810,7 @@ def _product_snapshot_row(s: ProductSnapshot) -> tuple[Any, ...]:
         s.product_age_days,
         s.underlying_price_ref,
         _opt_to_utc(s.underlying_price_ref_timestamp),
+        s.financing_rate,
         s.raw_hash,
         _to_utc(s.observation_time),
         _to_utc(s.available_at),
@@ -927,6 +1821,51 @@ def _product_snapshot_row(s: ProductSnapshot) -> tuple[Any, ...]:
         s.parser_version,
         s.is_stale,
         s.quality_score,
+    )
+
+
+def _row_to_product_snapshot(row: tuple[Any, ...]) -> ProductSnapshot:
+    return ProductSnapshot(
+        isin=row[0],
+        wkn=row[1],
+        issuer=row[2],
+        venue=row[3],
+        underlying_raw=row[4],
+        underlying_id=row[5],
+        direction=Direction(row[6]),
+        product_type=ProductType(row[7]),
+        financing_level=row[8],
+        knockout_barrier=row[9],
+        ratio=row[10],
+        currency=row[11],
+        underlying_currency=row[12],
+        quanto=row[13],
+        open_end=row[14],
+        maturity=row[15],
+        first_trading_day=row[16],
+        bid=row[17],
+        ask=row[18],
+        bid_size=row[19],
+        ask_size=row[20],
+        quote_timestamp=_from_db_opt_dt(row[21]),
+        quote_presence=row[22],
+        bid_only=row[23],
+        knocked_out=row[24],
+        trading_hours=row[25],
+        product_age_days=row[26],
+        underlying_price_ref=row[27],
+        underlying_price_ref_timestamp=_from_db_opt_dt(row[28]),
+        financing_rate=row[29],
+        raw_hash=row[30],
+        observation_time=_from_db_dt(row[31]),
+        available_at=_from_db_dt(row[32]),
+        retrieved_at=_from_db_dt(row[33]),
+        source_timestamp=_from_db_opt_dt(row[34]),
+        source=row[35],
+        schema_version=row[36],
+        parser_version=row[37],
+        is_stale=row[38],
+        quality_score=row[39],
     )
 
 
@@ -1089,6 +2028,480 @@ def _row_to_position(row: tuple[Any, ...]) -> ManualPosition:
         status=PositionStatus(row[8]),
         created_at=_from_db_dt(row[9]),
         updated_at=_from_db_dt(row[10]),
+    )
+
+
+_LEDGER_ENTRY_COLUMNS: tuple[str, ...] = (
+    "entry_id",
+    "run_id",
+    "candidate_id",
+    "signal_id",
+    "signal_version_hash",
+    "trial_id",
+    "prediction_time",
+    "underlying",
+    "direction",
+    "horizon_days",
+    "regime_bucket",
+    "cluster_id",
+    "feature_hash",
+    "model_hash",
+    "config_hash",
+    "git_commit",
+    "category",
+    "selected_wkn",
+    "selected_isin",
+    "issuer",
+    "entry_bid",
+    "entry_ask",
+    "entry_spread",
+    "entry_quote_timestamp",
+    "entry_underlying_timestamp",
+    "financing_level_entry",
+    "barrier_entry",
+    "ratio",
+    "fx",
+    "predicted_return",
+    "p_profit",
+    "p_ko",
+    "expected_shortfall",
+    "lcb_ev",
+    "uncertainty",
+    "shrinkage_intensity",
+    "is_shadow",
+    "shadow_stratum",
+    "suggested_position_fraction",
+    "exit_due",
+    "alternatives",
+    "feature_snapshot",
+    "status",
+)
+
+
+def _ledger_entry_row(e: LedgerEntry) -> tuple[Any, ...]:
+    return (
+        e.entry_id,
+        e.run_id,
+        e.candidate_id,
+        e.signal_id,
+        e.signal_version_hash,
+        e.trial_id,
+        _to_utc(e.prediction_time),
+        e.underlying,
+        e.direction.value,
+        e.horizon_days,
+        e.regime_bucket,
+        e.cluster_id,
+        e.feature_hash,
+        e.model_hash,
+        e.config_hash,
+        e.git_commit,
+        e.category.value,
+        e.selected_wkn,
+        e.selected_isin,
+        e.issuer,
+        e.entry_bid,
+        e.entry_ask,
+        e.entry_spread,
+        _to_utc(e.entry_quote_timestamp),
+        _to_utc(e.entry_underlying_timestamp),
+        e.financing_level_entry,
+        e.barrier_entry,
+        e.ratio,
+        e.fx,
+        e.predicted_return,
+        e.p_profit,
+        e.p_ko,
+        e.expected_shortfall,
+        e.lcb_ev,
+        e.uncertainty,
+        e.shrinkage_intensity,
+        e.is_shadow,
+        e.shadow_stratum,
+        e.suggested_position_fraction,
+        e.exit_due,
+        json.dumps(list(e.alternatives)),
+        json.dumps(e.feature_snapshot, sort_keys=True),
+        e.status.value,
+    )
+
+
+def _row_to_ledger_entry(row: tuple[Any, ...]) -> LedgerEntry:
+    return LedgerEntry(
+        entry_id=row[0],
+        run_id=row[1],
+        candidate_id=row[2],
+        signal_id=row[3],
+        signal_version_hash=row[4],
+        trial_id=row[5],
+        prediction_time=_from_db_dt(row[6]),
+        underlying=row[7],
+        direction=Direction(row[8]),
+        horizon_days=row[9],
+        regime_bucket=row[10],
+        cluster_id=row[11],
+        feature_hash=row[12],
+        model_hash=row[13],
+        config_hash=row[14],
+        git_commit=row[15],
+        category=Category(row[16]),
+        selected_wkn=row[17],
+        selected_isin=row[18],
+        issuer=row[19],
+        entry_bid=row[20],
+        entry_ask=row[21],
+        entry_spread=row[22],
+        entry_quote_timestamp=_from_db_dt(row[23]),
+        entry_underlying_timestamp=_from_db_dt(row[24]),
+        financing_level_entry=row[25],
+        barrier_entry=row[26],
+        ratio=row[27],
+        fx=row[28],
+        predicted_return=row[29],
+        p_profit=row[30],
+        p_ko=row[31],
+        expected_shortfall=row[32],
+        lcb_ev=row[33],
+        uncertainty=row[34],
+        shrinkage_intensity=row[35],
+        is_shadow=row[36],
+        shadow_stratum=row[37],
+        suggested_position_fraction=row[38],
+        exit_due=row[39],
+        alternatives=json.loads(row[40]),
+        feature_snapshot=json.loads(row[41]),
+        status=LedgerEntryStatus(row[42]),
+    )
+
+
+_LEDGER_LABEL_COLUMNS: tuple[str, ...] = (
+    "entry_id",
+    "labeled_at",
+    "exit_bid",
+    "exit_quote_timestamp",
+    "financing_level_exit",
+    "exit_reason",
+    "realized_selected_pnl",
+    "underlying_pnl",
+    "median_turbo_pnl",
+    "best_turbo_pnl",
+    "ideal_turbo_pnl",
+    "mfe",
+    "mae",
+    "ko_hit",
+    "time_to_ko_days",
+    "ambiguous_path",
+)
+
+
+def _ledger_label_row(label: LedgerLabel) -> tuple[Any, ...]:
+    return (
+        label.entry_id,
+        _to_utc(label.labeled_at),
+        label.exit_bid,
+        _opt_to_utc(label.exit_quote_timestamp),
+        label.financing_level_exit,
+        label.exit_reason.value,
+        label.realized_selected_pnl,
+        label.underlying_pnl,
+        label.median_turbo_pnl,
+        label.best_turbo_pnl,
+        label.ideal_turbo_pnl,
+        label.mfe,
+        label.mae,
+        label.ko_hit,
+        label.time_to_ko_days,
+        label.ambiguous_path,
+    )
+
+
+def _row_to_ledger_label(row: tuple[Any, ...]) -> LedgerLabel:
+    return LedgerLabel(
+        entry_id=row[0],
+        labeled_at=_from_db_dt(row[1]),
+        exit_bid=row[2],
+        exit_quote_timestamp=_from_db_opt_dt(row[3]),
+        financing_level_exit=row[4],
+        exit_reason=ExitReason(row[5]),
+        realized_selected_pnl=row[6],
+        underlying_pnl=row[7],
+        median_turbo_pnl=row[8],
+        best_turbo_pnl=row[9],
+        ideal_turbo_pnl=row[10],
+        mfe=row[11],
+        mae=row[12],
+        ko_hit=row[13],
+        time_to_ko_days=row[14],
+        ambiguous_path=row[15],
+    )
+
+
+def _row_to_model_registry_entry(row: tuple[Any, ...]) -> ModelRegistryEntry:
+    return ModelRegistryEntry(
+        model_id=row[0],
+        model_hash=row[1],
+        signal_family=row[2],
+        status=ModelStatus(row[3]),
+        weight=row[4],
+        params=json.loads(row[5]),
+        trial_id=row[6],
+        created_at=_from_db_dt(row[7]),
+        updated_at=_from_db_dt(row[8]),
+    )
+
+
+def _row_to_research_trial(row: tuple[Any, ...]) -> ResearchTrial:
+    return ResearchTrial(
+        trial_id=row[0],
+        kind=row[1],
+        description=row[2],
+        created_at=_from_db_dt(row[3]),
+        quarter=row[4],
+        status=TrialStatus(row[5]),
+    )
+
+
+def _row_to_drift_event(row: tuple[Any, ...]) -> DriftEvent:
+    return DriftEvent(
+        event_id=row[0],
+        detected_at=_from_db_dt(row[1]),
+        stream_id=row[2],
+        signal_family=row[3],
+        metric=row[4],
+        ph_statistic=row[5],
+        threshold=row[6],
+        action=row[7],
+        details=json.loads(row[8]),
+    )
+
+
+def _shadow_position_row(p: ShadowPosition) -> tuple[Any, ...]:
+    return (
+        p.run_id,
+        p.portfolio.value,
+        p.isin,
+        p.horizon_days,
+        p.entry_ask,
+        p.exit_due,
+        p.realized_net_return,
+        _to_utc(p.created_at),
+    )
+
+
+def _row_to_shadow_position(row: tuple[Any, ...]) -> ShadowPosition:
+    return ShadowPosition(
+        run_id=row[0],
+        portfolio=ShadowPortfolioKind(row[1]),
+        isin=row[2],
+        horizon_days=row[3],
+        entry_ask=row[4],
+        exit_due=row[5],
+        realized_net_return=row[6],
+        created_at=_from_db_dt(row[7]),
+    )
+
+
+_FORECAST_COLUMNS: tuple[str, ...] = (
+    "run_id",
+    "underlying_id",
+    "horizon_days",
+    "prediction_time",
+    "frozen_at",
+    "p_up",
+    "mean",
+    "sigma",
+    "quantiles",
+    "expected_shortfall_05",
+    "uncertainty",
+    "model_id",
+    "model_hash",
+    "signal_family",
+    "n_train",
+    "n_effective",
+    "component_weights",
+    "config_hash",
+    "git_commit",
+)
+
+
+def _forecast_row(r: ForecastRecord) -> tuple[Any, ...]:
+    return (
+        r.run_id,
+        r.underlying_id,
+        r.horizon_days,
+        _to_utc(r.prediction_time),
+        _to_utc(r.frozen_at),
+        r.p_up,
+        r.mean,
+        r.sigma,
+        json.dumps(r.quantiles, sort_keys=True),
+        r.expected_shortfall_05,
+        r.uncertainty,
+        r.model_id,
+        r.model_hash,
+        r.signal_family,
+        r.n_train,
+        r.n_effective,
+        json.dumps(r.component_weights, sort_keys=True),
+        r.config_hash,
+        r.git_commit,
+    )
+
+
+def _row_to_forecast(row: tuple[Any, ...]) -> ForecastRecord:
+    return ForecastRecord(
+        run_id=row[0],
+        underlying_id=row[1],
+        horizon_days=row[2],
+        prediction_time=_from_db_dt(row[3]),
+        frozen_at=_from_db_dt(row[4]),
+        p_up=row[5],
+        mean=row[6],
+        sigma=row[7],
+        quantiles=json.loads(row[8]),
+        expected_shortfall_05=row[9],
+        uncertainty=row[10],
+        model_id=row[11],
+        model_hash=row[12],
+        signal_family=row[13],
+        n_train=row[14],
+        n_effective=row[15],
+        component_weights=json.loads(row[16]),
+        config_hash=row[17],
+        git_commit=row[18],
+    )
+
+
+_POSITION_EVAL_COLUMNS: tuple[str, ...] = (
+    "position_id",
+    "as_of",
+    "wkn",
+    "isin",
+    "underlying_id",
+    "status",
+    "reasons",
+    "current_bid",
+    "quote_timestamp",
+    "remaining_horizon_days",
+    "remaining_lcb_ev",
+    "remaining_p_ko",
+    "remaining_p_profit",
+    "unrealized_return",
+    "data_quality_ok",
+    "config_hash",
+    "git_commit",
+)
+
+
+def _position_eval_row(e: PositionEvaluation) -> tuple[Any, ...]:
+    return (
+        e.position_id,
+        _to_utc(e.as_of),
+        e.wkn,
+        e.isin,
+        e.underlying_id,
+        e.status.value,
+        json.dumps(e.reasons),
+        e.current_bid,
+        _opt_to_utc(e.quote_timestamp),
+        e.remaining_horizon_days,
+        e.remaining_lcb_ev,
+        e.remaining_p_ko,
+        e.remaining_p_profit,
+        e.unrealized_return,
+        e.data_quality_ok,
+        e.config_hash,
+        e.git_commit,
+    )
+
+
+def _row_to_position_eval(row: tuple[Any, ...]) -> PositionEvaluation:
+    return PositionEvaluation(
+        position_id=row[0],
+        as_of=_from_db_dt(row[1]),
+        wkn=row[2],
+        isin=row[3],
+        underlying_id=row[4],
+        status=PositionEvaluationStatus(row[5]),
+        reasons=json.loads(row[6]),
+        current_bid=row[7],
+        quote_timestamp=_from_db_opt_dt(row[8]),
+        remaining_horizon_days=row[9],
+        remaining_lcb_ev=row[10],
+        remaining_p_ko=row[11],
+        remaining_p_profit=row[12],
+        unrealized_return=row[13],
+        data_quality_ok=row[14],
+        config_hash=row[15],
+        git_commit=row[16],
+    )
+
+
+_WALKFORWARD_COLUMNS: tuple[str, ...] = (
+    "model_id",
+    "model_hash",
+    "signal_family",
+    "underlying_id",
+    "horizon_days",
+    "evaluated_at",
+    "n_folds",
+    "brier",
+    "brier_null",
+    "log_loss",
+    "ece",
+    "hit_rate",
+    "mean_oos_return",
+    "psr",
+    "n_effective",
+    "config_hash",
+    "git_commit",
+    "params",
+)
+
+
+def _walkforward_row(r: WalkforwardResultRecord) -> tuple[Any, ...]:
+    return (
+        r.model_id,
+        r.model_hash,
+        r.signal_family,
+        r.underlying_id,
+        r.horizon_days,
+        _to_utc(r.evaluated_at),
+        r.n_folds,
+        r.brier,
+        r.brier_null,
+        r.log_loss,
+        r.ece,
+        r.hit_rate,
+        r.mean_oos_return,
+        r.psr,
+        r.n_effective,
+        r.config_hash,
+        r.git_commit,
+        json.dumps(r.params, sort_keys=True, default=str),
+    )
+
+
+def _row_to_walkforward(row: tuple[Any, ...]) -> WalkforwardResultRecord:
+    return WalkforwardResultRecord(
+        model_id=row[0],
+        model_hash=row[1],
+        signal_family=row[2],
+        underlying_id=row[3],
+        horizon_days=row[4],
+        evaluated_at=_from_db_dt(row[5]),
+        n_folds=row[6],
+        brier=row[7],
+        brier_null=row[8],
+        log_loss=row[9],
+        ece=row[10],
+        hit_rate=row[11],
+        mean_oos_return=row[12],
+        psr=row[13],
+        n_effective=row[14],
+        config_hash=row[15],
+        git_commit=row[16],
+        params=json.loads(row[17]),
     )
 
 

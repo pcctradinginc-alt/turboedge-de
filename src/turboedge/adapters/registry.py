@@ -114,6 +114,7 @@ def load_builtin_adapters() -> None:
     """
     importlib.import_module("turboedge.adapters.csv_import")
     importlib.import_module("turboedge.adapters.issuer_feeds")
+    importlib.import_module("turboedge.adapters.gettex")
 
 
 def build_http_client(src: SourceConfig) -> HttpClient:

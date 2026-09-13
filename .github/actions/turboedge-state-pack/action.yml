@@ -1,0 +1,34 @@
+name: "TurboEdge: pack and upload state"
+description: >-
+  Pack the state directory (`turboedge state pack`) and upload it as the
+  `turboedge-state-enc` artifact (90-day retention). `actions/upload-artifact`
+  is a normal action step and works fine inside a composite action -- the
+  only composite-specific gotchas are that `run:` steps need their own
+  `shell:` and that a step's `if:` can only see prior steps *within this
+  composite*, not the calling job. Because of that second point, callers
+  MUST gate the call to this action with `if: success()` (never `always()`)
+  so a failed mode step never uploads a broken/incomplete state -- overwriting
+  the artifact history with bad state would corrupt every future restore.
+
+inputs:
+  state_key:
+    description: "Value of the TURBOEDGE_STATE_KEY repo secret."
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Pack state
+      shell: bash
+      env:
+        TURBOEDGE_STATE_KEY: ${{ inputs.state_key }}
+      run: |
+        set -euo pipefail
+        uv run turboedge state pack --state-dir ./state --out state.tar.enc
+
+    - name: Upload encrypted state artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: turboedge-state-enc
+        path: state.tar.enc
+        retention-days: 90

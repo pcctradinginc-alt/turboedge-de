@@ -25,6 +25,8 @@ dependencies = [
   "jinja2>=3.1",
   "structlog>=24.1",
   "yfinance>=0.2.40",
+  "scikit-learn>=1.5",
+  "cryptography>=43",
 ]
 
 [project.scripts]
@@ -85,6 +87,10 @@ files = ["src"]
 
 [[tool.mypy.overrides]]
 module = ["yfinance.*", "duckdb.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["scipy.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

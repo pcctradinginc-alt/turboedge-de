@@ -43,6 +43,17 @@ def test_init_schema_creates_all_tables_empty(store: Store) -> None:
         "source_health",
         "positions_manual",
         "notifications_sent",
+        "forward_ledger",
+        "ledger_labels",
+        "strategy_posteriors",
+        "model_registry",
+        "model_weight_history",
+        "research_trials",
+        "drift_events",
+        "shadow_portfolio",
+        "forecasts",
+        "position_evaluations",
+        "walkforward_results",
     }
     assert all(v == 0 for v in counts.values())
 
@@ -509,7 +520,7 @@ def test_init_schema_adds_missing_column_to_old_product_snapshots_table(
             migrations[-1][1],
             migrations[-1][2],
             migrations[-1][3],
-        ) == ("product_snapshots", "underlying_price_ref_timestamp", "add_column")
+        ) == ("product_snapshots", "financing_rate", "add_column")
         migrations_after_first_call = len(migrations)
 
         # a second init_schema() call is a no-op: the column already exists,
@@ -603,3 +614,68 @@ def test_init_schema_raises_on_incompatible_existing_column_type(tmp_path: Path)
 
     with Store(db_path) as store, pytest.raises(StoreError, match=r"runs\.started_at"):
         store.init_schema()
+
+
+# --------------------------------------------------------------------------
+# W6: a DuckDB file predating the Forward Ledger / Learning tables (Master
+# Spec §20-27, §46) must gain them via `init_schema()`, without touching
+# pre-existing tables/data -- the same "state/turboedge.duckdb restored from
+# an older cached run" scenario the migration tests above cover for columns,
+# but here for whole tables that did not exist at all yet.
+# --------------------------------------------------------------------------
+
+
+def test_init_schema_creates_w6_tables_on_a_pre_w6_database(tmp_path: Path) -> None:
+    db_path = tmp_path / "turboedge.duckdb"
+    # Simulate a database created before the W6 tables existed: only the
+    # original `runs` table, with one pre-existing row.
+    conn = duckdb.connect(str(db_path))
+    try:
+        conn.execute(
+            """
+            CREATE TABLE runs (
+                run_id VARCHAR PRIMARY KEY,
+                started_at TIMESTAMPTZ NOT NULL,
+                finished_at TIMESTAMPTZ,
+                command VARCHAR NOT NULL,
+                config_hash VARCHAR NOT NULL,
+                git_commit VARCHAR,
+                status VARCHAR NOT NULL,
+                error VARCHAR
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO runs "
+            "(run_id, started_at, command, config_hash, git_commit, status, error) "
+            "VALUES ('old-run', '2026-01-01T00:00:00+00:00', 'scan', 'cfg', NULL, 'ok', NULL)"
+        )
+    finally:
+        conn.close()
+
+    with Store(db_path) as store:
+        store.init_schema()
+        counts = store.table_counts()
+        for table in (
+            "forward_ledger",
+            "ledger_labels",
+            "strategy_posteriors",
+            "model_registry",
+            "model_weight_history",
+            "research_trials",
+            "drift_events",
+            "shadow_portfolio",
+        ):
+            assert table in counts
+            assert counts[table] == 0
+
+        # Pre-existing table/data is untouched.
+        assert counts["runs"] == 1
+        row = store._conn.execute(
+            "SELECT run_id, status FROM runs WHERE run_id = 'old-run'"
+        ).fetchone()
+        assert row == ("old-run", "ok")
+
+        # A second init_schema() call remains idempotent.
+        store.init_schema()
+        assert store.table_counts()["forward_ledger"] == 0

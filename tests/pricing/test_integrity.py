@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
+from turboedge.pricing.fair_value import theoretical_fair_value
 from turboedge.pricing.integrity import IntegrityReport, check_product
 from turboedge.storage.schemas import Direction, ProductSnapshot, ProductType
 
@@ -322,3 +323,121 @@ def test_check_product_flags_missing_underlying_mapping(
     )
     assert report.passed is False
     assert "missing_underlying_mapping" in report.failures
+
+
+def test_check_product_classic_priced_at_fair_value_does_not_flag_below_intrinsic(
+    make_product_snapshot: Callable[..., ProductSnapshot],
+) -> None:
+    """Build Contract W1: a turbo_classic honestly priced at its own
+    carry-adjusted fair value (genuinely below plain intrinsic for this
+    deep-carry SHORT example) must NOT trip "bid_below_intrinsic" /
+    "premium_pct_high" -- those checks compare against fair value now, not
+    plain intrinsic (the failure mode the W1 measurement found)."""
+    as_of = date(2026, 9, 10)
+    maturity = date(2027, 3, 20)
+    spot, strike, ratio = 35000.0, 39429.225, 0.001
+    ref_rate = 0.0219
+    fair_value = theoretical_fair_value(
+        direction=Direction.SHORT,
+        product_type=ProductType.TURBO_CLASSIC,
+        spot=spot,
+        financing_level=strike,
+        knockout_barrier=strike,
+        ratio=ratio,
+        fx=1.0,
+        ref_rate=ref_rate,
+        financing_spread=0.0,
+        as_of=as_of,
+        maturity=maturity,
+    )
+    product = make_product_snapshot(
+        direction=Direction.SHORT,
+        product_type=ProductType.TURBO_CLASSIC,
+        financing_level=strike,
+        knockout_barrier=strike,
+        ratio=ratio,
+        maturity=maturity,
+        open_end=False,
+        bid=fair_value - 0.001,
+        ask=fair_value + 0.001,
+        underlying_price_ref=spot,
+    )
+    report = check_product(
+        product,
+        consensus=spot,
+        now=datetime(as_of.year, as_of.month, as_of.day, 16, 0, tzinfo=UTC),
+        max_quote_age_s=120.0,
+        known_issuers=None,
+        margin_warn_pct=0.15,
+        ref_rate=ref_rate,
+    )
+    assert "bid_below_intrinsic" not in report.failures
+    assert "premium_pct_high" not in report.warnings
+
+
+def test_check_product_classic_without_ref_rate_falls_back_to_zero_discount(
+    make_product_snapshot: Callable[..., ProductSnapshot],
+) -> None:
+    """Sanity check for the ``ref_rate=0.0`` default: without a real
+    ``ref_rate``, a classic priced at its true (positive-``ref_rate``) fair
+    value looks "too cheap" relative to a zero-discount fair value -- i.e.
+    callers that never pass ``ref_rate`` for a classic get a real, if
+    imprecise, check, not a crash or a silently-skipped one."""
+    as_of = date(2026, 9, 10)
+    maturity = date(2027, 3, 20)
+    spot, strike, ratio = 35000.0, 39429.225, 0.001
+    product = make_product_snapshot(
+        direction=Direction.SHORT,
+        product_type=ProductType.TURBO_CLASSIC,
+        financing_level=strike,
+        knockout_barrier=strike,
+        ratio=ratio,
+        maturity=maturity,
+        open_end=False,
+        bid=3.5,
+        ask=3.6,
+        underlying_price_ref=spot,
+    )
+    report = check_product(
+        product,
+        consensus=spot,
+        now=datetime(as_of.year, as_of.month, as_of.day, 16, 0, tzinfo=UTC),
+        max_quote_age_s=120.0,
+        known_issuers=None,
+        margin_warn_pct=0.15,
+    )
+    assert isinstance(report, IntegrityReport)  # never raises
+
+
+def test_check_product_classic_missing_maturity_warns_instead_of_guessing(
+    make_product_snapshot: Callable[..., ProductSnapshot],
+) -> None:
+    """The BNP "unconfirmed maturity timestamp" scenario
+    (adapters/issuer_feeds.py): a classified-as-classic-but-unpriceable
+    product (maturity None) must not crash check_product, silently fall
+    back to intrinsic, or fabricate a fair value -- it is flagged and the
+    fair-value plausibility check is skipped for that row only."""
+    product = make_product_snapshot(
+        direction=Direction.SHORT,
+        product_type=ProductType.TURBO_CLASSIC,
+        financing_level=39429.225,
+        knockout_barrier=39429.225,
+        ratio=0.001,
+        maturity=None,
+        open_end=False,
+        bid=1.0,
+        ask=1.1,
+        underlying_price_ref=35000.0,
+    )
+    report = check_product(
+        product,
+        consensus=35000.0,
+        now=_NOW,
+        max_quote_age_s=120.0,
+        known_issuers=None,
+        margin_warn_pct=0.15,
+        ref_rate=0.0219,
+    )
+    assert isinstance(report, IntegrityReport)  # never raises
+    assert "fair_value_unavailable_for_plausibility_check" in report.warnings
+    assert "bid_below_intrinsic" not in report.failures

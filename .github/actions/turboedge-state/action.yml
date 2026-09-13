@@ -1,0 +1,165 @@
+name: "TurboEdge: restore encrypted state"
+description: >-
+  Set up uv/Python, verify TURBOEDGE_STATE_KEY, and restore + unpack the
+  encrypted state artifact from the latest usable prior successful
+  pipeline.yml run. Refuses to silently continue with an empty state unless
+  this is a genuine first run of the workflow, or `allow_fresh_state` was
+  explicitly requested (see the restore step below for the full decision
+  table). Requires the caller's job to have already run `actions/checkout`
+  (a local composite action can only be resolved after checkout) and to hold
+  `actions: read` (or `actions: write`) so `gh run list`/`gh run download`
+  can see prior runs and their artifacts.
+
+inputs:
+  state_key:
+    description: "Value of the TURBOEDGE_STATE_KEY repo secret."
+    required: true
+  mode:
+    description: "Pipeline mode this job is running (scan/eod/weekly/monthly); used only for log/summary text."
+    required: true
+  allow_fresh_state:
+    description: >-
+      "true" to deliberately allow a fresh, empty state when no usable
+      artifact is found despite prior successful runs. Only meaningful for a
+      manual workflow_dispatch reset -- on a schedule trigger this input is
+      never set, so a missing artifact always aborts the run rather than
+      silently starting empty.
+    required: false
+    default: "false"
+  github_token:
+    description: "Token for `gh run list`/`gh run download` -- pass `${{ github.token }}` at the call site."
+    required: true
+
+outputs:
+  state_note:
+    description: "One-line, job-summary-safe note describing an out-of-the-ordinary state restore (empty string on a normal restore)."
+    value: ${{ steps.restore.outputs.state_note }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up uv
+      uses: astral-sh/setup-uv@v6
+      with:
+        enable-cache: true
+
+    - name: Install Python 3.12
+      shell: bash
+      run: uv python install 3.12
+
+    - name: Install dependencies
+      shell: bash
+      run: uv sync --locked
+
+    - name: Create directories
+      shell: bash
+      run: mkdir -p state reports
+
+    - name: Verify TURBOEDGE_STATE_KEY is configured
+      shell: bash
+      env:
+        STATE_KEY: ${{ inputs.state_key }}
+      run: |
+        set -euo pipefail
+        if [[ -z "${STATE_KEY}" ]]; then
+          echo "::error::TURBOEDGE_STATE_KEY secret is not set -- refusing to run with an unencrypted state fallback. Generate one with: python -c \"import secrets;print(secrets.token_urlsafe(32))\" and add it under Settings > Secrets and variables > Actions."
+          exit 1
+        fi
+
+    # ------------------------------------------------------------------
+    # Restore logic. Three cases, handled explicitly -- silent data loss
+    # (starting from an empty state without anyone noticing, which used to
+    # happen whenever the artifact search came up empty for *any* reason)
+    # is exactly what this step exists to prevent:
+    #
+    #   A. No previous successful pipeline.yml run exists at all -- a
+    #      genuine first run. A fresh, empty state is expected and fine;
+    #      log it and surface it in the job summary.
+    #   B. Previous successful runs exist, but none of the last 50 have a
+    #      usable `turboedge-state-enc` artifact (expired past the 90-day
+    #      retention window, never uploaded, or the download failed).
+    #      Abort loudly (`::error::` + exit 1) -- UNLESS `allow_fresh_state`
+    #      was explicitly passed in via workflow_dispatch, in which case a
+    #      forced fresh start is logged loudly (`::warning::` + summary).
+    #   C. A usable artifact was found -- restore it normally.
+    #
+    # Search depth is 50 successful runs (not 20): scan runs 5x/day but
+    # weekly/monthly run far less often, so 20 runs of *this* workflow can
+    # be far short of covering the 90-day artifact retention window once
+    # scan/eod runs are interleaved in the same run history.
+    # ------------------------------------------------------------------
+    - name: Restore encrypted state from the latest usable successful pipeline run
+      id: restore
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+        ALLOW_FRESH_STATE: ${{ inputs.allow_fresh_state }}
+        MODE: ${{ inputs.mode }}
+      run: |
+        set -euo pipefail
+        echo "Restoring encrypted state for pipeline mode: ${MODE}"
+        mkdir -p state-download
+
+        if ! total_success=$(gh run list --workflow pipeline.yml --status success --json databaseId --jq 'length'); then
+          echo "::error::'gh run list' failed while checking for prior successful pipeline.yml runs -- aborting rather than silently treating this as a first run. Check that the token has 'actions: read' and that the API is reachable."
+          exit 1
+        fi
+        total_success="${total_success:-0}"
+
+        if [[ "${total_success}" -eq 0 ]]; then
+          note="No previous successful pipeline.yml run exists yet -- this is a genuine first run, starting with a fresh, empty state."
+          echo "${note}"
+          {
+            echo "state_note=${note}"
+            echo "allow_missing=true"
+          } >> "${GITHUB_OUTPUT}"
+          exit 0
+        fi
+
+        if ! run_ids=$(gh run list --workflow pipeline.yml --status success --json databaseId --limit 50 --jq '.[].databaseId'); then
+          echo "::error::'gh run list' failed while enumerating candidate runs for state restore -- aborting rather than silently falling back to an empty state."
+          exit 1
+        fi
+
+        found_run_id=""
+        for run_id in ${run_ids}; do
+          if gh run download "${run_id}" -n turboedge-state-enc -D state-download 2>/dev/null; then
+            echo "Restored turboedge-state-enc artifact from pipeline.yml run ${run_id}"
+            found_run_id="${run_id}"
+            break
+          fi
+        done
+
+        if [[ -n "${found_run_id}" ]]; then
+          {
+            echo "state_note="
+            echo "allow_missing=false"
+          } >> "${GITHUB_OUTPUT}"
+          exit 0
+        fi
+
+        if [[ "${ALLOW_FRESH_STATE}" == "true" ]]; then
+          note="allow_fresh_state=true was explicitly requested via workflow_dispatch: no usable turboedge-state-enc artifact was found in the last 50 successful runs (out of ${total_success} total), so a FRESH, EMPTY state was forced. Forward-ledger, posteriors, model weights and product history from before this point are being abandoned deliberately."
+          echo "::warning::${note}"
+          {
+            echo "state_note=${note}"
+            echo "allow_missing=true"
+          } >> "${GITHUB_OUTPUT}"
+          exit 0
+        fi
+
+        echo "::error::${total_success} prior successful pipeline.yml run(s) exist, but none of the last 50 have a usable turboedge-state-enc artifact (expired past the 90-day retention window, missing, or a failed download). Refusing to silently continue with an empty state -- that would discard the forward-ledger, posteriors, model weights and product history without anyone noticing. If this reset is intentional, re-run manually via workflow_dispatch with allow_fresh_state=true."
+        exit 1
+
+    - name: Unpack state
+      shell: bash
+      env:
+        TURBOEDGE_STATE_KEY: ${{ inputs.state_key }}
+        ALLOW_MISSING: ${{ steps.restore.outputs.allow_missing }}
+      run: |
+        set -euo pipefail
+        if [[ "${ALLOW_MISSING}" == "true" ]]; then
+          uv run turboedge state unpack --in state-download/state.tar.enc --state-dir ./state --allow-missing
+        else
+          uv run turboedge state unpack --in state-download/state.tar.enc --state-dir ./state
+        fi

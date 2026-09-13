@@ -1,0 +1,1301 @@
+{
+  "data": {
+    "groups": {
+      "products": [
+        {
+          "wkn": {
+            "type": "text",
+            "value": "GN17P0"
+          },
+          "isin": {
+            "type": "text",
+            "value": "DE000GN17P01"
+          },
+          "underlying": {
+            "type": "text",
+            "value": "Euro Stoxx 50 (Kursindex) EUR"
+          },
+          "underlyings.price": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:450495|id_market:20|EUR|397|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00####",
+            "valueRender": "{{value}} {{currency}}",
+            "valueTuple": {
+              "size": 0.0,
+              "delayMinutes": 0.0,
+              "value": 6325.0,
+              "timestamp": 1789141632114.0
+            }
+          },
+          "issuer": {
+            "type": "text",
+            "value": "Goldman Sachs Bank Europe SE"
+          },
+          "structure.direction": {
+            "type": "text",
+            "value": "short"
+          },
+          "financingLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 6347.337
+          },
+          "koLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 6347.337
+          },
+          "leverage": {
+            "currency": "x",
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 169.188659517426
+          },
+          "bid": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:66870271|id_market:18|EUR|6|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}",
+            "valueTuple": {
+              "delayMinutes": 0.0,
+              "size": 150000.0,
+              "value": 0.366,
+              "timestamp": 1789147071373.0
+            }
+          },
+          "ask": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:66870271|id_market:18|EUR|7|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}",
+            "valueTuple": {
+              "delayMinutes": 0.0,
+              "size": 150000.0,
+              "value": 0.373,
+              "timestamp": 1789147071373.0
+            }
+          }
+        },
+        {
+          "wkn": {
+            "type": "text",
+            "value": "HF0G2Y"
+          },
+          "isin": {
+            "type": "text",
+            "value": "DE000HF0G2Y8"
+          },
+          "underlying": {
+            "type": "text",
+            "value": "Euro Stoxx 50 (Kursindex) EUR"
+          },
+          "underlyings.price": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:450495|id_market:20|EUR|397|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00####",
+            "valueRender": "{{value}} {{currency}}",
+            "valueTuple": {
+              "size": 0.0,
+              "delayMinutes": 0.0,
+              "value": 6325.0,
+              "timestamp": 1789141632114.0
+            }
+          },
+          "issuer": {
+            "type": "text",
+            "value": "HSBC Trinkaus & Burkhardt GmbH"
+          },
+          "structure.direction": {
+            "type": "text",
+            "value": "short"
+          },
+          "financingLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 6349.6806
+          },
+          "koLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 6349.6806
+          },
+          "leverage": {
+            "currency": "x",
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 150.325728571429
+          },
+          "bid": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:68088125|id_market:322|EUR|6|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}",
+            "valueTuple": {
+              "delayMinutes": 0.0,
+              "size": 20000.0,
+              "value": 0.36,
+              "timestamp": 1789147312041.0
+            }
+          },
+          "ask": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:68088125|id_market:322|EUR|7|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}",
+            "valueTuple": {
+              "delayMinutes": 0.0,
+              "size": 20000.0,
+              "value": 0.42,
+              "timestamp": 1789146118580.0
+            }
+          }
+        },
+        {
+          "wkn": {
+            "type": "text",
+            "value": "GN1AM4"
+          },
+          "isin": {
+            "type": "text",
+            "value": "DE000GN1AM40"
+          },
+          "underlying": {
+            "type": "text",
+            "value": "Euro Stoxx 50 (Kursindex) EUR"
+          },
+          "underlyings.price": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:450495|id_market:20|EUR|397|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00####",
+            "valueRender": "{{value}} {{currency}}",
+            "valueTuple": {
+              "size": 0.0,
+              "delayMinutes": 0.0,
+              "value": 6325.0,
+              "timestamp": 1789141632114.0
+            }
+          },
+          "issuer": {
+            "type": "text",
+            "value": "Goldman Sachs Bank Europe SE"
+          },
+          "structure.direction": {
+            "type": "text",
+            "value": "short"
+          },
+          "financingLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 6358.9367
+          },
+          "koLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 6358.9367
+          },
+          "leverage": {
+            "currency": "x",
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 123.454729941292
+          },
+          "bid": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:66913591|id_market:18|EUR|6|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}",
+            "valueTuple": {
+              "delayMinutes": 0.0,
+              "size": 200000.0,
+              "value": 0.504,
+              "timestamp": 1789147195024.0
+            }
+          },
+          "ask": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:66913591|id_market:18|EUR|7|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}",
+            "valueTuple": {
+              "delayMinutes": 0.0,
+              "size": 200000.0,
+              "value": 0.511,
+              "timestamp": 1789147195024.0
+            }
+          }
+        },
+        {
+          "wkn": {
+            "type": "text",
+            "value": "GN17P1"
+          },
+          "isin": {
+            "type": "text",
+            "value": "DE000GN17P19"
+          },
+          "underlying": {
+            "type": "text",
+            "value": "Euro Stoxx 50 (Kursindex) EUR"
+          },
+          "underlyings.price": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:450495|id_market:20|EUR|397|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00####",
+            "valueRender": "{{value}} {{currency}}",
+            "valueTuple": {
+              "size": 0.0,
+              "delayMinutes": 0.0,
+              "value": 6325.0,
+              "timestamp": 1789141632114.0
+            }
+          },
+          "issuer": {
+            "type": "text",
+            "value": "Goldman Sachs Bank Europe SE"
+          },
+          "structure.direction": {
+            "type": "text",
+            "value": "short"
+          },
+          "financingLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 6366.1065
+          },
+          "koLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 6366.1065
+          },
+          "leverage": {
+            "currency": "x",
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 109.727069565217
+          },
+          "bid": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:66870270|id_market:18|EUR|6|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}",
+            "valueTuple": {
+              "delayMinutes": 0.0,
+              "size": 200000.0,
+              "value": 0.568,
+              "timestamp": 1789147313769.0
+            }
+          },
+          "ask": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:66870270|id_market:18|EUR|7|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}",
+            "valueTuple": {
+              "delayMinutes": 0.0,
+              "size": 200000.0,
+              "value": 0.575,
+              "timestamp": 1789147313769.0
+            }
+          }
+        },
+        {
+          "wkn": {
+            "type": "text",
+            "value": "GN1DA4"
+          },
+          "isin": {
+            "type": "text",
+            "value": "DE000GN1DA41"
+          },
+          "underlying": {
+            "type": "text",
+            "value": "Euro Stoxx 50 (Kursindex) EUR"
+          },
+          "underlyings.price": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:450495|id_market:20|EUR|397|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00####",
+            "valueRender": "{{value}} {{currency}}",
+            "valueTuple": {
+              "size": 0.0,
+              "delayMinutes": 0.0,
+              "value": 6325.0,
+              "timestamp": 1789141632114.0
+            }
+          },
+          "issuer": {
+            "type": "text",
+            "value": "Goldman Sachs Bank Europe SE"
+          },
+          "structure.direction": {
+            "type": "text",
+            "value": "short"
+          },
+          "financingLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 6377.7463
+          },
+          "koLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 6377.7463
+          },
+          "leverage": {
+            "currency": "x",
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 92.938826215022
+          },
+          "bid": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:66963872|id_market:18|EUR|6|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}",
+            "valueTuple": {
+              "delayMinutes": 0.0,
+              "size": 200000.0,
+              "value": 0.672,
+              "timestamp": 1789147068257.0
+            }
+          },
+          "ask": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:66963872|id_market:18|EUR|7|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}",
+            "valueTuple": {
+              "delayMinutes": 0.0,
+              "size": 200000.0,
+              "value": 0.679,
+              "timestamp": 1789147068257.0
+            }
+          }
+        },
+        {
+          "wkn": {
+            "type": "text",
+            "value": "GN1G03"
+          },
+          "isin": {
+            "type": "text",
+            "value": "DE000GN1G037"
+          },
+          "underlying": {
+            "type": "text",
+            "value": "Euro Stoxx 50 (Kursindex) EUR"
+          },
+          "underlyings.price": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:450495|id_market:20|EUR|397|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00####",
+            "valueRender": "{{value}} {{currency}}",
+            "valueTuple": {
+              "size": 0.0,
+              "delayMinutes": 0.0,
+              "value": 6325.0,
+              "timestamp": 1789141632114.0
+            }
+          },
+          "issuer": {
+            "type": "text",
+            "value": "Goldman Sachs Bank Europe SE"
+          },
+          "structure.direction": {
+            "type": "text",
+            "value": "short"
+          },
+          "financingLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 6385.38
+          },
+          "koLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 6385.38
+          },
+          "leverage": {
+            "currency": "x",
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 84.604289544236
+          },
+          "bid": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:67028921|id_market:18|EUR|6|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}",
+            "valueTuple": {
+              "delayMinutes": 0.0,
+              "size": 200000.0,
+              "value": 0.739,
+              "timestamp": 1789147194621.0
+            }
+          },
+          "ask": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:67028921|id_market:18|EUR|7|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}",
+            "valueTuple": {
+              "delayMinutes": 0.0,
+              "size": 200000.0,
+              "value": 0.746,
+              "timestamp": 1789147194621.0
+            }
+          }
+        },
+        {
+          "wkn": {
+            "type": "text",
+            "value": "HF0G2Z"
+          },
+          "isin": {
+            "type": "text",
+            "value": "DE000HF0G2Z5"
+          },
+          "underlying": {
+            "type": "text",
+            "value": "Euro Stoxx 50 (Kursindex) EUR"
+          },
+          "underlyings.price": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:450495|id_market:20|EUR|397|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00####",
+            "valueRender": "{{value}} {{currency}}",
+            "valueTuple": {
+              "size": 0.0,
+              "delayMinutes": 0.0,
+              "value": 6325.0,
+              "timestamp": 1789141632114.0
+            }
+          },
+          "issuer": {
+            "type": "text",
+            "value": "HSBC Trinkaus & Burkhardt GmbH"
+          },
+          "structure.direction": {
+            "type": "text",
+            "value": "short"
+          },
+          "financingLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 6387.6786
+          },
+          "koLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 6387.6786
+          },
+          "leverage": {
+            "currency": "x",
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 84.182381333333
+          },
+          "bid": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:68088049|id_market:322|EUR|6|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}",
+            "valueTuple": {
+              "delayMinutes": 0.0,
+              "size": 20000.0,
+              "value": 0.74,
+              "timestamp": 1789147154757.0
+            }
+          },
+          "ask": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:68088049|id_market:322|EUR|7|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}",
+            "valueTuple": {
+              "delayMinutes": 0.0,
+              "size": 20000.0,
+              "value": 0.75,
+              "timestamp": 1789147154757.0
+            }
+          }
+        },
+        {
+          "wkn": {
+            "type": "text",
+            "value": "BY6TDK"
+          },
+          "isin": {
+            "type": "text",
+            "value": "DE000BY6TDK8"
+          },
+          "underlying": {
+            "type": "text",
+            "value": "Euro Stoxx 50 (Kursindex) EUR"
+          },
+          "underlyings.price": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:450495|id_market:20|EUR|397|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00####",
+            "valueRender": "{{value}} {{currency}}",
+            "valueTuple": {
+              "size": 0.0,
+              "delayMinutes": 0.0,
+              "value": 6325.0,
+              "timestamp": 1789141632114.0
+            }
+          },
+          "issuer": {
+            "type": "text",
+            "value": "BNP Paribas"
+          },
+          "structure.direction": {
+            "type": "text",
+            "value": "short"
+          },
+          "financingLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 6349.4276
+          },
+          "koLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 6349.4276
+          },
+          "leverage": {
+            "currency": "x",
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 82.755626315789
+          },
+          "bid": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:68074413|id_market:3933|EUR|6|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}",
+            "valueTuple": {
+              "delayMinutes": 0.0,
+              "size": 17500.0,
+              "value": 0.6,
+              "timestamp": 1789147161209.0
+            }
+          },
+          "ask": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:68074413|id_market:3933|EUR|7|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}",
+            "valueTuple": {
+              "delayMinutes": 0.0,
+              "size": 50000.0,
+              "value": 0.76,
+              "timestamp": 1789138783746.0
+            }
+          }
+        },
+        {
+          "wkn": {
+            "type": "text",
+            "value": "UR2N9R"
+          },
+          "isin": {
+            "type": "text",
+            "value": "DE000UR2N9R4"
+          },
+          "underlying": {
+            "type": "text",
+            "value": "Euro Stoxx 50 (Kursindex) EUR"
+          },
+          "underlyings.price": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:450495|id_market:20|EUR|397|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00####",
+            "valueRender": "{{value}} {{currency}}",
+            "valueTuple": {
+              "size": 0.0,
+              "delayMinutes": 0.0,
+              "value": 6325.0,
+              "timestamp": 1789141632114.0
+            }
+          },
+          "issuer": {
+            "type": "text",
+            "value": "UniCredit Bank GmbH"
+          },
+          "structure.direction": {
+            "type": "text",
+            "value": "long"
+          },
+          "financingLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 6262.7048
+          },
+          "koLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 6262.7048
+          },
+          "leverage": {
+            "currency": "x",
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 79.27131
+          },
+          "bid": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:67982240|id_market:505|EUR|6|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}",
+            "valueTuple": {
+              "delayMinutes": 0.0,
+              "size": 110000.0,
+              "value": 0.79,
+              "timestamp": 1789146946653.0
+            }
+          },
+          "ask": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:67982240|id_market:505|EUR|7|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}",
+            "valueTuple": {
+              "delayMinutes": 0.0,
+              "size": 110000.0,
+              "value": 0.8,
+              "timestamp": 1789146946653.0
+            }
+          }
+        },
+        {
+          "wkn": {
+            "type": "text",
+            "value": "BY6VYH"
+          },
+          "isin": {
+            "type": "text",
+            "value": "DE000BY6VYH6"
+          },
+          "underlying": {
+            "type": "text",
+            "value": "Euro Stoxx 50 (Kursindex) EUR"
+          },
+          "underlyings.price": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:450495|id_market:20|EUR|397|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00####",
+            "valueRender": "{{value}} {{currency}}",
+            "valueTuple": {
+              "size": 0.0,
+              "delayMinutes": 0.0,
+              "value": 6325.0,
+              "timestamp": 1789141632114.0
+            }
+          },
+          "issuer": {
+            "type": "text",
+            "value": "BNP Paribas"
+          },
+          "structure.direction": {
+            "type": "text",
+            "value": "long"
+          },
+          "financingLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 6300
+          },
+          "koLevelRefCurAbsolute": {
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 6300
+          },
+          "leverage": {
+            "currency": "x",
+            "precisionMax": 2,
+            "precisionMin": 2,
+            "type": "shortMoney",
+            "value": 77.963414634146
+          },
+          "bid": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:68146809|id_market:3933|EUR|6|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}",
+            "valueTuple": {
+              "delayMinutes": 0.0,
+              "size": 17500.0,
+              "value": 0.93,
+              "timestamp": 1789146951812.0
+            }
+          },
+          "ask": {
+            "currency": "EUR",
+            "pushable": true,
+            "sizeFormat": "#,##0.##",
+            "subscriptionString": "sin:68146809|id_market:3933|EUR|7|snapshot",
+            "timestampFormat": "DD MMM YYYY / HH:mm:ss",
+            "type": "shortMoney",
+            "valueFormat": "#,##0.00",
+            "valueRender": "{{value}}",
+            "valueTuple": {
+              "delayMinutes": 0.0,
+              "size": 50000.0,
+              "value": 0.82,
+              "timestamp": 1789138783699.0
+            }
+          }
+        }
+      ],
+      "groupedBy": null
+    },
+    "filters": {
+      "firstLevel": {
+        "underlying": {
+          "label": "underlying",
+          "type": "singleUnderlyingDropdown",
+          "order": 1,
+          "list": {
+            "2444768": {
+              "label": "1 & 1 Drillisch AG",
+              "value": 2444768,
+              "selected": false,
+              "order": 0,
+              "group": false
+            },
+            "705468": {
+              "label": "10 Year US Treasury Notes",
+              "value": 705468,
+              "selected": false,
+              "order": 1,
+              "group": false
+            },
+            "30941561": {
+              "label": "2-Year U.S. Treasury Notes Future",
+              "value": 30941561,
+              "selected": false,
+              "order": 2,
+              "group": false
+            },
+            "5441297": {
+              "label": "2G Energy AG",
+              "value": 5441297,
+              "selected": false,
+              "order": 3,
+              "group": false
+            },
+            "3178226": {
+              "label": "3 Year SEK Worst of Booster Notes linked Bis Nordea Bank Abp and Svenska Handelsbanken AB",
+              "value": 3178226,
+              "selected": false,
+              "order": 4,
+              "group": false
+            }
+          },
+          "showOptionAll": false,
+          "showActionButtons": true,
+          "hidden": false
+        },
+        "productType": {
+          "label": "productType",
+          "type": "dropdown",
+          "order": 2,
+          "list": {
+            "Optionsscheine Classic": {
+              "label": "Optionsscheine Classic",
+              "value": "Optionsscheine Classic",
+              "selected": false,
+              "order": 0,
+              "count": 1977,
+              "group": false
+            },
+            "Turbos endlos": {
+              "label": "Turbos endlos",
+              "value": "Turbos endlos",
+              "selected": true,
+              "order": 1,
+              "count": 1327,
+              "group": false
+            },
+            "Inliner": {
+              "label": "Inliner",
+              "value": "Inliner",
+              "selected": false,
+              "order": 2,
+              "count": 693,
+              "group": false
+            },
+            "Faktor-Optionsscheine": {
+              "label": "Faktor-Optionsscheine",
+              "value": "Faktor-Optionsscheine",
+              "selected": false,
+              "order": 3,
+              "count": 656,
+              "group": false
+            },
+            "Mini-Futures": {
+              "label": "Mini-Futures",
+              "value": "Mini-Futures",
+              "selected": false,
+              "order": 4,
+              "count": 361,
+              "group": false
+            },
+            "Discount Optionsscheine": {
+              "label": "Discount Optionsscheine",
+              "value": "Discount Optionsscheine",
+              "selected": false,
+              "order": 5,
+              "count": 349,
+              "group": false
+            }
+          },
+          "showOptionAll": false,
+          "showActionButtons": true,
+          "hidden": false
+        }
+      },
+      "secondLevel": {
+        "leverage": {
+          "label": "leverage",
+          "type": "range",
+          "order": 7,
+          "min": 1.029764009111617,
+          "max": 169.18865951742626,
+          "showOptionAll": false,
+          "showActionButtons": true,
+          "hidden": false,
+          "suggestedRanges": []
+        },
+        "structure.direction": {
+          "label": "structure.direction",
+          "type": "multiDropdown",
+          "order": 3,
+          "list": {
+            "long": {
+              "label": "long",
+              "value": "long",
+              "selected": false,
+              "order": 0,
+              "count": 842,
+              "group": false
+            },
+            "short": {
+              "label": "short",
+              "value": "short",
+              "selected": false,
+              "order": 1,
+              "count": 485,
+              "group": false
+            }
+          },
+          "showOptionAll": true,
+          "showActionButtons": true,
+          "hidden": false
+        },
+        "countryFlag": {
+          "label": "countryFlag",
+          "type": "multiDropdown",
+          "order": 3,
+          "list": {
+            "null": {
+              "selected": false,
+              "order": 0,
+              "count": 65,
+              "group": false
+            },
+            "AT": {
+              "label": "AT",
+              "value": "AT",
+              "selected": false,
+              "order": 1,
+              "count": 1300,
+              "group": false
+            },
+            "DE": {
+              "label": "DE",
+              "value": "DE",
+              "selected": false,
+              "order": 2,
+              "count": 1303,
+              "group": false
+            },
+            "FR": {
+              "label": "FR",
+              "value": "FR",
+              "selected": false,
+              "order": 3,
+              "count": 41,
+              "group": false
+            },
+            "IT": {
+              "label": "IT",
+              "value": "IT",
+              "selected": false,
+              "order": 4,
+              "count": 41,
+              "group": false
+            },
+            "LU": {
+              "label": "LU",
+              "value": "LU",
+              "selected": false,
+              "order": 5,
+              "count": 647,
+              "group": false
+            },
+            "NL": {
+              "label": "NL",
+              "value": "NL",
+              "selected": false,
+              "order": 6,
+              "count": 23,
+              "group": false
+            }
+          },
+          "showOptionAll": false,
+          "showActionButtons": true,
+          "hidden": false
+        },
+        "isQuanto": {
+          "label": "isQuanto",
+          "type": "simpleCheckbox",
+          "order": 6,
+          "list": {
+            "false": {
+              "label": "false",
+              "value": false,
+              "selected": false,
+              "order": 0,
+              "count": 1327,
+              "group": false
+            }
+          },
+          "showOptionAll": false,
+          "showActionButtons": true,
+          "hidden": false
+        },
+        "isIntradayTrade": {
+          "label": "isIntradayTrade",
+          "type": "simpleCheckbox",
+          "order": 20,
+          "list": {
+            "false": {
+              "label": "false",
+              "value": "false",
+              "selected": false,
+              "order": 0,
+              "count": 738,
+              "group": false
+            },
+            "true": {
+              "label": "true",
+              "value": "true",
+              "selected": false,
+              "order": 1,
+              "count": 589,
+              "group": false
+            }
+          },
+          "showOptionAll": false,
+          "showActionButtons": true,
+          "hidden": false
+        },
+        "distance2koLevelRefCurPercent": {
+          "label": "distance2koLevelRefCurPercent",
+          "type": "percentRange",
+          "order": 9,
+          "min": 0.000751170782386,
+          "max": 0.971742606496483,
+          "showOptionAll": false,
+          "showActionButtons": true,
+          "hidden": false,
+          "suggestedRanges": []
+        },
+        "issuer": {
+          "label": "issuer",
+          "type": "multiDropdown",
+          "order": 2,
+          "list": {
+            "BNP Paribas": {
+              "label": "BNP Paribas",
+              "value": "BNP Paribas",
+              "selected": false,
+              "order": 0,
+              "count": 92,
+              "group": false
+            },
+            "Goldman Sachs Bank Europe SE": {
+              "label": "Goldman Sachs Bank Europe SE",
+              "value": "Goldman Sachs Bank Europe SE",
+              "selected": false,
+              "order": 5,
+              "count": 506,
+              "group": false
+            },
+            "HSBC Trinkaus & Burkhardt GmbH": {
+              "label": "HSBC Trinkaus & Burkhardt GmbH",
+              "value": "HSBC Trinkaus & Burkhardt GmbH",
+              "selected": false,
+              "order": 6,
+              "count": 82,
+              "group": false
+            },
+            "UniCredit Bank GmbH": {
+              "label": "UniCredit Bank GmbH",
+              "value": "UniCredit Bank GmbH",
+              "selected": false,
+              "order": 7,
+              "count": 647,
+              "group": false
+            }
+          },
+          "showOptionAll": true,
+          "showActionButtons": true,
+          "hidden": false
+        },
+        "koLevelRefCurAbsolute": {
+          "label": "koLevelRefCurAbsolute",
+          "type": "range",
+          "order": 8,
+          "min": 247.9595,
+          "max": 12474.2296,
+          "showOptionAll": false,
+          "showActionButtons": true,
+          "hidden": false,
+          "suggestedRanges": []
+        }
+      }
+    },
+    "headers": [
+      "identifiers",
+      "underlyingData",
+      "issuer",
+      "structure.direction",
+      "financingLevelRefCurAbsolute",
+      "koLevelRefCurAbsolute",
+      "leverage",
+      "bidAsk"
+    ],
+    "fields": [
+      [
+        [
+          {
+            "key": "isin"
+          }
+        ],
+        [
+          {
+            "key": "wkn"
+          }
+        ]
+      ],
+      [
+        [
+          {
+            "key": "underlying"
+          }
+        ],
+        [
+          {
+            "key": "underlyings.price"
+          }
+        ]
+      ],
+      {
+        "key": "issuer"
+      },
+      {
+        "key": "structure.direction"
+      },
+      {
+        "key": "financingLevelRefCurAbsolute"
+      },
+      {
+        "key": "koLevelRefCurAbsolute"
+      },
+      {
+        "key": "leverage"
+      },
+      [
+        [
+          {
+            "key": "bid"
+          },
+          {
+            "key": "ask"
+          }
+        ]
+      ]
+    ],
+    "sort": {
+      "field": "leverage",
+      "direction": 0
+    },
+    "pagination": {
+      "page": 1,
+      "rowsPerPage": 20,
+      "filteredCount": 1327,
+      "totalCount": 837596,
+      "options": [
+        10,
+        20,
+        50,
+        100
+      ],
+      "filteredCountByGroup": [
+        {
+          "group": "turbosOpenEnd",
+          "filteredCount": 1327
+        }
+      ]
+    }
+  },
+  "status": "success"
+}

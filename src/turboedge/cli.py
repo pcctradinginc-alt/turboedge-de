@@ -26,6 +26,8 @@ from turboedge.adapters.registry import (
     build_product_adapters,
     build_reference_healthchecks,
 )
+from turboedge.cli_learn import register_learn_commands
+from turboedge.cli_state import register_state_commands
 from turboedge.config import ConfigError, config_hash, load_config
 from turboedge.logging import configure_logging
 from turboedge.monitoring.source_health import (
@@ -46,6 +48,7 @@ from turboedge.reporting.console import (
     scan_report_text,
     scan_result_to_json,
 )
+from turboedge.reporting.redaction import redact_console_enabled
 from turboedge.storage.duckdb import Store
 from turboedge.storage.schemas import Direction, HealthStatus, SourceHealthRecord
 from turboedge.universe.underlying_map import resolve_underlying_id
@@ -196,7 +199,14 @@ def universe_cmd(
                 err_console.print(f"  - {name}: {err}")
             raise typer.Exit(code=3)  # noqa: B904
 
-        render_universe(result, console)
+        if redact_console_enabled():
+            console.print(
+                f"[bold]Universe run[/bold] {result.run_id}  "
+                f"merged={len(result.products)} conflicts={len(result.conflicts)} "
+                "(TURBOEDGE_PUBLIC_LOGS=1: candidate detail redacted from console)"
+            )
+        else:
+            render_universe(result, console)
 
 
 # --- scan command ---
@@ -400,7 +410,14 @@ def scan_cmd(
             )
             raise typer.Exit(code=3)  # noqa: B904
 
-        render_scan(result, console, top)
+        if redact_console_enabled():
+            counts_line = "  ".join(f"{cat.value}={count}" for cat, count in result.counts.items())
+            console.print(
+                f"[bold]Candidates[/bold]  {counts_line}  "
+                "(TURBOEDGE_PUBLIC_LOGS=1: candidate detail redacted from console -- see email)"
+            )
+        else:
+            render_scan(result, console, top)
 
         if json_out:
             json_path = Path(json_out)
@@ -834,6 +851,13 @@ def position_close(
 
 db_app = typer.Typer(help="Database queries")
 app.add_typer(db_app, name="db")
+
+# --- state subcommand + `db compact` (turboedge.cli_state) ---
+register_state_commands(app, db_app)
+
+# --- scan-all/label/learn/forecast/backtest/report/research/position
+# reevaluate (turboedge.cli_learn, Contract v3 integration wave) ---
+register_learn_commands(app, position_app)
 
 
 @db_app.command("info")

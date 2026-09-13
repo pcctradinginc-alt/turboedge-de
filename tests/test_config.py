@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from turboedge.config import ConfigError, TurboEdgeConfig, config_hash, load_config
+from turboedge.config import CONFIG_FILES, ConfigError, TurboEdgeConfig, config_hash, load_config
 from turboedge.universe.underlying_map import UNDERLYINGS
 
 
@@ -51,14 +51,9 @@ def test_missing_config_directory_raises_config_error(tmp_path: Path) -> None:
 
 
 def test_missing_config_file_raises_config_error(tmp_path: Path, config_dir: Path) -> None:
-    for name in (
-        "default.yaml",
-        "sources.yaml",
-        "risk.yaml",
-        "universe.yaml",
-        "models.yaml",
-        "gmail.yaml",
-    ):
+    for name in CONFIG_FILES:
+        if name == "governance.yaml":
+            continue
         (tmp_path / name).write_text((config_dir / name).read_text())
     # governance.yaml intentionally omitted
     with pytest.raises(ConfigError, match=r"governance\.yaml"):
@@ -66,15 +61,7 @@ def test_missing_config_file_raises_config_error(tmp_path: Path, config_dir: Pat
 
 
 def test_invalid_yaml_content_raises_config_error(tmp_path: Path, config_dir: Path) -> None:
-    for name in (
-        "default.yaml",
-        "sources.yaml",
-        "risk.yaml",
-        "universe.yaml",
-        "models.yaml",
-        "gmail.yaml",
-        "governance.yaml",
-    ):
+    for name in CONFIG_FILES:
         (tmp_path / name).write_text((config_dir / name).read_text())
 
     # Break risk.yaml: max_spread_pct must be > 0.

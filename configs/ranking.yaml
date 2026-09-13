@@ -1,0 +1,59 @@
+# TurboEdge-DE ranking wiring (Build Contract v3, Abschnitt A: ev/utility/
+# sizing/cluster). Every nested section mirrors its owning module's own
+# pydantic XxxConfig defaults (ranking/{shrinkage,lcb,utility,sizing,
+# cluster}.py) -- this file is only the integration wave's YAML surface for
+# them, not a re-derivation of the formulas (see the module docstrings for
+# rationale).
+
+# ranking/ev.py-only fields (not owned by any single nested config below).
+z_pessimistic: 1.645
+z_optimistic: 1.645
+include_optimistic: false
+default_liquidity_factor: 0.000001
+
+# ranking/shrinkage.py (Master Spec Section 15.1, winner's-curse shrinkage).
+shrinkage:
+  prior_pseudo_count: 5.0
+  weight_dispersion: 1.0
+  weight_mc_standard_error: 1.0
+  weight_model_uncertainty: 1.0
+
+# ranking/lcb.py (Master Spec Section 15.2, lower confidence bound).
+lcb:
+  z: 1.645
+
+# ranking/utility.py (Master Spec Section 18, utility function + score).
+utility:
+  lambda_es: 0.5
+  lambda_ko: 0.5
+  lambda_uncertainty: 1.0
+  lambda_cluster: 0.3
+
+# ranking/sizing.py (Master Spec Section 32, fractional-Kelly position sizing).
+sizing:
+  kelly_multiplier: 0.25
+  max_position_fraction: 0.05
+  max_cluster_fraction: 0.15
+  max_total_risk: 0.30
+  max_ko_loss_contribution: 0.02
+  uncertainty_sensitivity: 2.0
+  kelly_search_upper_bound: 4.0
+
+# ranking/cluster.py (Master Spec Section 31, correlation clusters + limits).
+cluster:
+  lookback_days: 120
+  min_overlap_days: 30
+  linkage_method: "average"
+  distance_threshold: 0.5
+  max_active_positions_per_cluster: 3
+  max_capital_fraction_per_cluster: 0.25
+
+# Pre-filter applied BEFORE the EV simulation (Contract v3 Abschnitt B
+# "Performance"): only candidates already passing every hard, simulation-free
+# gate are simulated at all, and of those only the cheapest
+# max_candidates_per_bucket per (direction, leverage_bucket) group. The
+# shadow sample is drawn from the FULL pre-filter pool regardless (Spec §25
+# selection-bias protection), never from this narrowed set.
+scan_filter:
+  max_candidates_per_bucket: 25
+  min_liquidity_factor: 0.05

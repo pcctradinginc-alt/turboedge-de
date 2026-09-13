@@ -1,0 +1,287 @@
+from __future__ import annotations
+
+import io
+import json
+import tarfile
+from collections.abc import Callable
+from hashlib import sha256
+from pathlib import Path
+
+import pytest
+
+from turboedge.state.archive import (
+    MANIFEST_NAME,
+    StateArchiveError,
+    pack_state,
+    unpack_state,
+)
+from turboedge.state.crypto import (
+    MIN_PASSPHRASE_LEN,
+    StateCryptoError,
+    decrypt_bytes,
+    encrypt_bytes,
+)
+from turboedge.storage.duckdb import Store
+from turboedge.storage.schemas import ProductSnapshot
+
+_PASSPHRASE = "correct-horse-battery-staple-24"
+
+
+def _make_state_dir(tmp_path: Path, make_product_snapshot: Callable[..., ProductSnapshot]) -> Path:
+    """A realistic state_dir: a real DuckDB (with one product_snapshots row),
+    plus files under snapshots/, registry/, ledger/, trials/, and a couple of
+    things that must be EXCLUDED (imports/, a WAL sidecar)."""
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+
+    with Store(state_dir / "turboedge.duckdb") as store:
+        store.init_schema()
+        store.append_product_snapshots([make_product_snapshot()])
+
+    snapshot_dir = state_dir / "snapshots" / "product_snapshots" / "date=2026-09-10"
+    snapshot_dir.mkdir(parents=True)
+    (snapshot_dir / "run1.parquet").write_bytes(b"fake-parquet-bytes")
+    (state_dir / "registry").mkdir()
+    (state_dir / "registry" / "models.json").write_text('{"champion": "tsmom"}')
+    (state_dir / "ledger").mkdir()
+    (state_dir / "ledger" / "entries.json").write_text("[]")
+    (state_dir / "trials").mkdir()
+    (state_dir / "trials" / "trial1.json").write_text("{}")
+
+    # Must be excluded:
+    (state_dir / "imports" / "products").mkdir(parents=True)
+    (state_dir / "imports" / "products" / "manual.csv").write_text("isin,bid,ask\n")
+    (state_dir / "turboedge.duckdb.wal").write_bytes(b"stale-wal-bytes")
+
+    return state_dir
+
+
+def test_pack_unpack_roundtrip(
+    tmp_path: Path, make_product_snapshot: Callable[..., ProductSnapshot]
+) -> None:
+    state_dir = _make_state_dir(tmp_path, make_product_snapshot)
+    archive_path = tmp_path / "out" / "state.tar.enc"
+
+    result = pack_state(state_dir, archive_path, _PASSPHRASE)
+    assert archive_path.is_file()
+    assert result.file_count >= 4  # db + one file in each of the 4 subdirs
+
+    restore_dir = tmp_path / "restored"
+    unpack_result = unpack_state(archive_path, restore_dir, _PASSPHRASE)
+    assert unpack_result.file_count == result.file_count
+
+    # DuckDB content survived.
+    with Store(restore_dir / "turboedge.duckdb") as store:
+        store.init_schema()
+        assert store.table_counts()["product_snapshots"] == 1
+
+    # Other included files survived.
+    assert (restore_dir / "registry" / "models.json").read_text() == '{"champion": "tsmom"}'
+    assert (restore_dir / "ledger" / "entries.json").read_text() == "[]"
+    assert (restore_dir / "trials" / "trial1.json").read_text() == "{}"
+    assert (
+        restore_dir / "snapshots" / "product_snapshots" / "date=2026-09-10" / "run1.parquet"
+    ).read_bytes() == b"fake-parquet-bytes"
+
+    # Excluded content did NOT survive.
+    assert not (restore_dir / "imports").exists()
+    assert not (restore_dir / "turboedge.duckdb.wal").exists()
+
+
+def test_pack_excludes_imports_and_wal(
+    tmp_path: Path, make_product_snapshot: Callable[..., ProductSnapshot]
+) -> None:
+    state_dir = _make_state_dir(tmp_path, make_product_snapshot)
+    archive_path = tmp_path / "state.tar.enc"
+    pack_state(state_dir, archive_path, _PASSPHRASE)
+
+    tar_bytes = _decrypt_to_tar_bytes(archive_path)
+    with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:gz") as tar:
+        names = tar.getnames()
+    assert not any("imports" in n for n in names)
+    assert not any(n.endswith(".wal") for n in names)
+    assert "turboedge.duckdb" in names
+    assert MANIFEST_NAME in names
+
+
+def test_manifest_contains_sha256_and_metadata(
+    tmp_path: Path, make_product_snapshot: Callable[..., ProductSnapshot]
+) -> None:
+    state_dir = _make_state_dir(tmp_path, make_product_snapshot)
+    archive_path = tmp_path / "state.tar.enc"
+    pack_state(state_dir, archive_path, _PASSPHRASE)
+
+    tar_bytes = _decrypt_to_tar_bytes(archive_path)
+    with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:gz") as tar:
+        manifest_member = tar.extractfile(MANIFEST_NAME)
+        assert manifest_member is not None
+        manifest = json.loads(manifest_member.read())
+
+    assert manifest["schema_version"] == 1
+    assert "created_at" in manifest
+    assert isinstance(manifest["files"], list)
+    assert len(manifest["files"]) >= 4
+    for entry in manifest["files"]:
+        assert set(entry) == {"path", "sha256", "size"}
+        assert len(entry["sha256"]) == 64  # hex sha256
+
+
+def test_unpack_wrong_key_raises_and_leaves_state_dir_untouched(
+    tmp_path: Path, make_product_snapshot: Callable[..., ProductSnapshot]
+) -> None:
+    state_dir = _make_state_dir(tmp_path, make_product_snapshot)
+    archive_path = tmp_path / "state.tar.enc"
+    pack_state(state_dir, archive_path, _PASSPHRASE)
+
+    restore_dir = tmp_path / "restored"
+    restore_dir.mkdir()
+    (restore_dir / "sentinel.txt").write_text("pre-existing content")
+
+    with pytest.raises(StateCryptoError):
+        unpack_state(archive_path, restore_dir, "b" * MIN_PASSPHRASE_LEN)
+
+    # Existing directory must be untouched by a failed unpack.
+    assert (restore_dir / "sentinel.txt").read_text() == "pre-existing content"
+
+
+def test_unpack_manifest_hash_mismatch_rejected(tmp_path: Path) -> None:
+    tampered_path = tmp_path / "tampered.tar.enc"
+    _build_tampered_archive(
+        tampered_path,
+        files={"registry/models.json": b'{"champion": "tsmom"}'},
+        manifest_override={
+            "files": [
+                {
+                    "path": "registry/models.json",
+                    "sha256": "0" * 64,  # wrong hash
+                    "size": len(b'{"champion": "tsmom"}'),
+                }
+            ]
+        },
+    )
+
+    with pytest.raises(StateArchiveError, match="checksum mismatch"):
+        unpack_state(tampered_path, tmp_path / "restored2", _PASSPHRASE)
+
+
+def test_unpack_path_traversal_rejected(tmp_path: Path) -> None:
+    evil_path = tmp_path / "evil.tar.enc"
+    payload = b"pwned"
+    _build_tampered_archive(
+        evil_path,
+        files={"../../etc/evil": payload},
+        manifest_override={
+            "files": [
+                {"path": "../../etc/evil", "sha256": _sha256_hex(payload), "size": len(payload)}
+            ]
+        },
+    )
+
+    with pytest.raises(StateArchiveError):
+        unpack_state(evil_path, tmp_path / "restored3", _PASSPHRASE)
+
+
+def test_unpack_absolute_path_rejected(tmp_path: Path) -> None:
+    evil_path = tmp_path / "evil_abs.tar.enc"
+    payload = b"pwned"
+    _build_tampered_archive(
+        evil_path,
+        files={"/etc/evil": payload},
+        manifest_override={
+            "files": [{"path": "/etc/evil", "sha256": _sha256_hex(payload), "size": len(payload)}]
+        },
+    )
+
+    with pytest.raises(StateArchiveError):
+        unpack_state(evil_path, tmp_path / "restored4", _PASSPHRASE)
+
+
+def test_unpack_symlink_member_rejected(tmp_path: Path) -> None:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        link_info = tarfile.TarInfo(name="registry/evil_link")
+        link_info.type = tarfile.SYMTYPE
+        link_info.linkname = "/etc/passwd"
+        tar.addfile(link_info)
+
+        manifest_bytes = json.dumps(
+            {"schema_version": 1, "files": [], "created_at": "x", "git_commit": None}
+        ).encode("utf-8")
+        manifest_info = tarfile.TarInfo(name=MANIFEST_NAME)
+        manifest_info.size = len(manifest_bytes)
+        tar.addfile(manifest_info, io.BytesIO(manifest_bytes))
+
+    evil_path = tmp_path / "evil_symlink.tar.enc"
+    evil_path.write_bytes(encrypt_bytes(buf.getvalue(), _PASSPHRASE))
+
+    with pytest.raises(StateArchiveError):
+        unpack_state(evil_path, tmp_path / "restored5", _PASSPHRASE)
+
+
+def test_unpack_missing_manifest_rejected(tmp_path: Path) -> None:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        info = tarfile.TarInfo(name="turboedge.duckdb")
+        info.size = 3
+        tar.addfile(info, io.BytesIO(b"abc"))
+
+    evil_path = tmp_path / "no_manifest.tar.enc"
+    evil_path.write_bytes(encrypt_bytes(buf.getvalue(), _PASSPHRASE))
+
+    with pytest.raises(StateArchiveError, match=MANIFEST_NAME):
+        unpack_state(evil_path, tmp_path / "restored6", _PASSPHRASE)
+
+
+def test_pack_on_empty_state_dir_produces_minimal_archive(tmp_path: Path) -> None:
+    """A `state pack` run before any pipeline command has ever touched the
+    state dir must not blow up. With nothing at all on disk yet, it must not
+    fabricate an empty DuckDB file either -- zero files packed (manifest
+    only), and unpacking that archive back out must not error."""
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    archive_path = tmp_path / "state.tar.enc"
+
+    result = pack_state(state_dir, archive_path, _PASSPHRASE)
+    assert archive_path.is_file()
+    assert result.file_count == 0
+
+    restore_dir = tmp_path / "restored_empty"
+    unpack_result = unpack_state(archive_path, restore_dir, _PASSPHRASE)
+    assert unpack_result.file_count == 0
+    assert restore_dir.is_dir()
+
+
+# -- helpers ------------------------------------------------------------
+
+
+def _decrypt_to_tar_bytes(archive_path: Path) -> bytes:
+    return decrypt_bytes(archive_path.read_bytes(), _PASSPHRASE)
+
+
+def _sha256_hex(data: bytes) -> str:
+    return sha256(data).hexdigest()
+
+
+def _build_tampered_archive(
+    out_path: Path, *, files: dict[str, bytes], manifest_override: dict[str, object]
+) -> None:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for name, data in files.items():
+            info = tarfile.TarInfo(name=name)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+
+        manifest = {
+            "created_at": "2026-09-11T00:00:00+00:00",
+            "schema_version": 1,
+            "git_commit": None,
+            "files": [],
+        }
+        manifest.update(manifest_override)
+        manifest_bytes = json.dumps(manifest).encode("utf-8")
+        manifest_info = tarfile.TarInfo(name=MANIFEST_NAME)
+        manifest_info.size = len(manifest_bytes)
+        tar.addfile(manifest_info, io.BytesIO(manifest_bytes))
+
+    out_path.write_bytes(encrypt_bytes(buf.getvalue(), _PASSPHRASE))

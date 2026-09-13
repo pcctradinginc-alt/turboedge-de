@@ -24,7 +24,7 @@ runs:
         TURBOEDGE_STATE_KEY: ${{ inputs.state_key }}
       run: |
         set -euo pipefail
-        uv run turboedge state pack --state-dir ./state --out state.tar.enc
+        uv run turboedge --state-dir ./state state pack --out state.tar.enc
 
     - name: Upload encrypted state artifact
       uses: actions/upload-artifact@v4

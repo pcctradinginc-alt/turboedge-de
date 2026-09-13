@@ -302,7 +302,7 @@ def test_array_matches_scalar_non_classic_random_sample(
         maturity=None,
     )
     assert array_value.shape == (1,)
-    np.testing.assert_allclose(array_value, [scalar_value], atol=1e-12, rtol=0.0)
+    np.testing.assert_allclose(array_value, [scalar_value], rtol=1e-12, atol=1e-9)
 
 
 @given(
@@ -325,7 +325,12 @@ def test_array_matches_scalar_classic_scalar_as_of_random_sample(
 ) -> None:
     """Classic branch, a single (scalar) ``as_of`` broadcast across every
     ``spot`` element: elementwise identity against a loop of scalar calls,
-    ``atol=1e-12``.
+    ``rtol=1e-12, atol=1e-9``. The tolerance is relative, not absolute: the
+    vectorized and the scalar path evaluate the same formula in a different
+    operation order, so results may differ by about one unit in the last
+    place (observed: 1.8e-12 absolute on a value of ~8195, i.e. 2.2e-16
+    relative). An absolute-only bound fails on large spots, and did so on
+    Linux while passing on macOS.
     """
     maturity = date.fromordinal(_AS_OF.toordinal() + days)
     spot_arr = np.array(spot, dtype=np.float64)
@@ -361,7 +366,7 @@ def test_array_matches_scalar_classic_scalar_as_of_random_sample(
         as_of=_AS_OF,
         maturity=maturity,
     )
-    np.testing.assert_allclose(actual, expected, atol=1e-12, rtol=0.0)
+    np.testing.assert_allclose(actual, expected, rtol=1e-12, atol=1e-9)
 
 
 def test_array_matches_scalar_classic_per_day_as_of_array() -> None:
@@ -407,7 +412,7 @@ def test_array_matches_scalar_classic_per_day_as_of_array() -> None:
         as_of=as_of_arr,
         maturity=maturity,
     )
-    np.testing.assert_allclose(actual, expected, atol=1e-12, rtol=0.0)
+    np.testing.assert_allclose(actual, expected, rtol=1e-12, atol=1e-9)
 
 
 def test_array_matches_scalar_classic_2d_broadcast_paths_x_days() -> None:
@@ -452,7 +457,7 @@ def test_array_matches_scalar_classic_2d_broadcast_paths_x_days() -> None:
         as_of=as_of_arr,
         maturity=maturity,
     )
-    np.testing.assert_allclose(actual, expected, atol=1e-12, rtol=0.0)
+    np.testing.assert_allclose(actual, expected, rtol=1e-12, atol=1e-9)
 
 
 def test_array_ratio_must_be_positive() -> None:

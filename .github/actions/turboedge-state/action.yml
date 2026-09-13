@@ -164,7 +164,7 @@ runs:
       run: |
         set -euo pipefail
         if [[ "${ALLOW_MISSING}" == "true" ]]; then
-          uv run turboedge state unpack --in state-download/state.tar.enc --state-dir ./state --allow-missing
+          uv run turboedge --state-dir ./state state unpack --in state-download/state.tar.enc --allow-missing
         else
-          uv run turboedge state unpack --in state-download/state.tar.enc --state-dir ./state
+          uv run turboedge --state-dir ./state state unpack --in state-download/state.tar.enc
         fi

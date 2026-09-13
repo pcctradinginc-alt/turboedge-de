@@ -27,7 +27,12 @@ inputs:
     required: false
     default: "false"
   github_token:
-    description: "Token for `gh run list`/`gh run download` -- pass `${{ github.token }}` at the call site."
+    description: >-
+      Token for `gh run list` / `gh run download`. Pass the github.token
+      expression at the call site (in pipeline.yml). Do not write that
+      expression here: GitHub template-evaluates this manifest, the `github`
+      context does not exist in a composite action, and the whole action then
+      fails to load.
     required: true
 
 outputs:

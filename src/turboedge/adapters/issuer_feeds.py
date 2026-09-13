@@ -258,11 +258,12 @@ from turboedge.adapters.base import (
     AdapterMetadata,
     HealthCheckResult,
     HttpClient,
+    ProductFetchContext,
 )
 from turboedge.config import SourceConfig
 from turboedge.storage.schemas import Direction, HealthStatus, ProductSnapshot
 from turboedge.universe.classify import classify_product_type
-from turboedge.universe.underlying_map import resolve_underlying_id
+from turboedge.universe.underlying_map import get_underlying_meta, resolve_underlying_id
 
 logger = structlog.get_logger(__name__)
 
@@ -346,6 +347,34 @@ def _quality_score(*, quote_presence: bool, is_stale: bool) -> float:
     if is_stale:
         return 0.6
     return 1.0
+
+
+def _resolve_underlying_currency(underlying_id: str) -> str | None:
+    """The canonical underlying's own currency (e.g. "USD" for NDX/SPX),
+    looked up from the shared, static ``universe/underlying_map.py`` table
+    -- never guessed, and identical to ``adapters/gettex.py``'s own helper
+    of the same name/purpose.
+
+    Befund 1 (2026-09-13 measurement session): both issuer feeds used to
+    leave ``ProductSnapshot.underlying_currency`` at ``None`` unconditionally
+    for every product, which made ``pricing/integrity.check_product``'s
+    ``same_currency = p.underlying_currency is None or p.underlying_currency
+    == p.currency`` guard silently treat a USD-underlying/EUR-product pair
+    (e.g. any NDX/SPX turbo) as "same currency, fx=1 is safe" -- the exact
+    opposite of its intent (the ``is None`` branch there means "we don't
+    know, so trust it", not "we checked and it matches") -- and priced the
+    fair-value plausibility check with the underlying's raw USD spot as if
+    it were EUR, systematically failing ``bid_below_intrinsic`` for nearly
+    every such product. Populating the real currency here (deterministic
+    static reference data, not a guessed price/fx value -- CLAUDE.md rule 29
+    is about pricing-critical *data*, not filling in a known constant) lets
+    that check correctly recognize the cross-currency case and defer to the
+    scan pipeline's own fx-aware pricing instead of silently assuming fx=1.
+    """
+    try:
+        return get_underlying_meta(underlying_id).currency
+    except KeyError:
+        return None
 
 
 def _resolve_zero_as_missing(value: float | None) -> tuple[float | None, bool]:
@@ -661,7 +690,18 @@ class BnpParibasTurboAdapter:
 
     # -- product fetching -----------------------------------------------------
 
-    def fetch_products(self, underlying_ids: Sequence[str]) -> list[ProductSnapshot]:
+    def fetch_products(
+        self,
+        underlying_ids: Sequence[str],
+        *,
+        context: ProductFetchContext | None = None,
+    ) -> list[ProductSnapshot]:
+        """``context`` (Befund 2) is accepted for ``ProductSourceAdapter``
+        contract compliance but unused: BNP's own feed already carries a
+        live per-product ``underlying_price_ref`` (``first.price``, see
+        ``_parse_row``/module docstring), so this adapter has no need for an
+        externally-supplied daily-close/reference-spot cross-check."""
+        del context
         self.last_errors = []
         self._partial_universe = {}
         now = self._clock()
@@ -980,7 +1020,7 @@ class BnpParibasTurboAdapter:
             knockout_barrier=float(knockout_barrier),
             ratio=float(ratio),
             currency=currency,
-            underlying_currency=None,
+            underlying_currency=_resolve_underlying_currency(underlying_id),
             quanto=None,
             open_end=open_end,
             maturity=maturity,
@@ -1199,7 +1239,18 @@ class CitiFirstTurboAdapter:
             raise AdapterError(f"unexpected Citi ProductSearch response shape: {raw!r}")
         return raw
 
-    def fetch_products(self, underlying_ids: Sequence[str]) -> list[ProductSnapshot]:
+    def fetch_products(
+        self,
+        underlying_ids: Sequence[str],
+        *,
+        context: ProductFetchContext | None = None,
+    ) -> list[ProductSnapshot]:
+        """``context`` (Befund 2) is accepted for ``ProductSourceAdapter``
+        contract compliance but unused: Citi's feed never supplies a live
+        reference spot at all (closing-price-only rows, ``quanto``/``isin``
+        master data instead), so there is nothing here for an external
+        daily-close/reference-spot cross-check to validate."""
+        del context
         self.last_errors = []
         self._partial_universe = {}
         now = self._clock()
@@ -1447,7 +1498,7 @@ class CitiFirstTurboAdapter:
             knockout_barrier=float(ko_barrier),
             ratio=float(ratio),
             currency=currency,
-            underlying_currency=None,
+            underlying_currency=_resolve_underlying_currency(underlying_id),
             quanto=it.get("isQuanto"),
             open_end=open_end,
             maturity=maturity,

@@ -14,7 +14,7 @@ for a human to investigate, not a mechanically exploitable spread.
 from __future__ import annotations
 
 import statistics
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -60,6 +60,7 @@ def consensus_spot(
     products: Sequence[ProductSnapshot],
     fx: float = 1.0,
     mad_k: float = 5.0,
+    fx_by_isin: Mapping[str, float] | None = None,
 ) -> ConsensusSpot:
     """Robust median consensus spot implied by a set of products on one underlying.
 
@@ -69,6 +70,16 @@ def consensus_spot(
     data is never imputed (CLAUDE.md rule 29), it simply does not vote. Each
     full (bid+ask) contributing product's implied spot is computed from its
     mid price via :func:`turboedge.pricing.intrinsic.implied_underlying`.
+
+    ``fx_by_isin`` (Befund 1, 2026-09-13 measurement session): when given,
+    each product's own fx is looked up by ISIN instead of applying the single
+    ``fx`` uniformly to every product -- needed once fx is resolved
+    per-(issuer, underlying) rather than assumed identical across issuers
+    (see ``pricing/fx_resolution.py``). A product whose ISIN is *not* in
+    ``fx_by_isin`` is excluded from the consensus entirely (its fx could not
+    be resolved -- CLAUDE.md rule 29 forbids falling back to a guessed fx
+    just to let it vote). When ``fx_by_isin`` is ``None`` (the default), the
+    single ``fx`` argument is used for every product, unchanged from before.
 
     Bid-only fallback (Build Contract Task 2): a product with no ``ask`` at
     all (e.g. an issuer quoting only bid outside trading hours) is a
@@ -152,10 +163,16 @@ def consensus_spot(
         assert product.bid is not None
         assert product.financing_level is not None
         assert product.ratio is not None
+        if fx_by_isin is not None:
+            product_fx = fx_by_isin.get(product.isin)
+            if product_fx is None:
+                continue  # fx not resolved for this product -- never guessed
+        else:
+            product_fx = fx
         price = (product.bid + product.ask) / 2.0 if product.ask is not None else product.bid
         try:
             implied = implied_underlying(
-                price, product.financing_level, product.ratio, product.direction, fx
+                price, product.financing_level, product.ratio, product.direction, product_fx
             )
         except ValueError:
             continue

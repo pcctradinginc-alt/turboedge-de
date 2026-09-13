@@ -21,6 +21,7 @@ from pathlib import Path
 
 import structlog
 
+from turboedge.adapters.base import ProductFetchContext
 from turboedge.adapters.registry import ProductSourceAdapter
 from turboedge.config import TurboEdgeConfig, config_hash
 from turboedge.provenance import git_commit
@@ -74,6 +75,7 @@ def run_universe(
     *,
     run_id: str,
     manage_run: bool = True,
+    context: ProductFetchContext | None = None,
 ) -> UniverseResult:
     """Fetch products from every adapter, merge/dedupe, persist, snapshot.
 
@@ -114,12 +116,19 @@ def run_universe(
             ``runs`` row with that same primary key would fail) -- in that
             case the caller is responsible for the run lifecycle.
 
+        context: Optional additive per-run context (Befund 2) threaded
+            through to every adapter's ``fetch_products`` -- e.g. a same-run
+            daily-close reference price per underlying, so a source like
+            gettex can sanity-check its own internally-derived reference
+            spot even when it's the only source available this run. See
+            :class:`~turboedge.adapters.base.ProductFetchContext`.
+
     Raises:
         NoProductsError: if every adapter failed, or none returned any
             product that survived merging.
     """
     if not manage_run:
-        return _run_universe_body(cfg, store, state_dir, adapters, underlying_ids, run_id)
+        return _run_universe_body(cfg, store, state_dir, adapters, underlying_ids, run_id, context)
 
     started_at = datetime.now(UTC)
     store.start_run(
@@ -130,7 +139,9 @@ def run_universe(
         started_at=started_at,
     )
     try:
-        result = _run_universe_body(cfg, store, state_dir, adapters, underlying_ids, run_id)
+        result = _run_universe_body(
+            cfg, store, state_dir, adapters, underlying_ids, run_id, context
+        )
     except Exception as exc:
         store.finish_run(run_id, status="error", error=str(exc), finished_at=datetime.now(UTC))
         raise
@@ -145,6 +156,7 @@ def _run_universe_body(
     adapters: Sequence[ProductSourceAdapter],
     underlying_ids: Sequence[str],
     run_id: str,
+    context: ProductFetchContext | None = None,
 ) -> UniverseResult:
     del cfg  # not needed beyond config_hash(), which only the manage_run wrapper computes
 
@@ -154,7 +166,7 @@ def _run_universe_body(
 
     for adapter in adapters:
         try:
-            products = adapter.fetch_products(underlying_ids)
+            products = adapter.fetch_products(underlying_ids, context=context)
         except Exception as exc:
             logger.error("universe_source_failed", source=adapter.name, error=str(exc))
             source_errors[adapter.name] = str(exc)

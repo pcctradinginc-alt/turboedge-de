@@ -17,6 +17,7 @@ from turboedge.adapters.base import (
     AdapterMetadata,
     HealthCheckResult,
     HttpClient,
+    ProductFetchContext,
 )
 from turboedge.config import SourceConfig, TurboEdgeConfig
 from turboedge.storage.schemas import ProductSnapshot
@@ -37,11 +38,21 @@ class ProductSourceAdapter(Protocol):
         """Stable, unique adapter name (e.g., 'deutsche_boerse')."""
         ...
 
-    def fetch_products(self, underlying_ids: Sequence[str]) -> list[ProductSnapshot]:
+    def fetch_products(
+        self,
+        underlying_ids: Sequence[str],
+        *,
+        context: ProductFetchContext | None = None,
+    ) -> list[ProductSnapshot]:
         """Fetch and return raw product data.
 
         Args:
             underlying_ids: List of underlying IDs to filter on (if applicable).
+            context: Optional additive per-run context (Befund 2, see
+                :class:`ProductFetchContext`) -- e.g. a same-run daily-close
+                reference price per underlying, usable as a sanity
+                cross-check. Every adapter must accept this kwarg; an
+                adapter with no use for it simply ignores it.
 
         Returns:
             List of raw product records (type depends on the adapter).

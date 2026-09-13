@@ -149,6 +149,47 @@ def test_signal_persisted_before_fetch_products(
 
 
 # --------------------------------------------------------------------------
+# (a.1) Befund 2: the underlying's own same-run daily close is threaded to
+# every product adapter as a ProductFetchContext.
+# --------------------------------------------------------------------------
+
+
+def test_daily_close_context_threaded_to_product_adapters(
+    cfg: TurboEdgeConfig,
+    store: Store,
+    tmp_path: Path,
+    dax_bars: list[UnderlyingBar],
+    dax_product_factory: Callable[..., ProductSnapshot],
+    make_product_adapter: Callable[..., Any],
+    make_price_adapter: Callable[..., Any],
+    make_estr_adapter: Callable[..., Any],
+) -> None:
+    """``run_universe`` (called from ``pipeline.scan``'s step 5) previously
+    received no context at all, so a source like gettex, which accepts an
+    optional same-run daily-close cross-check for its own internally-derived
+    reference spot, never actually got one from the real pipeline -- see
+    ``adapters/base.ProductFetchContext``."""
+    adapter = make_product_adapter("source_a", products=[_good_long(dax_product_factory)])
+    price_adapter = make_price_adapter(bars_by_underlying={"DAX": dax_bars})
+
+    run_scan(
+        **_base_kwargs(
+            cfg=cfg,
+            store=store,
+            tmp_path=tmp_path,
+            product_adapters=[adapter],
+            price_adapter=price_adapter,
+            estr_adapter=make_estr_adapter(),
+        ),
+        options=ScanOptions(underlying_id="DAX"),
+    )
+
+    assert adapter.last_context is not None
+    assert adapter.last_context.daily_close_reference is not None
+    assert adapter.last_context.daily_close_reference["DAX"] == pytest.approx(dax_bars[-1].close)
+
+
+# --------------------------------------------------------------------------
 # (b) never ACTIONABLE
 # --------------------------------------------------------------------------
 
@@ -697,12 +738,20 @@ def test_email_dedup_second_identical_scan_does_not_resend(
 ) -> None:
     price_adapter = make_price_adapter(bars_by_underlying={"DAX": dax_bars})
     notifier = make_notifier()
+    # Befund 3(b): a scan mail only goes out for a category configs/gmail.yaml's
+    # `send_on` actually names. This milestone's good-long candidate lands in
+    # WATCH (never ACTIONABLE, no path model yet) -- opt into WATCH explicitly
+    # here to exercise the dedup path this test is actually about, the same way
+    # a deliberate overview send is enabled per the config's own comment.
+    watch_cfg = cfg.model_copy(
+        update={"gmail": cfg.gmail.model_copy(update={"send_on": ["ACTIONABLE", "WATCH"]})}
+    )
 
     def run_once() -> Any:
         adapter = make_product_adapter("source_a", products=[_good_long(dax_product_factory)])
         return run_scan(
             **_base_kwargs(
-                cfg=cfg,
+                cfg=watch_cfg,
                 store=store,
                 tmp_path=tmp_path,
                 product_adapters=[adapter],
@@ -721,6 +770,133 @@ def test_email_dedup_second_identical_scan_does_not_resend(
     assert result_2.notification is not None
     assert result_2.notification.sent is False
     assert result_2.notification.message == "skipped_duplicate"
+
+
+# --------------------------------------------------------------------------
+# (i.1) Befund 3(b): a scan mail is gated on gmail.yaml's send_on, not sent
+# unconditionally whenever options.email=True -- Master Spec §34 "kein
+# taeglicher NO-TRADE-Spam".
+# --------------------------------------------------------------------------
+
+
+def test_email_not_sent_when_no_candidate_matches_send_on(
+    cfg: TurboEdgeConfig,
+    store: Store,
+    tmp_path: Path,
+    dax_bars: list[UnderlyingBar],
+    dax_product_factory: Callable[..., ProductSnapshot],
+    make_product_adapter: Callable[..., Any],
+    make_price_adapter: Callable[..., Any],
+    make_estr_adapter: Callable[..., Any],
+    make_notifier: Callable[..., Any],
+) -> None:
+    """The real repo config's default ``send_on: ["ACTIONABLE"]`` must not
+    send a mail for a scan whose only candidate is WATCH (this milestone can
+    never produce ACTIONABLE) -- the old behavior sent unconditionally
+    whenever ``--email`` was passed, exactly the "10020 REJECT" spam mail
+    measured live despite ``send_on: ["ACTIONABLE"]`` already being config'd."""
+    price_adapter = make_price_adapter(bars_by_underlying={"DAX": dax_bars})
+    notifier = make_notifier()
+    adapter = make_product_adapter("source_a", products=[_good_long(dax_product_factory)])
+
+    result = run_scan(
+        **_base_kwargs(
+            cfg=cfg,  # unmodified repo config: send_on == ["ACTIONABLE"]
+            store=store,
+            tmp_path=tmp_path,
+            product_adapters=[adapter],
+            price_adapter=price_adapter,
+            estr_adapter=make_estr_adapter(),
+            notifier=notifier,
+        ),
+        options=ScanOptions(underlying_id="DAX", email=True),
+    )
+
+    assert result.counts[Category.WATCH] >= 1
+    assert result.counts[Category.ACTIONABLE] == 0
+    assert result.notification is None
+    assert notifier.send_calls == 0
+
+
+def test_email_sent_when_configured_category_present(
+    cfg: TurboEdgeConfig,
+    store: Store,
+    tmp_path: Path,
+    dax_bars: list[UnderlyingBar],
+    dax_product_factory: Callable[..., ProductSnapshot],
+    make_product_adapter: Callable[..., Any],
+    make_price_adapter: Callable[..., Any],
+    make_estr_adapter: Callable[..., Any],
+    make_notifier: Callable[..., Any],
+) -> None:
+    """Opting a category into ``send_on`` (the config's own documented way to
+    enable a deliberate overview send) makes a scan whose only candidates are
+    that category actually send -- the positive counterpart of the previous
+    test, proving the gate is on ``send_on`` membership, not a blanket skip."""
+    price_adapter = make_price_adapter(bars_by_underlying={"DAX": dax_bars})
+    notifier = make_notifier()
+    watch_cfg = cfg.model_copy(
+        update={"gmail": cfg.gmail.model_copy(update={"send_on": ["ACTIONABLE", "WATCH"]})}
+    )
+    adapter = make_product_adapter("source_a", products=[_good_long(dax_product_factory)])
+
+    result = run_scan(
+        **_base_kwargs(
+            cfg=watch_cfg,
+            store=store,
+            tmp_path=tmp_path,
+            product_adapters=[adapter],
+            price_adapter=price_adapter,
+            estr_adapter=make_estr_adapter(),
+            notifier=notifier,
+        ),
+        options=ScanOptions(underlying_id="DAX", email=True),
+    )
+
+    assert result.counts[Category.WATCH] >= 1
+    assert result.notification is not None and result.notification.sent
+    assert notifier.send_calls == 1
+
+
+def test_email_not_sent_when_only_reject_and_send_on_is_actionable(
+    cfg: TurboEdgeConfig,
+    store: Store,
+    tmp_path: Path,
+    dax_bars: list[UnderlyingBar],
+    dax_product_factory: Callable[..., ProductSnapshot],
+    make_product_adapter: Callable[..., Any],
+    make_price_adapter: Callable[..., Any],
+    make_estr_adapter: Callable[..., Any],
+    make_notifier: Callable[..., Any],
+) -> None:
+    """An all-REJECT scan (e.g. every quote stale) with the default
+    ``send_on: ["ACTIONABLE"]`` must not send -- directly reproduces the
+    measured "TurboEdge SCAN -- DAX -- 10020 REJECT" spam-mail bug."""
+    price_adapter = make_price_adapter(bars_by_underlying={"DAX": dax_bars})
+    notifier = make_notifier()
+    stale_quote_time = _EVAL_TIME - timedelta(hours=6)
+    adapter = make_product_adapter(
+        "source_a",
+        products=[_good_long(dax_product_factory, quote_timestamp=stale_quote_time)],
+    )
+
+    result = run_scan(
+        **_base_kwargs(
+            cfg=cfg,
+            store=store,
+            tmp_path=tmp_path,
+            product_adapters=[adapter],
+            price_adapter=price_adapter,
+            estr_adapter=make_estr_adapter(),
+            notifier=notifier,
+        ),
+        options=ScanOptions(underlying_id="DAX", email=True),
+    )
+
+    assert result.counts[Category.REJECT] >= 1
+    assert result.counts[Category.WATCH] == 0
+    assert result.notification is None
+    assert notifier.send_calls == 0
 
 
 # --------------------------------------------------------------------------

@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import hashlib
 import statistics
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -41,7 +41,7 @@ import numpy as np
 import numpy.typing as npt
 import structlog
 
-from turboedge.adapters.base import HealthCheckResult
+from turboedge.adapters.base import HealthCheckResult, ProductFetchContext
 from turboedge.adapters.registry import ProductSourceAdapter
 from turboedge.config import TurboEdgeConfig, build_ev_config, config_hash
 from turboedge.features.product import (
@@ -90,6 +90,7 @@ from turboedge.pricing.financing import (
     financing_spread_history,
     realized_financing_spread,
 )
+from turboedge.pricing.fx_resolution import FxResolution, fx_by_isin, resolve_fx_by_issuer
 from turboedge.pricing.gap_premium import (
     GapDistribution,
     fair_gap_premium,
@@ -469,14 +470,17 @@ def _cost_rank_score(total_cost_pct: float, leverage_value: float | None) -> flo
 
 
 def _resolve_fx(
-    product: ProductSnapshot, needs_fx: bool, eurusd_close: float | None
+    product: ProductSnapshot, needs_fx: bool, fx_by_isin: Mapping[str, float]
 ) -> float | None:
     """FX (units of underlying currency per 1 unit product currency, EUR).
 
     Quanto products, EUR-underlyings (per underlying_map) and products whose
     reported ``underlying_currency`` already matches the product currency use
-    ``fx=1``. Everything else needs the EURUSD daily close; ``None`` means it
-    could not be resolved (never imputed, CLAUDE.md rule 29).
+    ``fx=1``. Everything else needs a resolved fx (Befund 1: derived
+    per-issuer from this fetch's own data, see ``pricing/fx_resolution.py``,
+    looked up by ISIN); ``None`` means it could not be resolved for this
+    product's issuer (never imputed, CLAUDE.md rule 29) -- the caller must
+    treat that as ``fx_unresolved``, not a generic pricing failure.
     """
     if product.quanto is True:
         return 1.0
@@ -484,7 +488,7 @@ def _resolve_fx(
         return 1.0
     if not needs_fx:
         return 1.0
-    return eurusd_close
+    return fx_by_isin.get(product.isin)
 
 
 # --------------------------------------------------------------------------
@@ -525,7 +529,7 @@ def _evaluate_single_product(
     underlying_id: str,
     consensus_value: float | None,
     needs_fx: bool,
-    eurusd_close: float | None,
+    fx_by_isin: Mapping[str, float],
     sigma_t: float | None,
     gap_dist: GapDistribution | None,
     r: float,
@@ -545,14 +549,20 @@ def _evaluate_single_product(
     """
     risk = cfg.risk
 
-    fx = _resolve_fx(product, needs_fx, eurusd_close)
+    fx = _resolve_fx(product, needs_fx, fx_by_isin)
     if fx is None:
+        # Befund 1: FX could not be determined for this product's issuer
+        # from the fetch's own data (neither the quanto nor the non-quanto
+        # hypothesis clustered consistently, see pricing/fx_resolution.py).
+        # A distinct reason, never folded into a pricing-defect bucket like
+        # "bid_below_intrinsic" -- this product simply cannot be priced this
+        # run, it is not evidence the product itself is mispriced.
         return _data_quality_candidate(
             run_id=run_id,
             product=product,
             underlying_id=underlying_id,
             horizon_days=horizon_days,
-            reasons=["fx_unavailable"],
+            reasons=["fx_unresolved"],
         )
 
     spot = _resolve_spot(
@@ -814,7 +824,6 @@ def _process_products(
     gap_dist: GapDistribution | None,
     r: float,
     horizon_days: int,
-    price_adapter: PriceSource,
     evaluation_time: datetime,
     next_night_is_weekend: bool,
     data_health_pass: bool,
@@ -824,31 +833,36 @@ def _process_products(
     underlying_meta = get_underlying_meta(underlying_id)
     needs_fx = underlying_meta.currency != "EUR"
 
-    eurusd_close: float | None
+    # Befund 1 (2026-09-13 measurement session): fx is resolved per
+    # (issuer, underlying) from this fetch's OWN product data (quanto vs.
+    # non-quanto tested against each other, majority/consistency decides --
+    # see pricing/fx_resolution.py) instead of a single yfinance daily-close
+    # approximation applied uniformly to every issuer. A stale daily close
+    # (or a wrongly-assumed-non-quanto issuer) previously made almost every
+    # USD-underlying product look like it fails "bid below intrinsic" --
+    # a systematic FX error masquerading as a per-product data defect.
+    resolved_fx: dict[str, FxResolution] = {}
+    fx_map: dict[str, float] = {}
     if needs_fx:
-        try:
-            fx_bars = price_adapter.fetch_daily_bars("EURUSD", lookback_days=5)
-        except Exception as exc:
-            logger.warning("fx_fetch_failed", underlying_id=underlying_id, error=str(exc))
-            fx_bars = []
-        if fx_bars:
-            eurusd_close = fx_bars[-1].close
-            _add_warning(warnings, "fx_daily_close_approximation")
-        else:
-            eurusd_close = None
+        resolved_fx = resolve_fx_by_issuer(products)
+        fx_map = fx_by_isin(products, resolved_fx)
+        unresolved_issuers = {p.issuer for p in products} - set(resolved_fx)
+        if unresolved_issuers:
+            _add_warning(warnings, "fx_unresolved_for_some_issuers")
+        if not resolved_fx:
             _add_warning(warnings, "fx_unavailable_for_underlying")
-    else:
-        eurusd_close = 1.0
 
     consensus_value: float | None
-    if needs_fx and eurusd_close is None:
+    if needs_fx and not fx_map:
         consensus_value = None
         _add_warning(warnings, "consensus_spot_unavailable_fx_unresolved")
     else:
-        group_fx = eurusd_close if needs_fx else 1.0
-        assert group_fx is not None
         try:
-            consensus_result = consensus_spot(products, fx=group_fx)
+            consensus_result = (
+                consensus_spot(products, fx_by_isin=fx_map)
+                if needs_fx
+                else consensus_spot(products, fx=1.0)
+            )
             consensus_value = consensus_result.value
             if consensus_result.used_bid_only_fallback:
                 _add_warning(warnings, "consensus_from_bid_only")
@@ -868,7 +882,7 @@ def _process_products(
                 underlying_id=underlying_id,
                 consensus_value=consensus_value,
                 needs_fx=needs_fx,
-                eurusd_close=eurusd_close,
+                fx_by_isin=fx_map,
                 sigma_t=sigma_t,
                 gap_dist=gap_dist,
                 r=r,
@@ -1017,8 +1031,19 @@ def _maybe_send_email(
     counts: dict[Category, int],
     warnings: list[str],
     clock: Callable[[], datetime],
+    send_on: Sequence[str],
 ) -> SendResult | None:
     if not options.email or notifier is None:
+        return None
+
+    # Befund 3(b): a scan report mail is a targeted alert, not a daily
+    # digest (Master Spec §34: "Kein taeglicher NO-TRADE-Spam") -- it must
+    # only go out when at least one candidate actually landed in one of the
+    # categories `configs/gmail.yaml`'s `send_on` names (e.g. an all-REJECT
+    # scan with `send_on: ["ACTIONABLE"]` sends nothing). The existing
+    # per-notification-hash dedup below still applies on top of this gate.
+    active_categories = {cat.value for cat, count in counts.items() if count > 0}
+    if not any(category in active_categories for category in send_on):
         return None
 
     top_candidates = list(candidates[: options.top])
@@ -1324,6 +1349,38 @@ def _fit_forecast_ensemble(
     return ensemble_by_horizon, forecast_records, weight_map
 
 
+_NOT_EVALUATED_PREFILTER_REASON = "not_evaluated_prefilter"
+
+
+def _annotate_not_evaluated(
+    candidates: Sequence[CandidateEvaluation],
+    priced: dict[str, _PricedProduct],
+    ev_pool_isins: set[str],
+) -> list[CandidateEvaluation]:
+    """Mark WATCH candidates that were never simulated this run (Befund 4).
+
+    A candidate is annotated when it already has a valid priced quote
+    (``isin in priced``, i.e. every pre-EV gate passed) and category WATCH,
+    but its ISIN was not selected into ``ev_pool_isins`` by
+    :func:`_select_ev_pool`'s bucket-capacity cap -- "outside the
+    preselection", never simulated, not "actively rejected". The category is
+    left exactly as it already was (WATCH is the honest category here; it is
+    never downgraded to REJECT for a reason that isn't a real gate failure)
+    -- only the reasons gain :data:`_NOT_EVALUATED_PREFILTER_REASON` so this
+    is visible/queryable rather than indistinguishable from a candidate whose
+    forecast simply hasn't run yet for an unrelated reason.
+    """
+    annotated: list[CandidateEvaluation] = []
+    for c in candidates:
+        if c.category == Category.WATCH and c.isin in priced and c.isin not in ev_pool_isins:
+            annotated.append(
+                c.model_copy(update={"reasons": [*c.reasons, _NOT_EVALUATED_PREFILTER_REASON]})
+            )
+        else:
+            annotated.append(c)
+    return annotated
+
+
 def _run_ev_pipeline(
     *,
     cfg: TurboEdgeConfig,
@@ -1352,13 +1409,6 @@ def _run_ev_pipeline(
     ACTIONABLE this run -- see ``newly_actionable`` on the result)."""
     forecast_cfg = cfg.forecast
     ranking_cfg = cfg.ranking
-    empty_result = EvPipelineResult(
-        candidates=list(candidates),
-        ledger_entries=[],
-        forecast_records=[],
-        new_cluster_positions=list(cluster_open_positions),
-        newly_actionable=[],
-    )
 
     prefiltered_isins, shadow_isins = _select_ev_pool(
         candidates,
@@ -1369,6 +1419,25 @@ def _run_ev_pipeline(
         shadow_sample_per_stratum=cfg.learning.shadow_sample_per_stratum,
     )
     ev_pool_isins = prefiltered_isins | shadow_isins
+
+    # Befund 4 (2026-09-13 measurement session): a candidate that already
+    # passed every pre-EV gate (category WATCH, a valid priced quote) but
+    # was excluded by the bucket-capacity prefilter above was never actually
+    # simulated this run -- it must not be indistinguishable from a product
+    # that was genuinely rejected (stale, bid_only, leverage out of range,
+    # barrier too close). Its category stays the honest WATCH it already
+    # has; only the reason gains an explicit marker so this is visible/
+    # queryable rather than looking like a silently-abandoned candidate.
+    candidates = _annotate_not_evaluated(candidates, priced, ev_pool_isins)
+
+    empty_result = EvPipelineResult(
+        candidates=list(candidates),
+        ledger_entries=[],
+        forecast_records=[],
+        new_cluster_positions=list(cluster_open_positions),
+        newly_actionable=[],
+    )
+
     if not ev_pool_isins:
         _add_warning(warnings, "ev_pool_empty")
         return empty_result
@@ -1822,8 +1891,27 @@ def _run_scan_body(
 
     # 5) products (same run_id as the enclosing scan -- run_scan() already owns that
     # run's lifecycle in the `runs` table, so this sub-step must not start/finish it again)
+    #
+    # Befund 2 (2026-09-13 measurement session): the underlying's own
+    # same-run daily close is already on hand from step 2 above (usable_bars)
+    # -- threading it through as a ProductFetchContext lets a source like
+    # gettex sanity-check its own internally-derived reference spot instead
+    # of never receiving any cross-check at all (see
+    # `adapters.base.ProductFetchContext`/`adapters.gettex` module docstring).
+    fetch_context = (
+        ProductFetchContext(daily_close_reference={underlying_id: usable_bars[-1].close})
+        if usable_bars
+        else None
+    )
     universe_result: UniverseResult = run_universe(
-        cfg, store, state_dir, product_adapters, [underlying_id], run_id=run_id, manage_run=False
+        cfg,
+        store,
+        state_dir,
+        product_adapters,
+        [underlying_id],
+        run_id=run_id,
+        manage_run=False,
+        context=fetch_context,
     )
     for source, err in universe_result.source_errors.items():
         _add_warning(warnings, f"product_source_failed:{source}:{err}")
@@ -1848,7 +1936,6 @@ def _run_scan_body(
         gap_dist=gap_dist,
         r=r,
         horizon_days=options.horizon_days,
-        price_adapter=price_adapter,
         evaluation_time=evaluation_time,
         next_night_is_weekend=next_night_is_weekend,
         data_health_pass=data_health_pass,
@@ -1925,6 +2012,7 @@ def _run_scan_body(
         counts=counts,
         warnings=warnings,
         clock=clock,
+        send_on=cfg.gmail.send_on,
     )
 
     return ScanResult(

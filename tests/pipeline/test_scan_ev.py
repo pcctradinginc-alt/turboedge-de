@@ -281,3 +281,68 @@ def test_shadow_sample_drawn_from_full_pool_includes_non_watch_categories(
         entry = next(e for e, _l in ledger_rows if e.selected_isin == "DE000WIDESP1")
         assert entry.is_shadow is True
         assert entry.category == original_category
+
+
+def test_prefiltered_out_watch_candidates_are_marked_not_evaluated(
+    cfg: TurboEdgeConfig,
+    store: Store,
+    tmp_path: Path,
+    make_product_adapter: Callable[..., Any],
+    make_price_adapter: Callable[..., Any],
+    make_estr_adapter: Callable[..., Any],
+    dax_product_factory: Callable[..., ProductSnapshot],
+    strong_uptrend_bars: Any,
+) -> None:
+    """Befund 4 (2026-09-13 measurement session): a WATCH candidate that
+    passed every pre-EV gate but lost out to configs/ranking.yaml's
+    ``max_candidates_per_bucket`` (25) cap must stay WATCH -- never REJECT --
+    with an explicit ``not_evaluated_prefilter`` reason, so it is not
+    indistinguishable from a candidate that was actively rejected (stale,
+    bid_only, leverage out of range, barrier too close)."""
+    # 40 near-identical, gate-passing long candidates in the same
+    # (direction, leverage_bucket) -- comfortably more than the 25 cap, so
+    # at least a few are guaranteed to be left out of the EV pool even after
+    # the (3-per-stratum) shadow sample on top of it.
+    products = [
+        _cheap_favorable_long(
+            dax_product_factory,
+            isin=f"DE000PFILT{i:02d}",
+            issuer="BankA",
+            financing_level=18000.0 - i * 2.0,
+        )
+        for i in range(40)
+    ]
+    adapter = make_product_adapter("source_a", products=products)
+    price_adapter = make_price_adapter(bars_by_underlying={"DAX": strong_uptrend_bars})
+
+    result = run_scan(
+        **_base_kwargs(
+            cfg=cfg,
+            store=store,
+            tmp_path=tmp_path,
+            product_adapters=[adapter],
+            price_adapter=price_adapter,
+            estr_adapter=make_estr_adapter(),
+            rng=np.random.default_rng(7),
+        ),
+        options=ScanOptions(underlying_id="DAX"),
+    )
+
+    # Every gate-passing candidate stays WATCH or is promoted to ACTIONABLE
+    # by the EV pipeline -- none of these 40 has a genuine reject reason
+    # (stale/bid_only/leverage/barrier), so none may end up REJECT.
+    non_reject = [
+        c for c in result.candidates if c.category in (Category.WATCH, Category.ACTIONABLE)
+    ]
+    assert len(non_reject) == 40
+
+    not_evaluated = [c for c in non_reject if "not_evaluated_prefilter" in c.reasons]
+    evaluated = [c for c in non_reject if any(r.startswith("ev_horizon=") for r in c.reasons)]
+    assert not_evaluated, "at least some candidates must have lost out to the bucket cap"
+    assert evaluated, "at least some candidates must have actually been simulated"
+    # The two groups are mutually exclusive and exhaustive: a candidate is
+    # either genuinely simulated (carries the EV pipeline's own per-horizon
+    # reason) or explicitly marked as skipped by the prefilter -- never
+    # neither, and never both.
+    assert set(c.candidate_id for c in not_evaluated).isdisjoint(c.candidate_id for c in evaluated)
+    assert len(not_evaluated) + len(evaluated) == len(non_reject)

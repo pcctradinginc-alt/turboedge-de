@@ -182,6 +182,21 @@ def _normalize_history(
 
     order: list[date] = []
     by_trade_date: dict[date, UnderlyingBar] = {}
+    # Befund 5 (2026-09-13 measurement session): a per-row logger.warning for
+    # every skipped bar produced hundreds of near-identical lines in a single
+    # fetch (e.g. an underlying with a long illiquid/pre-listing history).
+    # Individual rows are still logged, but at DEBUG (detail preserved for
+    # someone actively debugging a specific date); one aggregated summary
+    # line per skip reason is emitted at WARNING after the loop instead, with
+    # a count and the first/last affected trading day.
+    skip_counts: dict[str, int] = {}
+    skip_first: dict[str, date] = {}
+    skip_last: dict[str, date] = {}
+
+    def _record_skip(reason: str, trade_date: date) -> None:
+        skip_counts[reason] = skip_counts.get(reason, 0) + 1
+        skip_first.setdefault(reason, trade_date)
+        skip_last[reason] = trade_date
 
     for ts, row in history.iterrows():
         source_timestamp = _to_utc_datetime(ts)
@@ -198,7 +213,8 @@ def _normalize_history(
             ) from exc
 
         if any(pd.isna(v) for v in (open_, high, low, close)):
-            logger.warning(
+            _record_skip("nan_ohlc", trade_date)
+            logger.debug(
                 "fallback_prices_skip_nan_ohlc",
                 underlying_id=underlying_id,
                 trade_date=trade_date.isoformat(),
@@ -206,7 +222,8 @@ def _normalize_history(
             continue
 
         if high < max(open_, close) or low > min(open_, close):
-            logger.warning(
+            _record_skip("inconsistent_ohlc", trade_date)
+            logger.debug(
                 "fallback_prices_skip_inconsistent_ohlc",
                 underlying_id=underlying_id,
                 trade_date=trade_date.isoformat(),
@@ -257,6 +274,16 @@ def _normalize_history(
         else:
             order.append(trade_date)
         by_trade_date[trade_date] = bar  # duplicates: last occurrence wins
+
+    for reason, count in skip_counts.items():
+        logger.warning(
+            "fallback_prices_skip_summary",
+            underlying_id=underlying_id,
+            reason=reason,
+            count=count,
+            first_trade_date=skip_first[reason].isoformat(),
+            last_trade_date=skip_last[reason].isoformat(),
+        )
 
     return [by_trade_date[d] for d in order]
 

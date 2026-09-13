@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from turboedge.adapters.base import AdapterError
+from turboedge.adapters.base import AdapterError, ProductFetchContext
 from turboedge.config import TurboEdgeConfig
 from turboedge.pipeline.universe import NoProductsError, run_universe
 from turboedge.provenance import new_run_id
@@ -206,3 +206,33 @@ def test_run_universe_manage_run_false_does_not_touch_runs_table(
     result = run_universe(cfg, store, tmp_path, [adapter], ["DAX"], run_id=run_id, manage_run=False)
     assert len(result.products) == 1
     assert store.table_counts()["runs"] == 0
+
+
+def test_run_universe_threads_context_to_every_adapter(
+    cfg: TurboEdgeConfig,
+    store: Store,
+    tmp_path: Path,
+    make_product_adapter: Callable[..., Any],
+    dax_product_factory: Callable[..., ProductSnapshot],
+) -> None:
+    """Befund 2 (2026-09-13 measurement session): ``run_universe`` must pass
+    an explicit ``context`` through to every adapter's ``fetch_products`` --
+    previously it always called ``fetch_products(underlying_ids)`` with
+    nothing else, so a source like gettex that accepts an optional
+    same-run daily-close cross-check never actually received one from the
+    real pipeline."""
+    product = dax_product_factory(
+        isin="DE000LONG001",
+        issuer="BankA",
+        direction=Direction.LONG,
+        financing_level=20000.0,
+        quote_timestamp=_NOW,
+    )
+    adapter = make_product_adapter("source_a", products=[product])
+    context = ProductFetchContext(daily_close_reference={"DAX": 24000.0})
+
+    run_universe(cfg, store, tmp_path, [adapter], ["DAX"], run_id=new_run_id(), context=context)
+
+    assert adapter.last_context is context
+    assert adapter.last_context is not None
+    assert adapter.last_context.daily_close_reference == {"DAX": 24000.0}

@@ -27,7 +27,12 @@ import pytest
 from typer.testing import CliRunner
 
 import turboedge.cli as cli_module
-from turboedge.adapters.base import AdapterError, AdapterMetadata, HealthCheckResult
+from turboedge.adapters.base import (
+    AdapterError,
+    AdapterMetadata,
+    HealthCheckResult,
+    ProductFetchContext,
+)
 from turboedge.cli import app
 from turboedge.config import CONFIG_FILES
 from turboedge.notifications.gmail import EmailMessageSpec, SendResult
@@ -66,7 +71,13 @@ class _FakeProductAdapter:
     def name(self) -> str:
         return self._name
 
-    def fetch_products(self, underlying_ids: Sequence[str]) -> list[ProductSnapshot]:
+    def fetch_products(
+        self,
+        underlying_ids: Sequence[str],
+        *,
+        context: ProductFetchContext | None = None,
+    ) -> list[ProductSnapshot]:
+        del context
         if self._exception is not None:
             raise self._exception
         return list(self._products)

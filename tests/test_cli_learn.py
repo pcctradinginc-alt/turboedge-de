@@ -24,7 +24,7 @@ import pytest
 from typer.testing import CliRunner
 
 import turboedge.cli_learn as cli_learn_module
-from turboedge.adapters.base import AdapterMetadata, HealthCheckResult
+from turboedge.adapters.base import AdapterMetadata, HealthCheckResult, ProductFetchContext
 from turboedge.cli import app
 from turboedge.config import CONFIG_FILES
 from turboedge.storage.duckdb import Store
@@ -70,7 +70,13 @@ class _FakeProductAdapter:
     def name(self) -> str:
         return self._name
 
-    def fetch_products(self, underlying_ids: Sequence[str]) -> list[ProductSnapshot]:
+    def fetch_products(
+        self,
+        underlying_ids: Sequence[str],
+        *,
+        context: ProductFetchContext | None = None,
+    ) -> list[ProductSnapshot]:
+        del context
         return list(self._products)
 
     def healthcheck(self) -> HealthCheckResult:

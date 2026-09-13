@@ -208,6 +208,7 @@ from turboedge.adapters.base import (
     AdapterMetadata,
     HealthCheckResult,
     HttpClient,
+    ProductFetchContext,
 )
 from turboedge.config import SourceConfig
 from turboedge.pricing.intrinsic import implied_underlying
@@ -1037,11 +1038,23 @@ class GettexAdapter:
         self,
         underlying_ids: Sequence[str],
         *,
+        context: ProductFetchContext | None = None,
         reference_spot: Mapping[str, float] | float | None = None,
         daily_close_reference: Mapping[str, float] | float | None = None,
         fx_hint: Mapping[str, float] | float | None = None,
     ) -> list[ProductSnapshot]:
         """Fetch, derive-and-verify ratio for, and normalize gettex products.
+
+        ``context`` (Befund 2, :class:`~turboedge.adapters.base.
+        ProductFetchContext`) is how the generic ``ProductSourceAdapter``
+        call path (``pipeline/universe.py``) supplies the two cross-check
+        arguments below -- ``reference_spot``/``daily_close_reference`` stay
+        as direct keyword arguments too (unchanged) for callers/tests that
+        already use this adapter's own richer signature directly. When both
+        a direct argument and ``context`` are given, the explicit direct
+        argument wins (it is the more specific request); ``context`` only
+        fills in whichever of the two is otherwise left at its default
+        ``None``.
 
         ``S_ref`` (the reference spot) is *always* derived internally from
         gettex's own leverage identity (module docstring step 1) -- it never
@@ -1088,6 +1101,12 @@ class GettexAdapter:
                 candidate from this fetch's own data instead of falling back
                 to the quanto-only hypothesis for every row.
         """
+        if context is not None:
+            if reference_spot is None:
+                reference_spot = context.reference_spot
+            if daily_close_reference is None:
+                daily_close_reference = context.daily_close_reference
+
         self.last_errors = []
         self._partial_universe = {}
         self._reference_spot_mismatches = {}

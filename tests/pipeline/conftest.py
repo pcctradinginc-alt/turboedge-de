@@ -19,7 +19,12 @@ from typing import Any
 import numpy as np
 import pytest
 
-from turboedge.adapters.base import AdapterError, AdapterMetadata, HealthCheckResult
+from turboedge.adapters.base import (
+    AdapterError,
+    AdapterMetadata,
+    HealthCheckResult,
+    ProductFetchContext,
+)
 from turboedge.config import TurboEdgeConfig, load_config
 from turboedge.notifications.gmail import EmailMessageSpec, NotificationError, SendResult
 from turboedge.storage.duckdb import Store
@@ -87,13 +92,20 @@ class FakeProductAdapter:
         self._health_status = health_status
         self._on_fetch = on_fetch
         self.fetch_calls = 0
+        self.last_context: ProductFetchContext | None = None
 
     @property
     def name(self) -> str:
         return self._name
 
-    def fetch_products(self, underlying_ids: Sequence[str]) -> list[ProductSnapshot]:
+    def fetch_products(
+        self,
+        underlying_ids: Sequence[str],
+        *,
+        context: ProductFetchContext | None = None,
+    ) -> list[ProductSnapshot]:
         self.fetch_calls += 1
+        self.last_context = context
         if self._on_fetch is not None:
             self._on_fetch()
         if self._exception is not None:

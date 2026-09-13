@@ -33,7 +33,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import structlog
 from pydantic import ValidationError
 
-from turboedge.adapters.base import AdapterMetadata, HealthCheckResult
+from turboedge.adapters.base import AdapterMetadata, HealthCheckResult, ProductFetchContext
 from turboedge.config import SourceConfig
 from turboedge.storage.schemas import (
     Direction,
@@ -338,7 +338,12 @@ class CsvProductImportAdapter:
 
         return raw_rows
 
-    def fetch_products(self, underlying_ids: Sequence[str]) -> list[ProductSnapshot]:
+    def fetch_products(
+        self,
+        underlying_ids: Sequence[str],
+        *,
+        context: ProductFetchContext | None = None,
+    ) -> list[ProductSnapshot]:
         """Fetch, validate and normalize CSV rows into ``ProductSnapshot`` objects.
 
         Implements the ``ProductSourceAdapter`` contract exactly: the scan
@@ -349,7 +354,13 @@ class CsvProductImportAdapter:
         parsing). An empty ``underlying_ids`` sequence means "no filter",
         matching how ``healthcheck()`` uses this method to inspect the
         whole import directory regardless of universe.
+
+        ``context`` (Befund 2's optional per-run cross-check data) is
+        accepted for ``ProductSourceAdapter`` contract compliance but unused:
+        a manually-curated CSV import has no external reference to sanity
+        check against and is trusted as entered.
         """
+        del context
         raw_rows = self.fetch()
         snapshots = self.normalize(raw_rows)
 

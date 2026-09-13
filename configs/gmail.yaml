@@ -7,14 +7,28 @@
 # Master switch. When false, `turboedge scan --email` and `sources health
 # --email-on-fail` skip sending entirely (still available via `notify test`
 # in dry-run for local verification).
-enabled: false
+#
+# Real sending additionally still requires GMAIL_USER/GMAIL_APP_PASSWORD/
+# TURBOEDGE_EMAIL_TO to be set (see .env.example) -- without them,
+# notifications/gmail.py falls back to dry-run automatically regardless of
+# this flag, so `enabled: true` alone never sends anything by itself in an
+# environment with no credentials configured.
+enabled: true
 
 smtp_host: "smtp.gmail.com"
 smtp_port: 465
 
 # Candidate categories that trigger an email from `turboedge scan --email`.
-# ACTIONABLE is listed for forward compatibility but cannot occur in this
-# milestone (lcb_ev is always None).
+# A scan mail is only sent when at least one candidate landed in one of
+# these categories this run (Master Spec §34: "Kein taeglicher
+# NO-TRADE-Spam") -- an all-REJECT/all-DATA_QUALITY scan sends nothing with
+# the default below. ACTIONABLE is listed for forward compatibility but
+# cannot occur in this milestone (lcb_ev is always None).
+#
+# To deliberately receive a "how did the scan go" overview mail even without
+# an ACTIONABLE candidate (e.g. while debugging a source), add the category
+# you want surfaced, e.g. send_on: ["ACTIONABLE", "WATCH"] -- every category
+# named here is OR'd together, so any one of them showing up triggers a mail.
 send_on: ["ACTIONABLE"]
 
 subject_prefix: "[TurboEdge-DE]"

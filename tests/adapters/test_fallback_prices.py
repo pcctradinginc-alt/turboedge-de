@@ -9,6 +9,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
+from turboedge.adapters import fallback_prices
 from turboedge.adapters.base import AdapterError
 from turboedge.adapters.fallback_prices import (
     YFinancePriceAdapter,
@@ -191,6 +192,65 @@ def test_inconsistent_ohlc_row_is_skipped() -> None:
 
     assert len(bars) == 1
     assert bars[0].ts == datetime(2026, 9, 9, tzinfo=UTC)
+
+
+class _RecordingLogger:
+    """Minimal stand-in for the module's structlog logger: records every
+    call as ``(level, event, kwargs)`` instead of doing any real logging."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, dict[str, Any]]] = []
+
+    def debug(self, event: str, **kwargs: Any) -> None:
+        self.calls.append(("debug", event, kwargs))
+
+    def warning(self, event: str, **kwargs: Any) -> None:
+        self.calls.append(("warning", event, kwargs))
+
+    def info(self, event: str, **kwargs: Any) -> None:
+        self.calls.append(("info", event, kwargs))
+
+
+def test_skipped_rows_logged_as_one_aggregated_summary_not_per_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Befund 5 (2026-09-13 measurement session): many skipped bars in one
+    fetch must produce one aggregated WARNING line per skip reason (with a
+    count and the first/last affected trading day), not one WARNING per row
+    -- a run with hundreds of skipped rows previously logged hundreds of
+    near-identical ``fallback_prices_skip_*`` lines. Individual rows are
+    still logged, but downgraded to DEBUG."""
+    recorder = _RecordingLogger()
+    monkeypatch.setattr(fallback_prices, "logger", recorder)
+
+    dates = [f"2026-01-{d:02d}" for d in range(1, 21)]  # 20 trading days
+    frame = _make_history(dates, tz="UTC")
+    # Rows 0-4: NaN close. Rows 5-9: inconsistent OHLC. Rows 10-19: clean.
+    for i in range(5):
+        frame.loc[frame.index[i], "Close"] = float("nan")
+    for i in range(5, 10):
+        frame.loc[frame.index[i], "High"] = 1.0
+    retrieved_at = datetime(2026, 2, 1, tzinfo=UTC)
+
+    bars = _normalize_history(frame, underlying_id="DAX", retrieved_at=retrieved_at)
+
+    assert len(bars) == 10  # 20 rows - 5 nan - 5 inconsistent
+
+    warnings = [c for c in recorder.calls if c[0] == "warning"]
+    # One aggregated WARNING per reason -- not per skipped row.
+    warning_events = [c[1] for c in warnings]
+    assert warning_events.count("fallback_prices_skip_summary") == 2
+    assert "fallback_prices_skip_nan_ohlc" not in warning_events
+    assert "fallback_prices_skip_inconsistent_ohlc" not in warning_events
+
+    debug_events = [c[1] for c in recorder.calls if c[0] == "debug"]
+    assert debug_events.count("fallback_prices_skip_nan_ohlc") == 5
+    assert debug_events.count("fallback_prices_skip_inconsistent_ohlc") == 5
+
+    nan_call = next(c[2] for c in warnings if c[2].get("reason") == "nan_ohlc")
+    assert nan_call["count"] == 5
+    inconsistent_call = next(c[2] for c in warnings if c[2].get("reason") == "inconsistent_ohlc")
+    assert inconsistent_call["count"] == 5
 
 
 def test_normalize_history_empty_frame_returns_empty_list() -> None:

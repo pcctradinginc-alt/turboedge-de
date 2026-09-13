@@ -36,6 +36,7 @@ from turboedge.adapters.issuer_feeds import (
     _citi_factory,
     _parse_berlin_naive_to_utc,
     _register,
+    _resolve_underlying_currency,
 )
 from turboedge.adapters.registry import PRODUCT_ADAPTER_FACTORIES, ProductSourceAdapter
 from turboedge.config import SourceConfig
@@ -221,6 +222,12 @@ def test_bnp_fetch_products_parses_real_fixture() -> None:
     directions = {s.direction for s in snapshots}
     assert directions == {Direction.LONG, Direction.SHORT}
     assert not adapter.last_errors
+    # Befund 1 (2026-09-13 measurement session): underlying_currency must be
+    # populated from the canonical underlying's own static currency, not
+    # left at None -- a None here made pricing/integrity.check_product's
+    # same-currency guard silently assume fx=1 for a genuinely cross-
+    # currency product (see adapters/issuer_feeds._resolve_underlying_currency).
+    assert all(s.underlying_currency == "EUR" for s in snapshots)
 
 
 @respx.mock
@@ -400,6 +407,15 @@ def test_bnp_timezone_conversion_summer_and_winter() -> None:
     assert _parse_berlin_naive_to_utc(None) is None
     assert _parse_berlin_naive_to_utc("") is None
     assert _parse_berlin_naive_to_utc("not-a-timestamp") is None
+
+
+def test_resolve_underlying_currency() -> None:
+    """Befund 1: the canonical underlying's own currency, never guessed --
+    an unknown underlying_id resolves to None rather than defaulting to EUR."""
+    assert _resolve_underlying_currency("DAX") == "EUR"
+    assert _resolve_underlying_currency("NDX") == "USD"
+    assert _resolve_underlying_currency("SPX") == "USD"
+    assert _resolve_underlying_currency("NOT_A_REAL_UNDERLYING") is None
 
 
 @respx.mock

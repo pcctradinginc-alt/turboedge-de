@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
@@ -29,6 +30,52 @@ from tenacity import (
 from turboedge.storage.schemas import HealthStatus
 
 _RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+
+
+@dataclass(frozen=True, slots=True)
+class ProductFetchContext:
+    """Optional, additive per-run context passed to every product adapter's
+    ``fetch_products`` (Befund 2, 2026-09-13 measurement session).
+
+    ``pipeline/universe.py`` previously called every adapter's
+    ``fetch_products(underlying_ids)`` with nothing else -- fine for
+    BNP/Citi/CSV (which need nothing more), but the gettex adapter accepts an
+    optional ``reference_spot``/``daily_close_reference`` sanity cross-check
+    for its internally-derived S_ref (see ``adapters/gettex.py`` module
+    docstring) that the generic ``ProductSourceAdapter`` call path simply had
+    no channel to pass through at all -- ``run_universe`` only ever called
+    ``adapter.fetch_products(underlying_ids)``, so gettex's richer
+    single-adapter contract (``reference_spot=``/``daily_close_reference=``)
+    was reachable from a direct test/script but not from the real pipeline.
+    Once threaded through, a same-run daily close lets gettex's ``S_ref``
+    (otherwise unchecked against anything, see that module's Pitfall notes)
+    be sanity-cross-checked even when every issuer-quote source in the same
+    scan is itself down or stale.
+
+    Extending the shared :class:`~turboedge.adapters.registry.
+    ProductSourceAdapter` Protocol with one optional, typed field (rather
+    than reaching into each adapter's own kwargs via ``inspect.signature`` to
+    decide what to pass) keeps the contract statically checkable by mypy:
+    every adapter's ``fetch_products`` signature is verified against the
+    Protocol at class-definition time, a caller cannot typo a kwarg name that
+    silently never reaches the adapter it was meant for, and adding a second
+    context field later is a one-place, compiler-checked change instead of
+    an ad-hoc ``getattr``/``inspect`` guess repeated at every call site. The
+    field is optional and every adapter that has no use for it (BNP, Citi,
+    CSV import) simply accepts and ignores it -- no adapter is forced to act
+    on context it doesn't need, so this is purely additive.
+    """
+
+    # Same-day daily-close price per canonical underlying_id (e.g. from
+    # ``PriceSource.fetch_daily_bars``) -- a same-issuer-outage-proof sanity
+    # cross-check for an adapter's own internally-derived reference spot.
+    daily_close_reference: Mapping[str, float] | None = None
+    # A genuinely independent *live* reference spot per underlying_id, when
+    # the caller has one from a source other than the adapter itself (tight
+    # tolerance cross-check, preferred over ``daily_close_reference`` when
+    # both are available -- see ``adapters/gettex.py``'s
+    # ``fetch_products`` docstring for the priority order).
+    reference_spot: Mapping[str, float] | None = None
 
 
 class AdapterError(Exception):

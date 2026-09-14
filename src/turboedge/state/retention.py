@@ -14,6 +14,59 @@ compact``) applies two rules, in order:
    with rule 1 applied forever, the thinned "cold" tier still grows without
    bound (~1 row/isin/day, indefinitely) -- rule 2 is the actual size cap.
 
+Both defaults (below) are sized to what actually consumes this table, not to
+a generic "keep data a while" instinct -- measured against a realistic
+synthetic database (21,700 ISINs/scan, matching one real DAX+NDX scan; 5
+scans/day; a multi-hundred-day span; a handful of protected ledger ISINs).
+Every consumer of this table beyond the ledger-ISIN exemption was checked
+directly, not assumed:
+
+- ``pricing/financing.py``'s spread inference is fed by
+  ``Store.financing_level_history()``, which *itself* already collapses to
+  one observation per ``(isin, UTC calendar day)`` at query time (last
+  snapshot of the day wins) -- it never sees more than daily resolution
+  regardless of how many raw rows exist for a day. Multi-scan-per-day
+  resolution is therefore never actually consumed by financing inference,
+  at any age; only the *number of distinct days* of history matters, and
+  the thinning in rule 1 preserves exactly one row per day forever (until
+  rule 2's hard delete), so it is unaffected by how small ``keep_days`` is.
+- ``learning/labeler.py`` and ``learning/counterfactual.py`` (via
+  ``Store.product_snapshots_in_range``) only ever query ledger-referenced
+  ISINs (entry-to-exit windows for ``selected_isin``/``alternatives``) --
+  already covered unconditionally by the protection below, independent of
+  both ``keep_days`` and ``hard_delete_after_days``.
+- ``positions/reevaluate.py`` only wants the single latest snapshot
+  at-or-before "now" (``Store.latest_product_snapshot_at_or_before``), never
+  a historical window.
+
+So multi-scan-per-day ("hot") resolution for an *ordinary* (non-ledger)
+ISIN is operationally useful only very briefly -- for the current scan and
+the last few immediately preceding it (same-day/next-day manual
+sanity-checking of an issuer's intraday price/financing-level behavior);
+beyond that it is pure archive weight already duplicated, byte-for-byte, in
+the immutable Parquet snapshot artifact (``state pack-snapshots``, see
+``state/archive.py``'s module docstring). ``DEFAULT_KEEP_DAYS`` reflects
+that: enough for a full trading week's intraday history to still be
+inspectable (covers a Monday morning check reaching back through the
+preceding Thursday/Friday across a weekend), while being small enough that
+its contribution to steady-state DB size is minor next to
+``hard_delete_after_days``.
+
+Measured (synthetic DB, see module docstring intro): with ~21,700 ISINs/day
+already thinned to one row/isin/day, the fully-compacted steady-state size
+is close to linear in ``hard_delete_after_days`` -- shrinking it from the
+old default (400) to 90 cut the cold-tier row count (and, correspondingly,
+file size) by roughly three quarters in that test, with **zero** rows lost
+for any protected ledger ISIN and **zero** loss of day-level financing
+history adequacy (every sampled ordinary ISIN retained >= 2 consecutive
+calendar days of ``financing_level`` history at every ``hard_delete_after_days``
+candidate tested, 60 through 180). No consumer identified above looks back
+further than a ledger entry's own lifetime (unconditionally protected) or a
+handful of calendar days (financing spread inference, which further
+robustifies via a median over "clean" pairs, so a longer window has no
+measured benefit) -- 90 days keeps a wide safety margin above every actual
+need while cutting the old, ungrounded 400-day horizon by ~78%.
+
 Both rules keep the *full*, untouched history for any ISIN that appears in
 ``forward_ledger`` -- as the entry actually taken (``selected_isin``) or only
 as a discarded alternative/counterfactual (``alternatives``, Master Spec
@@ -63,15 +116,25 @@ from turboedge.storage.duckdb import Store
 
 logger = structlog.get_logger(__name__)
 
-DEFAULT_KEEP_DAYS = 45
-# 400 > 365: a full year of history is always still inside the hard-delete
-# horizon (nothing gets permanently deleted before it is at least a year
-# old), while still bounding the previously-unbounded thinned "cold" tier
-# to a fixed number of days once the system has been running longer than
-# that. See README.md's "Data Storage"/"Pipeline modes and schedule"
-# sections and CLAUDE.md's Notes for the ledger-ISIN exemption this pairs
-# with.
-DEFAULT_HARD_DELETE_AFTER_DAYS = 400
+# A full trading week (5 business days) of multi-scan-per-day resolution --
+# enough for a Monday-morning check to still reach back through the
+# preceding Thursday/Friday across a weekend gap. See the module docstring
+# ("Why these defaults") for the measured basis: no identified consumer of
+# an *ordinary* (non-ledger) ISIN's history needs more than daily
+# resolution, so this is a debugging/inspection buffer, not a data
+# dependency, and its exact size barely moves steady-state DB size.
+DEFAULT_KEEP_DAYS = 5
+# 90 days: comfortably exceeds every measured actual need (a ledger entry's
+# own lifetime is protected unconditionally regardless of age; financing
+# spread inference only needs a handful of the most recent distinct
+# calendar days and further robustifies via a median over "clean" pairs) --
+# see the module docstring ("Why these defaults") for the measurement this
+# is based on. Cuts the old, ungrounded 400-day horizon (which was sized to
+# "at least a year", not to any actual consumer) by ~78%; still well inside
+# the 90-180-day range this was evaluated against. See README.md's "Data
+# Storage"/"Pipeline modes and schedule" sections and CLAUDE.md's Notes for
+# the ledger-ISIN exemption this pairs with.
+DEFAULT_HARD_DELETE_AFTER_DAYS = 90
 
 _LEDGER_TABLE = "forward_ledger"
 # W6's `forward_ledger` schema (storage/duckdb.py) names the column

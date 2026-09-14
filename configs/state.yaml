@@ -5,12 +5,26 @@
 retention:
   # `turboedge db compact` reduces product_snapshots rows older than this
   # many days to one row per (isin, UTC calendar day), except ISINs present
-  # in forward_ledger (kept in full, state/retention.py).
-  keep_days: 45
+  # in forward_ledger (kept in full, state/retention.py). 5 days = a full
+  # trading week of multi-scan-per-day resolution -- measured (see
+  # state/retention.py's module docstring) against every real consumer of
+  # this table: financing-spread inference only ever sees daily resolution
+  # regardless (Store.financing_level_history collapses to 1/day at query
+  # time), and label/counterfactual learning only ever look at
+  # ledger-protected ISINs. Multi-scan-per-day resolution beyond this
+  # window is therefore a debugging convenience, not a data dependency.
+  keep_days: 5
   # Rows still around after being thinned above (i.e. older than
   # hard_delete_after_days) are permanently deleted -- otherwise the
   # thinned "cold" tier grows without bound forever (~1 row/isin/day).
   # Ledger-referenced ISINs (selected_isin AND alternatives/counterfactual)
   # are exempt from this and from the thinning above, at any age. Must be
-  # greater than keep_days.
-  hard_delete_after_days: 400
+  # greater than keep_days. 90 days was chosen from a measured sweep
+  # (60/90/120/180, see state/retention.py's module docstring): the
+  # compacted steady-state size scales roughly linearly with this value and
+  # no real consumer needs data older than a ledger entry's own lifetime
+  # (protected unconditionally) or a handful of days of financing-level
+  # history -- 90 days keeps a wide safety margin while cutting the old
+  # 400-day default (sized to "at least a year", not to any actual need)
+  # by ~78%.
+  hard_delete_after_days: 90

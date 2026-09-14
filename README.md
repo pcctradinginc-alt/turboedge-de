@@ -308,12 +308,27 @@ silently producing garbage.
 additive tables for the forecast engine, forward ledger, and position
 re-evaluation. Inspect with `turboedge db info`. `product_snapshots` is
 bounded by `turboedge db compact` (`state/retention.py`, run in the `eod`
-job): rows older than `keep_days` (default 45) are thinned to one
+job): rows older than `keep_days` (default 5) are thinned to one
 row/ISIN/UTC-day, and rows older than `hard_delete_after_days` (default
-400, must exceed `keep_days`) are **permanently deleted** — except any
+90, must exceed `keep_days`) are **permanently deleted** — except any
 ISIN referenced in `forward_ledger`, either as the entry actually taken
 (`selected_isin`) or only as a discarded alternative/counterfactual
 (`alternatives`, Master Spec §21), which is kept in full at any age.
+These defaults are measured, not guessed (`state/retention.py`'s module
+docstring has the full basis): `keep_days` is a week's worth of
+multi-scan-per-day debugging headroom — no consumer needs more, since
+`pricing/financing.py`'s spread inference is fed one collapsed
+observation/day regardless (`Store.financing_level_history`), and
+label/counterfactual learning (`learning/labeler.py`,
+`learning/counterfactual.py`) only ever look at ledger-protected ISINs,
+already covered by the exemption above independent of both settings.
+`hard_delete_after_days` was swept from 60 to 180 days against a
+21,700-ISIN/scan synthetic database; compacted size scales roughly
+linearly with it, and 90 days cuts the old, ungrounded 400-day default
+(sized to "at least a year", not to any actual consumer) by ~78% with no
+measured loss — every protected ledger ISIN stayed fully intact and every
+sampled ordinary ISIN kept >= 2 consecutive calendar days of
+`financing_level` history at every value tested.
 **Parquet**
 (`$TURBOEDGE_STATE_DIR/snapshots/<table>/date=YYYY-MM-DD/<run_id>.parquet`):
 immutable, append-only, written only during `scan`/`scan-all`; has no

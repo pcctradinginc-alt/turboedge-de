@@ -68,7 +68,11 @@ def test_reduces_old_snapshots_to_one_per_isin_per_day(
     ]
     store.append_product_snapshots(snaps)
 
-    report = compact_product_snapshots(store, keep_days=45, now=now)
+    # hard_delete_after_days is passed explicitly (well beyond old_day's 100
+    # days) so this test isolates rule 1 (thinning) -- rule 2 (hard delete)
+    # is covered separately below, and DEFAULT_HARD_DELETE_AFTER_DAYS (90)
+    # would otherwise hard-delete this row outright rather than thin it.
+    report = compact_product_snapshots(store, keep_days=45, hard_delete_after_days=400, now=now)
 
     assert report.rows_before == 3
     assert report.rows_after == 1
@@ -91,7 +95,10 @@ def test_reduces_to_one_per_isin_per_distinct_day(
     ]
     store.append_product_snapshots(snaps)
 
-    report = compact_product_snapshots(store, keep_days=45, now=now)
+    # See the comment on the equivalent line in
+    # test_reduces_old_snapshots_to_one_per_isin_per_day for why
+    # hard_delete_after_days is explicit here.
+    report = compact_product_snapshots(store, keep_days=45, hard_delete_after_days=400, now=now)
 
     assert report.rows_before == 4
     assert report.rows_after == 4  # already 1/day -- nothing to reduce
@@ -126,7 +133,10 @@ def test_ledger_isin_kept_in_full_when_forward_ledger_exists(
     store._conn.execute("CREATE TABLE forward_ledger (selected_isin VARCHAR NOT NULL)")
     store._conn.execute("INSERT INTO forward_ledger (selected_isin) VALUES (?)", [protected_isin])
 
-    report = compact_product_snapshots(store, keep_days=45, now=now)
+    # See the comment on the equivalent line in
+    # test_reduces_old_snapshots_to_one_per_isin_per_day for why
+    # hard_delete_after_days is explicit here.
+    report = compact_product_snapshots(store, keep_days=45, hard_delete_after_days=400, now=now)
 
     assert report.forward_ledger_present is True
     assert report.protected_isin_count == 1
@@ -159,7 +169,10 @@ def test_forward_ledger_absent_is_handled_gracefully(
     store.append_product_snapshots(snaps)
     store._conn.execute("DROP TABLE IF EXISTS forward_ledger")
 
-    report = compact_product_snapshots(store, keep_days=45, now=now)
+    # See the comment on the equivalent line in
+    # test_reduces_old_snapshots_to_one_per_isin_per_day for why
+    # hard_delete_after_days is explicit here.
+    report = compact_product_snapshots(store, keep_days=45, hard_delete_after_days=400, now=now)
 
     assert report.forward_ledger_present is False
     assert report.protected_isin_count == 0
@@ -181,7 +194,10 @@ def test_forward_ledger_without_isin_column_ignored(
     store._conn.execute("DROP TABLE IF EXISTS forward_ledger")
     store._conn.execute("CREATE TABLE forward_ledger (entry_id VARCHAR NOT NULL)")
 
-    report = compact_product_snapshots(store, keep_days=45, now=now)
+    # See the comment on the equivalent line in
+    # test_reduces_old_snapshots_to_one_per_isin_per_day for why
+    # hard_delete_after_days is explicit here.
+    report = compact_product_snapshots(store, keep_days=45, hard_delete_after_days=400, now=now)
 
     assert report.forward_ledger_present is False
     assert report.rows_after == 1
@@ -216,7 +232,10 @@ def test_alternatives_isin_protected_in_full(
         [selected_isin, json.dumps([alt_isin])],
     )
 
-    report = compact_product_snapshots(store, keep_days=45, now=now)
+    # See the comment on the equivalent line in
+    # test_reduces_old_snapshots_to_one_per_isin_per_day for why
+    # hard_delete_after_days is explicit here.
+    report = compact_product_snapshots(store, keep_days=45, hard_delete_after_days=400, now=now)
 
     assert report.protected_isin_count == 2  # selected_isin + the one alternative
     rows = store._conn.execute(
@@ -253,11 +272,11 @@ def test_alternatives_column_absent_ignored(
 
 
 def test_default_keep_days_constant() -> None:
-    assert DEFAULT_KEEP_DAYS == 45
+    assert DEFAULT_KEEP_DAYS == 5
 
 
 def test_default_hard_delete_after_days_constant() -> None:
-    assert DEFAULT_HARD_DELETE_AFTER_DAYS == 400
+    assert DEFAULT_HARD_DELETE_AFTER_DAYS == 90
 
 
 def test_invalid_keep_days_raises(store: Store) -> None:
@@ -632,3 +651,183 @@ def test_reopened_store_sees_compacted_data_after_rewrite(tmp_path: Path) -> Non
         reopened.init_schema()
         rows = reopened._conn.execute("SELECT count(*) FROM product_snapshots").fetchone()[0]
         assert rows == expected_rows
+
+
+# --------------------------------------------------------------------------
+# Regression coverage for the current DEFAULT_KEEP_DAYS/DEFAULT_HARD_DELETE_
+# AFTER_DAYS values (see the module docstring's "Why these defaults" for the
+# full measurement this is a scaled-down version of, run against a realistic
+# synthetic DB of 21,700 ISINs/scan x 5 scans/day x a multi-hundred-day span
+# before choosing 5/90 over the old 45/400): the defaults must actually
+# trigger both thinning *and* hard deletion at realistic scale, without ever
+# touching a ledger-protected ISIN or leaving an ordinary ISIN's
+# `financing_level_history()` (what `pricing/financing.py`'s spread
+# inference is fed from) without >= 2 consecutive calendar days of history.
+# --------------------------------------------------------------------------
+
+_DEFAULT_SCALE_ISIN_COUNT = 300
+_DEFAULT_SCALE_COLD_DAYS = 110  # > DEFAULT_HARD_DELETE_AFTER_DAYS (90): real deletions happen
+_DEFAULT_SCALE_LEDGER_SELECTED = 3
+_DEFAULT_SCALE_LEDGER_ALT_ONLY = 2
+_DEFAULT_SCALE_LEDGER_TOTAL = _DEFAULT_SCALE_LEDGER_SELECTED + _DEFAULT_SCALE_LEDGER_ALT_ONLY
+
+_SNAPSHOT_COLUMNS = (
+    "isin, wkn, issuer, venue, underlying_raw, underlying_id, direction, "
+    "product_type, financing_level, knockout_barrier, ratio, currency, "
+    "underlying_currency, quanto, open_end, maturity, first_trading_day, "
+    "bid, ask, bid_size, ask_size, quote_timestamp, quote_presence, "
+    "bid_only, knocked_out, trading_hours, product_age_days, "
+    "underlying_price_ref, underlying_price_ref_timestamp, financing_rate, "
+    "raw_hash, observation_time, available_at, retrieved_at, "
+    "source_timestamp, source, schema_version, parser_version, is_stale, "
+    "quality_score"
+)
+
+
+def _seed_default_scale_database(store: Store, *, now: datetime) -> None:
+    """Non-ledger ISINs get DEFAULT_KEEP_DAYS days of full (5 scans/day)
+    resolution followed by daily resolution out to
+    _DEFAULT_SCALE_COLD_DAYS (already-thinned, exactly what
+    DEFAULT_KEEP_DAYS-based thinning would itself produce -- see the
+    scratchpad measurement script this test mirrors for why that's a
+    size-neutral shortcut); ledger ISINs get full 5 scans/day resolution for
+    the entire span, unconditionally."""
+    conn = store._conn
+    conn.execute("SET TimeZone='UTC'")
+    scans_per_day = 5
+    hot_days = DEFAULT_KEEP_DAYS
+    isin_count = _DEFAULT_SCALE_ISIN_COUNT
+
+    n_hot = hot_days * scans_per_day * isin_count
+    conn.execute(
+        f"""
+        INSERT INTO product_snapshots ({_SNAPSHOT_COLUMNS})
+        SELECT
+            'DE000NL' || lpad((i % {isin_count})::VARCHAR, 6, '0'),
+            'WKN' || (i % {isin_count})::VARCHAR, 'TestBank', 'stuttgart',
+            'DAX', 'DAX', 'LONG', 'TURBO_OPEN_END',
+            18000.0 + (i % 97) * 0.5, 18000.0, 0.01, 'EUR', 'EUR',
+            false, true, NULL, NULL, 4.80, 4.86, 1000.0, 1000.0, ts, true,
+            false, false, '09:00-22:00', 120, 18500.0, ts, 0.035,
+            md5(i::VARCHAR), ts, ts, ts, ts, 'test', '1', '1', false, 0.95
+        FROM (
+            SELECT i, ?::TIMESTAMPTZ
+                - (((i // {isin_count}) // {scans_per_day}) || ' days')::INTERVAL
+                - ((((i // {isin_count}) % {scans_per_day}) * 3) || ' hours')::INTERVAL AS ts
+            FROM range({n_hot}) t(i)
+        )
+        """,
+        [now],
+    )
+
+    n_cold_days = _DEFAULT_SCALE_COLD_DAYS - hot_days
+    n_cold = n_cold_days * isin_count
+    conn.execute(
+        f"""
+        INSERT INTO product_snapshots ({_SNAPSHOT_COLUMNS})
+        SELECT
+            'DE000NL' || lpad((i % {isin_count})::VARCHAR, 6, '0'),
+            'WKN' || (i % {isin_count})::VARCHAR, 'TestBank', 'stuttgart',
+            'DAX', 'DAX', 'LONG', 'TURBO_OPEN_END',
+            18000.0 + (i % 97) * 0.5, 18000.0, 0.01, 'EUR', 'EUR',
+            false, true, NULL, NULL, 4.80, 4.86, 1000.0, 1000.0, ts, true,
+            false, false, '09:00-22:00', 120, 18500.0, ts, 0.035,
+            md5(i::VARCHAR || '-cold'), ts, ts, ts, ts, 'test', '1', '1', false, 0.95
+        FROM (
+            SELECT i, ?::TIMESTAMPTZ
+                - (({hot_days} + (i // {isin_count})) || ' days')::INTERVAL
+                - '2 hours'::INTERVAL AS ts
+            FROM range({n_cold}) t(i)
+        )
+        """,
+        [now],
+    )
+
+    n_ledger = _DEFAULT_SCALE_COLD_DAYS * scans_per_day * _DEFAULT_SCALE_LEDGER_TOTAL
+    conn.execute(
+        f"""
+        INSERT INTO product_snapshots ({_SNAPSHOT_COLUMNS})
+        SELECT
+            'DE000LG' || lpad((i % {_DEFAULT_SCALE_LEDGER_TOTAL})::VARCHAR, 6, '0'),
+            'WKNLG' || (i % {_DEFAULT_SCALE_LEDGER_TOTAL})::VARCHAR, 'TestBank',
+            'stuttgart', 'DAX', 'DAX', 'LONG', 'TURBO_OPEN_END',
+            18000.0, 18000.0, 0.01, 'EUR', 'EUR', false, true, NULL, NULL,
+            4.80, 4.86, 1000.0, 1000.0, ts, true, false, false,
+            '09:00-22:00', 120, 18500.0, ts, 0.035,
+            md5(i::VARCHAR || '-ledger'), ts, ts, ts, ts, 'test', '1', '1', false, 0.95
+        FROM (
+            SELECT i, ?::TIMESTAMPTZ
+                - (((i // {_DEFAULT_SCALE_LEDGER_TOTAL}) // {scans_per_day}) || ' days')::INTERVAL
+                - ((((i // {_DEFAULT_SCALE_LEDGER_TOTAL}) % {scans_per_day}) * 3)
+                    || ' hours')::INTERVAL AS ts
+            FROM range({n_ledger}) t(i)
+        )
+        """,
+        [now],
+    )
+
+    conn.execute("DROP TABLE IF EXISTS forward_ledger")
+    conn.execute(
+        "CREATE TABLE forward_ledger (selected_isin VARCHAR NOT NULL, "
+        "alternatives VARCHAR NOT NULL)"
+    )
+    alt_only = [
+        f"DE000LG{str(i).zfill(6)}"
+        for i in range(_DEFAULT_SCALE_LEDGER_SELECTED, _DEFAULT_SCALE_LEDGER_TOTAL)
+    ]
+    for i in range(_DEFAULT_SCALE_LEDGER_SELECTED):
+        conn.execute(
+            "INSERT INTO forward_ledger (selected_isin, alternatives) VALUES (?, ?)",
+            [f"DE000LG{str(i).zfill(6)}", json.dumps(alt_only)],
+        )
+
+
+def test_defaults_compact_realistically_and_preserve_ledger_and_financing_history(
+    store: Store,
+) -> None:
+    """Encodes the measurement behind DEFAULT_KEEP_DAYS=5/
+    DEFAULT_HARD_DELETE_AFTER_DAYS=90 (see module docstring): at a
+    realistic multi-hundred-day scale with the current *defaults* (no
+    explicit keep_days/hard_delete_after_days override), thinning and real
+    hard deletion both actually happen, no ledger-protected ISIN loses a
+    single row, and financing-level history for ordinary ISINs never drops
+    below 2 consecutive calendar days -- the exact bar
+    `pricing/financing.py`'s spread inference needs."""
+    now = datetime(2026, 9, 14, 20, 0, tzinfo=UTC)
+    _seed_default_scale_database(store, now=now)
+
+    rows_before = store._conn.execute("SELECT count(*) FROM product_snapshots").fetchone()[0]
+
+    report = compact_product_snapshots(store, now=now)  # defaults only
+
+    assert report.keep_days == DEFAULT_KEEP_DAYS
+    assert report.hard_delete_after_days == DEFAULT_HARD_DELETE_AFTER_DAYS
+    assert report.rows_before == rows_before
+    # Both rules actually bite at this scale (not a no-op).
+    assert report.rows_removed > 0
+    assert report.rows_hard_deleted > 0
+    assert report.rows_after < report.rows_before
+
+    # Ledger ISINs: every one of their rows across the *entire* span
+    # survives untouched, however old.
+    ledger_counts = dict(
+        store._conn.execute(
+            "SELECT isin, count(*) FROM product_snapshots WHERE isin LIKE 'DE000LG%' GROUP BY isin"
+        ).fetchall()
+    )
+    expected_per_ledger_isin = _DEFAULT_SCALE_COLD_DAYS * 5
+    assert len(ledger_counts) == _DEFAULT_SCALE_LEDGER_TOTAL
+    assert all(c == expected_per_ledger_isin for c in ledger_counts.values())
+
+    # Ordinary ISINs: financing_level_history still has >= 2 consecutive
+    # calendar days -- sampled across the ISIN range, not just isin 0.
+    sample_isins = [
+        f"DE000NL{str(i).zfill(6)}"
+        for i in (0, _DEFAULT_SCALE_ISIN_COUNT // 2, _DEFAULT_SCALE_ISIN_COUNT - 1)
+    ]
+    for isin in sample_isins:
+        history_days = sorted({ts.date() for ts, _ in store.financing_level_history(isin)})
+        assert len(history_days) >= 2, f"{isin}: only {len(history_days)} day(s) of history"
+        assert any(
+            (history_days[i + 1] - history_days[i]).days == 1 for i in range(len(history_days) - 1)
+        ), f"{isin}: no 2 consecutive calendar days in {history_days}"

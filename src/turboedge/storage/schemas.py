@@ -325,6 +325,17 @@ class CandidateEvaluation(BaseModel):
     integrity_passed: bool
     # Set by the EV pipeline when the path model is available; required by the ACTIONABLE gate
     lcb_ev: float | None = None
+    # Where the financing spread used for this candidate's cost/EV
+    # calculations came from: "realized_history" (measured from the
+    # product's own financing-level history), "issuer_funding_rate" (an
+    # issuer-published rate), or "financing_spread_default" (config
+    # fallback, no better source available). Metadata about pricing
+    # provenance, not a reason a candidate was gated one way or another --
+    # kept as its own field (not folded into `reasons`) so it never dilutes
+    # the actual gate/reject reasons for a candidate (2026-09-14
+    # measurement session: this string was appearing identically on every
+    # single WATCH candidate, drowning out the reasons that actually vary).
+    financing_spread_source: str | None = None
     # "Cost per exposure (h)": total round-trip cost over the scan horizon
     # (spread + gap premium + financing + max(issuer margin, 0)), as a %
     # of ask, divided by leverage -- i.e. re-expressed as a % of

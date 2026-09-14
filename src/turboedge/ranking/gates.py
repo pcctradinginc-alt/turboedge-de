@@ -151,11 +151,11 @@ def evaluate_gates(inp: GateInput, th: GateThresholds) -> tuple[Category, list[s
 
     watch_reasons: list[str] = []
     if inp.lcb_ev is None:
-        watch_reasons.append("lcb_ev_unavailable_phase_lt_4")
+        watch_reasons.append("lcb_ev_not_evaluated")
     elif not (inp.lcb_ev > 0):
         watch_reasons.append("lcb_ev_not_positive")
     if inp.p_ko is None:
-        watch_reasons.append("p_ko_unavailable_phase_lt_4")
+        watch_reasons.append("p_ko_not_evaluated")
     if inp.cluster_risk_pass is not True:
         watch_reasons.append("cluster_risk_not_confirmed")
     if not watch_reasons:

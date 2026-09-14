@@ -156,13 +156,13 @@ def test_reject_barrier_too_close() -> None:
 def test_watch_when_lcb_ev_missing() -> None:
     category, reasons = evaluate_gates(_base_input(), _THRESHOLDS)
     assert category == Category.WATCH
-    assert "lcb_ev_unavailable_phase_lt_4" in reasons
+    assert "lcb_ev_not_evaluated" in reasons
 
 
 def test_watch_when_lcb_ev_present_but_other_actionable_inputs_missing() -> None:
     category, reasons = evaluate_gates(_base_input(lcb_ev=1.5), _THRESHOLDS)
     assert category == Category.WATCH
-    assert "p_ko_unavailable_phase_lt_4" in reasons
+    assert "p_ko_not_evaluated" in reasons
     assert "cluster_risk_not_confirmed" in reasons
 
 

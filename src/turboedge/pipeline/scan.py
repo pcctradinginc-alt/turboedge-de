@@ -209,7 +209,7 @@ class ScanResult:
     health: list[SourceHealthRecord]
     notification: SendResult | None
     # -- Contract v3 integration wave: EV pipeline outcome (empty/zero when
-    # `run_scan(..., rng=None)`, i.e. the EV step never ran -- see run_scan).
+    # `run_scan(..., run_ev=False)`, i.e. the EV step never ran -- see run_scan).
     ledger_entries_written: int = 0
     forecasts_written: int = 0
     actionable_notifications: list[SendResult] = field(default_factory=list)
@@ -950,7 +950,6 @@ def _process_products(
         )
         category, gate_reasons = evaluate_gates(gate_input, thresholds)
         reasons = list(gate_reasons)
-        reasons.append(f"financing_spread_source:{p.financing_spread_source}")
         if (
             signal is not None
             and signal.direction_hint is not None
@@ -998,6 +997,7 @@ def _process_products(
             integrity_passed=p.integrity.passed,
             lcb_ev=None,
             cost_rank_score=cost_rank_score,
+            financing_spread_source=p.financing_spread_source,
         )
 
     return _sort_candidates(list(finalized.values()), signal), priced
@@ -1103,11 +1103,10 @@ def _maybe_send_email(
 
 # --------------------------------------------------------------------------
 # EV pipeline (Contract v3 Abschnitt B): forecast -> paths -> EV -> gates ->
-# ledger + shadow sample -> ACTIONABLE mail. Only runs when the caller passes
-# an ``rng`` to ``run_scan`` (see that function's docstring) -- with
-# ``rng=None`` (the default, and every pre-existing ``run_scan`` caller/test)
-# this step is skipped entirely and behavior is byte-for-byte unchanged from
-# the WATCH-only milestone.
+# ledger + shadow sample -> ACTIONABLE mail. Runs by default (``run_scan``'s
+# ``run_ev=True`` default -- see that function's docstring); only skipped
+# when a caller explicitly passes ``run_ev=False`` (test-only, to exercise
+# the hard gates in isolation from this slower, stochastic layer).
 # --------------------------------------------------------------------------
 
 
@@ -1352,29 +1351,43 @@ def _fit_forecast_ensemble(
 _NOT_EVALUATED_PREFILTER_REASON = "not_evaluated_prefilter"
 
 
+_STALE_PRE_EV_REASONS = frozenset(
+    {"lcb_ev_not_evaluated", "p_ko_not_evaluated", "cluster_risk_not_confirmed"}
+)
+
+
 def _annotate_not_evaluated(
     candidates: Sequence[CandidateEvaluation],
     priced: dict[str, _PricedProduct],
-    ev_pool_isins: set[str],
+    evaluated_isins: set[str],
 ) -> list[CandidateEvaluation]:
-    """Mark WATCH candidates that were never simulated this run (Befund 4).
+    """Mark WATCH candidates that were never simulated this run (Befund 4,
+    2026-09-13; corrected against a live measurement in Befund 2, 2026-09-14
+    -- see :func:`_run_ev_pipeline`'s call sites for why ``evaluated_isins``
+    must be the actual simulation outcome, not the pre-simulation selection).
 
     A candidate is annotated when it already has a valid priced quote
     (``isin in priced``, i.e. every pre-EV gate passed) and category WATCH,
-    but its ISIN was not selected into ``ev_pool_isins`` by
-    :func:`_select_ev_pool`'s bucket-capacity cap -- "outside the
-    preselection", never simulated, not "actively rejected". The category is
-    left exactly as it already was (WATCH is the honest category here; it is
-    never downgraded to REJECT for a reason that isn't a real gate failure)
-    -- only the reasons gain :data:`_NOT_EVALUATED_PREFILTER_REASON` so this
-    is visible/queryable rather than indistinguishable from a candidate whose
-    forecast simply hasn't run yet for an unrelated reason.
+    but its ISIN is not in ``evaluated_isins`` -- :func:`_select_ev_pool`'s
+    bucket-capacity cap excluded it, or it was selected but never produced a
+    usable evaluation (missing barrier/financing_level, or a fair-value
+    ``ValueError``) -- "never simulated", not "actively rejected". The
+    category is left exactly as it already was (WATCH is the honest
+    category here; it is never downgraded to REJECT for a reason that isn't
+    a real gate failure). Its placeholder pre-EV reasons
+    (:data:`_STALE_PRE_EV_REASONS` -- true-but-vague at the point
+    ``evaluate_gates`` first ran, before this run's EV pipeline had decided
+    which candidates it would even attempt) are replaced, not appended to,
+    with the single specific :data:`_NOT_EVALUATED_PREFILTER_REASON` -- so
+    this is visible/queryable rather than duplicating stale placeholder text
+    alongside it.
     """
     annotated: list[CandidateEvaluation] = []
     for c in candidates:
-        if c.category == Category.WATCH and c.isin in priced and c.isin not in ev_pool_isins:
+        if c.category == Category.WATCH and c.isin in priced and c.isin not in evaluated_isins:
+            kept = [r for r in c.reasons if r not in _STALE_PRE_EV_REASONS]
             annotated.append(
-                c.model_copy(update={"reasons": [*c.reasons, _NOT_EVALUATED_PREFILTER_REASON]})
+                c.model_copy(update={"reasons": [*kept, _NOT_EVALUATED_PREFILTER_REASON]})
             )
         else:
             annotated.append(c)
@@ -1420,27 +1433,33 @@ def _run_ev_pipeline(
     )
     ev_pool_isins = prefiltered_isins | shadow_isins
 
-    # Befund 4 (2026-09-13 measurement session): a candidate that already
-    # passed every pre-EV gate (category WATCH, a valid priced quote) but
-    # was excluded by the bucket-capacity prefilter above was never actually
-    # simulated this run -- it must not be indistinguishable from a product
-    # that was genuinely rejected (stale, bid_only, leverage out of range,
-    # barrier too close). Its category stays the honest WATCH it already
-    # has; only the reason gains an explicit marker so this is visible/
-    # queryable rather than looking like a silently-abandoned candidate.
-    candidates = _annotate_not_evaluated(candidates, priced, ev_pool_isins)
-
-    empty_result = EvPipelineResult(
-        candidates=list(candidates),
-        ledger_entries=[],
-        forecast_records=[],
-        new_cluster_positions=list(cluster_open_positions),
-        newly_actionable=[],
-    )
+    # Befund 4 (2026-09-13 measurement session) / Befund 2 (2026-09-14 live
+    # measurement follow-up): a candidate that already passed every pre-EV
+    # gate (category WATCH, a valid priced quote) but was never actually
+    # simulated this run -- whether excluded by the bucket-capacity
+    # prefilter above, or selected into `ev_pool_isins` but dropped later
+    # (missing barrier/financing_level, or a fair-value ValueError, in the
+    # "build ProductTerms" loop below) -- must not be indistinguishable from
+    # a product that was genuinely rejected (stale, bid_only, leverage out
+    # of range, barrier too close). Its category stays the honest WATCH it
+    # already has. `_annotate_not_evaluated` is called once, right before
+    # each return below, against `evaluated_isins` -- the set this function
+    # actually produced a simulation result for (empty here, or
+    # `set(best_by_isin)` after the loop) -- rather than against
+    # `ev_pool_isins` eagerly: eager annotation against the *selection*
+    # rather than the *outcome* mis-labeled exactly the ProductTerms/
+    # fair-value dropouts above as if they had never even been attempted.
+    evaluated_isins: set[str] = set()
 
     if not ev_pool_isins:
         _add_warning(warnings, "ev_pool_empty")
-        return empty_result
+        return EvPipelineResult(
+            candidates=_annotate_not_evaluated(candidates, priced, evaluated_isins),
+            ledger_entries=[],
+            forecast_records=[],
+            new_cluster_positions=list(cluster_open_positions),
+            newly_actionable=[],
+        )
 
     ensemble_by_horizon, forecast_records, _weights = _fit_forecast_ensemble(
         store=store,
@@ -1452,7 +1471,13 @@ def _run_ev_pipeline(
         warnings=warnings,
     )
     if not ensemble_by_horizon:
-        return empty_result
+        return EvPipelineResult(
+            candidates=_annotate_not_evaluated(candidates, priced, evaluated_isins),
+            ledger_entries=[],
+            forecast_records=[],
+            new_cluster_positions=list(cluster_open_positions),
+            newly_actionable=[],
+        )
     forecast_records = [
         r_.model_copy(
             update={
@@ -1511,7 +1536,13 @@ def _run_ev_pipeline(
 
     if not terms_by_isin:
         _add_warning(warnings, "ev_pool_no_valid_product_terms")
-        return empty_result
+        return EvPipelineResult(
+            candidates=_annotate_not_evaluated(candidates, priced, evaluated_isins),
+            ledger_entries=[],
+            forecast_records=[],
+            new_cluster_positions=list(cluster_open_positions),
+            newly_actionable=[],
+        )
 
     spot0 = statistics.median(priced[isin].spot for isin in terms_by_isin)
     horizons = sorted(ensemble_by_horizon)
@@ -1550,6 +1581,8 @@ def _run_ev_pipeline(
         current = best_by_isin.get(ev.isin)
         if current is None or ev.score > current.score:
             best_by_isin[ev.isin] = ev
+    evaluated_isins = set(best_by_isin)
+    candidates = _annotate_not_evaluated(candidates, priced, evaluated_isins)
 
     thresholds = GateThresholds.from_risk_config(cfg.risk)
     updated_candidates: dict[str, CandidateEvaluation] = {c.isin: c for c in candidates}
@@ -1588,15 +1621,15 @@ def _run_ev_pipeline(
             cluster_risk_pass=cluster_pass,
         )
         category, gate_reasons = evaluate_gates(gate_input, thresholds)
-        # Non-gate diagnostic annotations from the pre-EV pass (financing
-        # spread source, counter-baseline-signal) stay relevant; the pre-EV
-        # *gate* reasons (e.g. "lcb_ev_unavailable_phase_lt_4") are now
-        # stale/misleading now that real lcb_ev/p_ko/cluster_risk_pass exist
-        # and are dropped in favor of the fresh `gate_reasons` below.
+        # Non-gate diagnostic annotations from the pre-EV pass
+        # (counter-baseline-signal; financing_spread_source is carried on
+        # `original`/`updated` as its own field, not a reason -- see
+        # CandidateEvaluation.financing_spread_source) stay relevant; the
+        # pre-EV *gate* reasons (e.g. "lcb_ev_not_evaluated") are now stale/
+        # misleading now that real lcb_ev/p_ko/cluster_risk_pass exist and
+        # are dropped in favor of the fresh `gate_reasons` below.
         carried_over = [
-            reason
-            for reason in original.reasons
-            if reason.startswith("financing_spread_source:") or reason == "counter_baseline_signal"
+            reason for reason in original.reasons if reason == "counter_baseline_signal"
         ]
         reasons = [
             *carried_over,
@@ -1803,7 +1836,8 @@ def _run_scan_body(
     prediction_time: datetime,
     config_hash_value: str,
     git_commit_value: str | None,
-    rng: np.random.Generator | None,
+    rng: np.random.Generator,
+    run_ev: bool,
     forecast_models: Sequence[ForecastModel] | None,
     cluster_id: str | None,
     cluster_open_positions: Sequence[OpenClusterPosition],
@@ -1943,16 +1977,20 @@ def _run_scan_body(
     )
 
     # 8.5) forecast -> paths -> EV -> gates -> ledger + shadow sample
-    # (Contract v3 Abschnitt B). Only runs when the caller supplied an `rng`
-    # (`run_scan(..., rng=...)`) -- with `rng=None` (the default) this whole
-    # step is skipped and every candidate keeps its pre-EV WATCH/REJECT/
-    # DATA_QUALITY category unchanged (byte-for-byte identical to the
-    # WATCH-only milestone).
+    # (Contract v3 Abschnitt B). This is the default, production pipeline --
+    # `run_ev` defaults to True in `run_scan()`, so both `turboedge scan`
+    # and `turboedge scan-all` run it identically (Befund 1, 2026-09-14
+    # measurement session: they used to diverge, `scan` silently staying on
+    # the old WATCH-only Phase-1 behavior). `run_ev=False` is an explicit,
+    # internal opt-out used only by tests that want to exercise the hard
+    # gates (bid_only/stale/leverage/barrier/DATA_QUALITY) in isolation from
+    # the slower, stochastic forecast/path-simulation layer -- no production
+    # caller ever passes it.
     ledger_entries_written = 0
     forecasts_written = 0
     actionable_notifications: list[SendResult] = []
     new_cluster_positions: list[OpenClusterPosition] = list(cluster_open_positions)
-    if rng is not None and usable_bars:
+    if run_ev and usable_bars:
         models = list(forecast_models) if forecast_models is not None else default_forecast_models()
         effective_cluster_id = cluster_id if cluster_id is not None else f"single_{underlying_id}"
         ev_result = _run_ev_pipeline(
@@ -1991,7 +2029,7 @@ def _run_scan_body(
             warnings=warnings,
             clock=clock,
         )
-    elif rng is not None:
+    elif run_ev:
         _add_warning(warnings, "ev_skipped_no_underlying_bars")
 
     counts: dict[Category, int] = dict.fromkeys(Category, 0)
@@ -2044,6 +2082,7 @@ def run_scan(
     run_id: str,
     clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     rng: np.random.Generator | None = None,
+    run_ev: bool = True,
     forecast_models: Sequence[ForecastModel] | None = None,
     cluster_id: str | None = None,
     cluster_open_positions: Sequence[OpenClusterPosition] = (),
@@ -2056,15 +2095,25 @@ def run_scan(
     exception is re-raised after the run row is closed out, so callers (e.g.
     the CLI) can still map it to a non-zero exit code.
 
-    ``rng`` (Contract v3 Abschnitt B integration wave): when ``None`` (the
-    default), the forecast/EV/ledger/ACTIONABLE-mail step (§34) never runs
-    -- every candidate's category comes purely from the WATCH-only cost/
-    integrity gates, exactly as in the pre-integration milestone (every
-    pre-existing caller of this function, including ``turboedge scan``,
-    keeps this behavior unchanged). Passing a seeded
-    ``numpy.random.Generator`` (CLAUDE.md rule 16: never a bare unseeded
-    source) enables the full pipeline -- this is what ``turboedge scan-all``
-    (the production entry point ``pipeline.yml`` schedules) always does.
+    ``run_ev`` (Contract v3 Abschnitt B integration wave) gates the
+    forecast/EV/ledger/ACTIONABLE-mail step (§34): ``True`` (the default)
+    runs it, exactly like ``turboedge scan-all`` (the production entry point
+    ``pipeline.yml`` schedules) always has. Before 2026-09-14 this was
+    instead keyed off ``rng is not None``, which left ``rng=None`` (the
+    default, and every pre-existing caller -- including ``turboedge scan``)
+    silently skipping the EV step and reporting every candidate's category
+    from the WATCH-only cost/integrity gates alone (Befund 1, 2026-09-14
+    measurement session: ``turboedge scan`` and ``turboedge scan-all``
+    measurably disagreed on the same underlying because of it). ``rng`` is
+    now purely about *which* random stream drives the path simulation, not
+    *whether* it runs: pass ``None`` (the default) to auto-derive a seeded
+    ``numpy.random.Generator`` from ``cfg.simulation.seed`` (CLAUDE.md rule
+    16: never a bare unseeded source) -- what every CLI caller does -- or an
+    explicit seeded generator (``scan-all``'s multi-underlying caller does
+    this so one random stream threads across consecutive ``run_scan``
+    calls; see ``pipeline/scan_all.py``). Pass ``run_ev=False`` only to
+    exercise the hard gates in isolation from the slower, stochastic
+    forecast/path layer (test-only -- no production caller does this).
     ``forecast_models`` defaults to
     :func:`models.forecast.build_default_models` plus any available W9
     challenger models; ``cluster_id``/``cluster_open_positions`` let a
@@ -2075,6 +2124,7 @@ def run_scan(
     prediction_time = clock()
     hash_value = config_hash(cfg)
     commit = git_commit()
+    effective_rng = rng if rng is not None else np.random.default_rng(cfg.simulation.seed)
 
     store.start_run(
         run_id,
@@ -2100,7 +2150,8 @@ def run_scan(
             prediction_time=prediction_time,
             config_hash_value=hash_value,
             git_commit_value=commit,
-            rng=rng,
+            rng=effective_rng,
+            run_ev=run_ev,
             forecast_models=forecast_models,
             cluster_id=cluster_id,
             cluster_open_positions=cluster_open_positions,

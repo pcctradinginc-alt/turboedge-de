@@ -1,8 +1,16 @@
 """Tests for pipeline/scan.py. No network; all adapters are in-memory fakes.
 
+Every ``run_scan`` call here goes through ``_base_kwargs``, which passes
+``run_ev=False`` -- these tests exercise the hard cost/integrity gates
+(``ranking/gates.py``) in isolation from the slower, stochastic forecast/
+path-simulation layer. The EV-enabled pipeline (forecast -> paths -> EV ->
+ACTIONABLE, run by default in production -- see ``pipeline/scan.py``'s
+``run_scan`` docstring) has its own tests and fixtures in test_scan_ev.py.
+
 Covers the mandatory scenarios from the build contract:
 (a) the signal is persisted before any product source is queried
-(b) ACTIONABLE is never assigned
+(b) ACTIONABLE is never assigned (guaranteed here by ``run_ev=False``; see
+    test_scan_ev.py for ACTIONABLE reachability with the EV pipeline on)
 (c) a ratio-factor-100 error is downgraded to DATA_QUALITY
 (d) bid_only -> REJECT; a stale quote -> REJECT ("quote_stale"); a missing
     ask -> REJECT ("no_ask_quote", ask-dependent pricing steps skipped); a
@@ -64,6 +72,13 @@ def _base_kwargs(
         notifier=notifier,
         run_id=run_id or new_run_id(),
         clock=clock or _clock(),
+        # This test module exercises the hard cost/integrity gates in
+        # isolation (see its module docstring) -- `run_ev=False` skips the
+        # slower, stochastic forecast/path-simulation layer (covered
+        # separately, with its own fixtures, in test_scan_ev.py) so these
+        # tests stay fast and their categories/reasons come purely from
+        # `ranking/gates.py`.
+        run_ev=False,
     )
 
 
@@ -624,7 +639,7 @@ def test_second_scan_later_day_uses_realized_financing_spread(
         options=ScanOptions(underlying_id="DAX"),
     )
     candidate_day1 = next(c for c in result_day1.candidates if c.isin == "DE000ROLL001")
-    assert "financing_spread_source:financing_spread_default" in candidate_day1.reasons
+    assert candidate_day1.financing_spread_source == "financing_spread_default"
     assert candidate_day1.realized_financing_spread == pytest.approx(
         cfg.risk.default_financing_spread
     )
@@ -651,8 +666,7 @@ def test_second_scan_later_day_uses_realized_financing_spread(
         options=ScanOptions(underlying_id="DAX"),
     )
     candidate_day2 = next(c for c in result_day2.candidates if c.isin == "DE000ROLL001")
-    assert "financing_spread_source:financing_spread_default" not in candidate_day2.reasons
-    assert "financing_spread_source:realized_history" in candidate_day2.reasons
+    assert candidate_day2.financing_spread_source == "realized_history"
     assert candidate_day2.realized_financing_spread == pytest.approx(true_spread, abs=1e-4)
 
 

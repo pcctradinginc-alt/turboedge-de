@@ -1,9 +1,13 @@
 """Tests for the Contract v3 EV pipeline extension in ``pipeline/scan.py``.
 
-Every test here passes ``rng=None`` (the default) to prove nothing changes
-for pre-existing callers, or an explicit seeded ``rng`` to exercise the new
-forecast -> paths -> EV -> gates -> ledger (+ ACTIONABLE mail) pipeline. No
-network; all adapters are in-memory fakes (see ``tests/pipeline/conftest.py``).
+The EV pipeline (forecast -> paths -> EV -> gates -> ledger + ACTIONABLE
+mail) runs by default (``run_scan(..., run_ev=True)``, matching production
+-- both ``turboedge scan`` and ``turboedge scan-all`` since Befund 1,
+2026-09-14). Tests here pass an explicit seeded ``rng`` to control which
+random stream drives the path simulation, or ``run_ev=False`` to prove the
+one remaining, test-only escape hatch (isolating the hard gates from this
+slower, stochastic layer) still works. No network; all adapters are
+in-memory fakes (see ``tests/pipeline/conftest.py``).
 """
 
 from __future__ import annotations
@@ -39,6 +43,7 @@ def _base_kwargs(
     estr_adapter: Any,
     notifier: Any | None = None,
     rng: np.random.Generator | None = None,
+    run_ev: bool = True,
 ) -> dict[str, Any]:
     return dict(
         cfg=cfg,
@@ -52,6 +57,7 @@ def _base_kwargs(
         run_id=new_run_id(),
         clock=_clock(),
         rng=rng,
+        run_ev=run_ev,
     )
 
 
@@ -84,7 +90,7 @@ def strong_uptrend_bars(bars_factory: Callable[..., Any]) -> Any:
     return bars_factory("DAX", count=400, daily_drift=0.0025, noise_std=0.0015, seed=7)
 
 
-def test_run_scan_without_rng_never_runs_ev_pipeline(
+def test_run_scan_with_run_ev_false_never_runs_ev_pipeline(
     cfg: TurboEdgeConfig,
     store: Store,
     tmp_path: Path,
@@ -94,9 +100,13 @@ def test_run_scan_without_rng_never_runs_ev_pipeline(
     dax_product_factory: Callable[..., ProductSnapshot],
     strong_uptrend_bars: Any,
 ) -> None:
-    """``rng=None`` (the default) must never write forecasts/ledger entries,
-    regardless of how favorable the candidate is -- full backward
-    compatibility with every pre-existing ``run_scan`` caller."""
+    """``run_ev=False`` must never write forecasts/ledger entries, regardless
+    of how favorable the candidate is -- the one remaining, explicit,
+    test-only escape hatch from the EV pipeline (Befund 1, 2026-09-14: this
+    used to be ``rng=None``, which was also every pre-existing caller's
+    silent default -- including ``turboedge scan``'s, which is exactly the
+    bug that measurement session found and this test now guards against
+    regressing back to)."""
     adapter = make_product_adapter(
         "source_a", products=[_cheap_favorable_long(dax_product_factory)]
     )
@@ -110,7 +120,7 @@ def test_run_scan_without_rng_never_runs_ev_pipeline(
             product_adapters=[adapter],
             price_adapter=price_adapter,
             estr_adapter=make_estr_adapter(),
-            rng=None,
+            run_ev=False,
         ),
         options=ScanOptions(underlying_id="DAX"),
     )
@@ -120,6 +130,48 @@ def test_run_scan_without_rng_never_runs_ev_pipeline(
     assert store.table_counts()["forecasts"] == 0
     assert store.table_counts()["forward_ledger"] == 0
     assert all(c.category != Category.ACTIONABLE for c in result.candidates)
+
+
+def test_run_scan_default_auto_derives_rng_and_runs_ev_pipeline(
+    cfg: TurboEdgeConfig,
+    store: Store,
+    tmp_path: Path,
+    make_product_adapter: Callable[..., Any],
+    make_price_adapter: Callable[..., Any],
+    make_estr_adapter: Callable[..., Any],
+    dax_product_factory: Callable[..., ProductSnapshot],
+    strong_uptrend_bars: Any,
+) -> None:
+    """Befund 1 (2026-09-14 measurement session): with neither ``rng`` nor
+    ``run_ev`` passed -- i.e. exactly what ``turboedge scan``'s CLI command
+    does -- ``run_scan`` must still auto-derive a seeded generator from
+    ``cfg.simulation.seed`` and run the full EV pipeline, identically to how
+    ``turboedge scan-all`` has always behaved. This is the unification fix:
+    before it, this call silently produced the old WATCH-only Phase-1
+    result instead."""
+    adapter = make_product_adapter(
+        "source_a", products=[_cheap_favorable_long(dax_product_factory)]
+    )
+    price_adapter = make_price_adapter(bars_by_underlying={"DAX": strong_uptrend_bars})
+
+    result = run_scan(
+        **_base_kwargs(
+            cfg=cfg,
+            store=store,
+            tmp_path=tmp_path,
+            product_adapters=[adapter],
+            price_adapter=price_adapter,
+            estr_adapter=make_estr_adapter(),
+        ),
+        options=ScanOptions(underlying_id="DAX"),
+    )
+
+    assert result.forecasts_written > 0
+    assert store.table_counts()["forecasts"] > 0
+    assert "ev_pool_empty" not in result.warnings
+    assert "forecast_unavailable_insufficient_history" not in result.warnings
+    candidate = next(c for c in result.candidates if c.isin == "DE000FAVLNG1")
+    assert any(r.startswith("ev_horizon=") for r in candidate.reasons)
 
 
 def test_run_scan_with_rng_writes_forecasts_and_ledger_and_can_reach_actionable(

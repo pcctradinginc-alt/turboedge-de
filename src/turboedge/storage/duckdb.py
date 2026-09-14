@@ -209,6 +209,7 @@ _DDL_STATEMENTS: tuple[str, ...] = (
         integrity_passed BOOLEAN NOT NULL,
         lcb_ev DOUBLE,
         cost_rank_score DOUBLE,
+        financing_spread_source VARCHAR,
         PRIMARY KEY (run_id, candidate_id)
     )
     """,
@@ -1938,6 +1939,7 @@ _CANDIDATE_COLUMNS: tuple[str, ...] = (
     "integrity_passed",
     "lcb_ev",
     "cost_rank_score",
+    "financing_spread_source",
 )
 
 
@@ -1967,6 +1969,7 @@ def _candidate_row(c: CandidateEvaluation) -> tuple[Any, ...]:
         c.integrity_passed,
         c.lcb_ev,
         c.cost_rank_score,
+        c.financing_spread_source,
     )
 
 
@@ -1997,6 +2000,7 @@ def _row_to_candidate(row: tuple[Any, ...]) -> CandidateEvaluation:
         integrity_passed=row[21],
         lcb_ev=row[22],
         cost_rank_score=row[23],
+        financing_spread_source=row[24],
     )
 
 

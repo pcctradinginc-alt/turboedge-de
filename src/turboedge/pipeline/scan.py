@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import hashlib
 import statistics
+from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -224,6 +225,75 @@ class ScanResult:
 def _add_warning(warnings: list[str], message: str) -> None:
     if message not in warnings:
         warnings.append(message)
+
+
+def _quote_age_stats(ages: Sequence[float]) -> dict[str, float | int]:
+    """min/median/p90/max (seconds) + sample size for one issuer's quote ages.
+
+    Linear-interpolated p90 (``numpy.percentile`` default), consistent
+    regardless of sample size -- this is a diagnostic distribution summary,
+    not a gate input, so exact interpolation convention does not matter.
+    """
+    arr = np.asarray(ages, dtype=np.float64)
+    return {
+        "n": int(arr.size),
+        "min_s": round(float(np.min(arr)), 1),
+        "median_s": round(float(np.median(arr)), 1),
+        "p90_s": round(float(np.percentile(arr, 90)), 1),
+        "max_s": round(float(np.max(arr)), 1),
+    }
+
+
+def _log_scan_diagnostics(
+    *,
+    underlying_id: str,
+    products: Sequence[ProductSnapshot],
+    candidates: Sequence[CandidateEvaluation],
+    evaluation_time: datetime,
+    fetch_duration_s: float,
+) -> None:
+    """Aggregated, redaction-safe diagnostics for comparing environments
+    (e.g. local vs. CI) that a `TURBOEDGE_PUBLIC_LOGS=1` run still shows in
+    full: per-issuer quote-age distribution (seconds, from each product's own
+    `quote_timestamp` to this scan's `evaluation_time`) and REJECT reason
+    counts. Deliberately carries no ISIN/WKN/price -- only counts and
+    durations -- so nothing here is masked by `redact_public_fields`
+    (turboedge.logging), unlike the per-candidate detail in the Gmail report.
+
+    Added 2026-09-14 (CI-vs-local WATCH=0 investigation): the public CI log
+    previously carried no visibility into *why* every candidate rejected --
+    only the final ACTIONABLE/WATCH/REJECT/DATA_QUALITY counts
+    (`reports/summary.json`). This makes the actual cause (stale quotes?
+    which reject reason? how old, from which source?) measurable from the
+    log alone, without re-running locally or guessing.
+    """
+    ages_by_issuer: dict[str, list[float]] = {}
+    missing_timestamp = 0
+    for p in products:
+        if p.quote_timestamp is None:
+            missing_timestamp += 1
+            continue
+        ages_by_issuer.setdefault(p.issuer, []).append(
+            quote_age_seconds(p.quote_timestamp, evaluation_time)
+        )
+    quote_age_stats_by_issuer = {
+        issuer: _quote_age_stats(ages) for issuer, ages in sorted(ages_by_issuer.items())
+    }
+
+    reject_reason_counts: Counter[str] = Counter()
+    for c in candidates:
+        if c.category == Category.REJECT:
+            reject_reason_counts.update(c.reasons)
+
+    logger.info(
+        "scan_diagnostics",
+        underlying_id=underlying_id,
+        products_total=len(products),
+        products_missing_quote_timestamp=missing_timestamp,
+        fetch_duration_s=round(fetch_duration_s, 1),
+        quote_age_stats_by_issuer=quote_age_stats_by_issuer,
+        reject_reason_counts=dict(reject_reason_counts.most_common()),
+    )
 
 
 def _candidate_id(isin: str, underlying_id: str, direction: Direction, horizon_days: int) -> str:
@@ -1937,6 +2007,7 @@ def _run_scan_body(
         if usable_bars
         else None
     )
+    fetch_start = clock()
     universe_result: UniverseResult = run_universe(
         cfg,
         store,
@@ -1956,6 +2027,7 @@ def _run_scan_body(
 
     # 6+7) pricing + gates
     evaluation_time = clock()
+    fetch_duration_s = (evaluation_time - fetch_start).total_seconds()
     r = estr_adapter.get_estr()
     next_night_is_weekend = _is_friday_in_berlin(evaluation_time)
 
@@ -2035,6 +2107,14 @@ def _run_scan_body(
     counts: dict[Category, int] = dict.fromkeys(Category, 0)
     for candidate in candidates:
         counts[candidate.category] += 1
+
+    _log_scan_diagnostics(
+        underlying_id=underlying_id,
+        products=products,
+        candidates=candidates,
+        evaluation_time=evaluation_time,
+        fetch_duration_s=fetch_duration_s,
+    )
 
     # 8) persist candidates + optional scan-report email
     store.append_candidates(candidates)

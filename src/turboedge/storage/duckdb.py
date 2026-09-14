@@ -210,6 +210,8 @@ _DDL_STATEMENTS: tuple[str, ...] = (
         lcb_ev DOUBLE,
         cost_rank_score DOUBLE,
         financing_spread_source VARCHAR,
+        premium_over_fair DOUBLE,
+        premium_uncertainty_term DOUBLE,
         PRIMARY KEY (run_id, candidate_id)
     )
     """,
@@ -1940,6 +1942,8 @@ _CANDIDATE_COLUMNS: tuple[str, ...] = (
     "lcb_ev",
     "cost_rank_score",
     "financing_spread_source",
+    "premium_over_fair",
+    "premium_uncertainty_term",
 )
 
 
@@ -1970,6 +1974,8 @@ def _candidate_row(c: CandidateEvaluation) -> tuple[Any, ...]:
         c.lcb_ev,
         c.cost_rank_score,
         c.financing_spread_source,
+        c.premium_over_fair,
+        c.premium_uncertainty_term,
     )
 
 
@@ -2001,6 +2007,8 @@ def _row_to_candidate(row: tuple[Any, ...]) -> CandidateEvaluation:
         lcb_ev=row[22],
         cost_rank_score=row[23],
         financing_spread_source=row[24],
+        premium_over_fair=row[25],
+        premium_uncertainty_term=row[26],
     )
 
 

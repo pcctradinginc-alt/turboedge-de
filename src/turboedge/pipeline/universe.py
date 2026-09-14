@@ -14,7 +14,9 @@ per-run Parquet snapshot (CLAUDE.md rule 33).
 
 from __future__ import annotations
 
+import time
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -164,16 +166,66 @@ def _run_universe_body(
     source_errors: dict[str, str] = {}
     counts_by_source: dict[str, int] = {}
 
-    for adapter in adapters:
+    # Fetch every adapter CONCURRENTLY rather than one-after-another.
+    #
+    # This does not weaken the "politeness" rule (CLAUDE.md/Build Contract:
+    # <=1 request/s per host, never parallelized against the same host): each
+    # adapter owns its own `HttpClient` (`adapters.registry.build_http_client`,
+    # one instance per `configs/sources.yaml` entry) with its own per-host
+    # `_HostRateLimiter`, and BNP (derivate.bnpparibas.com), Citi
+    # (de.citifirst.com) and gettex (gettex.wsd.com) are three distinct hosts
+    # -- so within any one adapter, its own paginated requests stay exactly as
+    # serialized (>= `min_interval_s` apart) as before. Only the *previously
+    # accidental* serialization ACROSS adapters/hosts (the plain `for adapter
+    # in adapters:` loop below, before this change) is removed: nothing
+    # requires those independent per-host request streams to also wait on
+    # each other's wall-clock time.
+    #
+    # Measured impact (Build Contract freshness/duration review,
+    # 2026-09-14): before this change, a DAX scan's total fetch_duration_s
+    # (evaluation_time - fetch_start, `pipeline/scan.py`) was close to the
+    # SUM of each adapter's own fetch time (gettex's ~20-page pagination
+    # dominates at ~1.5s/page; BNP and Citi each add their own double-digit
+    # seconds on top) -- exactly the sequential-loop shape below. Running the
+    # (at most 3, all product-)adapters concurrently instead bounds
+    # fetch_duration_s by the SLOWEST single adapter rather than their sum,
+    # which is what actually determines how old the freshest possible
+    # candidate quote can be at evaluation time (`ranking/gates.py`'s
+    # "quote_age_at_decision" REJECT reason, `configs/risk.yaml`'s
+    # `max_quote_age_at_decision_s`).
+    per_adapter_duration_s: dict[str, float] = {}
+
+    def _fetch_one(adapter: ProductSourceAdapter) -> list[ProductSnapshot]:
+        started = time.monotonic()
         try:
-            products = adapter.fetch_products(underlying_ids, context=context)
-        except Exception as exc:
-            logger.error("universe_source_failed", source=adapter.name, error=str(exc))
-            source_errors[adapter.name] = str(exc)
-            continue
-        counts_by_source[adapter.name] = len(products)
-        per_source_snapshots.append(products)
-        logger.info("universe_source_ok", source=adapter.name, count=len(products))
+            return adapter.fetch_products(underlying_ids, context=context)
+        finally:
+            per_adapter_duration_s[adapter.name] = round(time.monotonic() - started, 1)
+
+    with ThreadPoolExecutor(max_workers=max(len(adapters), 1)) as pool:
+        future_by_adapter = {adapter: pool.submit(_fetch_one, adapter) for adapter in adapters}
+        # Iterate in the original, deterministic adapter order (not
+        # completion order) so logging/`source_errors`/`counts_by_source`
+        # stay reproducible run-to-run regardless of which host happened to
+        # answer first; `merge_snapshots` below is itself order-independent
+        # (freshest-quote-wins, see `universe/discover.py::_pick_winner`), so
+        # this ordering choice affects only log/diagnostic readability, never
+        # which product snapshot wins a conflict.
+        for adapter, future in future_by_adapter.items():
+            try:
+                products = future.result()
+            except Exception as exc:
+                logger.error("universe_source_failed", source=adapter.name, error=str(exc))
+                source_errors[adapter.name] = str(exc)
+                continue
+            counts_by_source[adapter.name] = len(products)
+            per_source_snapshots.append(products)
+            logger.info(
+                "universe_source_ok",
+                source=adapter.name,
+                count=len(products),
+                fetch_duration_s=per_adapter_duration_s.get(adapter.name),
+            )
 
     merge_result = merge_snapshots(per_source_snapshots)
 

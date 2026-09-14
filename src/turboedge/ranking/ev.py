@@ -512,6 +512,7 @@ def to_candidate_gate_input(
     cluster_risk_pass: bool,
     has_ask: bool = True,
     no_live_quote: bool = False,
+    source_quote_age_s: float | None = None,
 ) -> GateInput:
     """Build a ``ranking/gates.py`` :class:`GateInput` from one
     :class:`ProductHorizonEvaluation` plus the market/data-quality facts
@@ -544,6 +545,7 @@ def to_candidate_gate_input(
         cluster_risk_pass=cluster_risk_pass,
         has_ask=has_ask,
         no_live_quote=no_live_quote,
+        source_quote_age_s=source_quote_age_s,
     )
 
 

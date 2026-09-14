@@ -6,9 +6,82 @@
 # Maximum acceptable (ask - bid) / ask before a candidate is rejected.
 max_spread_pct: 0.03
 
-# Maximum acceptable age (seconds) of quote_timestamp before a quote is
-# considered stale.
-max_quote_age_s: 120
+# Two DISTINCT quote-freshness gates (Build Contract freshness/duration
+# review, 2026-09-14; see ranking/gates.py's GateThresholds docstring for
+# the full rationale). The single `max_quote_age_s: 120` this replaced
+# conflated two different questions and was measured to be actively broken
+# for the second one: in CI (workflow run 34883437354, commit 1fe080e, live
+# Xetra hours), DAX's own fetch took 227.1s end-to-end and NDX's 261.4s
+# (BNP ~11 paginated requests + gettex ~20 + Citi, all rate-limited to
+# <=1 req/1.5s/host and, before this session's parallelization fix in
+# pipeline/universe.py, run one adapter strictly after another) -- so
+# EVERY DAX product's decision-time age (quote_timestamp to evaluation_time,
+# set only after every source finished) had a measured MINIMUM of 171.5s,
+# already above the 120s cutoff -- no product could pass regardless of how
+# fresh the source's own data was. Result: 11,060 of 11,114 DAX candidates
+# and 7,059 of 10,566 NDX candidates REJECTed on quote staleness (NDX lower
+# only because leverage_out_of_range/barrier_distance_too_small pre-empt it
+# for more candidates), drowning out every other signal in
+# reject_reason_counts. Splitting the check removes that false coupling
+# entirely; the two thresholds below are each derived from the ONE
+# measurement that actually answers its own question, never from the
+# pipeline's own runtime, which only belongs on the decision-time side.
+#
+# Source-side data quality: is retrieved_at - quote_timestamp small, i.e.
+# did the ISSUER hand us a quote that was already fresh? This must be (and
+# is) measured from each product's OWN retrieval timestamp, never from
+# evaluation_time -- otherwise it silently re-measures the pipeline's own
+# runtime under a different name. Measured directly from
+# state/turboedge.duckdb's product_snapshots (live BNP+gettex+Citi DAX+NDX
+# scan, 2026-09-14, per-issuer age-at-retrieval = quote_timestamp vs. that
+# row's own retrieved_at, p90/max seconds): BNP Paribas 63/11,304;
+# UniCredit 172/673; HSBC 360/596; Goldman Sachs 425/2,149,029
+# (gettex-relayed market-maker quotes, all three issued through the same
+# gettex feed with no anti-bot throttling of their own -- the wide
+# issuer-to-issuer spread is each market maker's own update cadence, not
+# anything this pipeline controls); Citigroup 980/1,031 (Citi's feed is
+# explicitly closing-price/partial-coverage only, CLAUDE.md "Data sources"
+# -- structurally slower-cadence by design, not a pipeline defect). 900s
+# sits above every issuer's routine p90 (so BNP/gettex-relayed candidates
+# are essentially never rejected here purely for their normal per-source
+# cadence) while still well below the observed outlier tail (11,304s /
+# 2,149,029s) this gate exists to catch, and correctly flags roughly the
+# stalest half of Citi's closing-price rows as "source_quote_stale"
+# (accurate -- a closing price genuinely isn't a fresh live quote), while
+# still evaluating the fresher half on their own merits. Verified live
+# (2026-09-14 post-fix local run): the Goldman Sachs 25-day-old quote
+# (DE000GN0E3D8, source age 2,158,028s) and a BNP outlier (DE000BY6V0W5,
+# source age 9,695s) both still REJECT with "source_quote_stale" under this
+# threshold -- this gate is set to catch genuinely stale source data, not to
+# improve category counts by letting real staleness through.
+max_source_quote_age_s: 900
+
+# Trading relevance at decision time: is quote_timestamp still fresh at
+# evaluation_time, i.e. is the proposal actually based on a current price by
+# the time we act on it? MUST exceed this pipeline's own realistic
+# multi-source fetch duration (see universe.py's per-adapter fetch,
+# `pipeline/scan.py`'s `evaluation_time = clock()` right after that fetch
+# completes) -- a threshold below the fetch duration rejects the entire
+# universe systematically regardless of source data quality (the exact CI
+# failure mode measured above: fetch_duration_s 227.1s/261.4s > the old
+# 120s cutoff for EVERY candidate). Measured fetch_duration_s, same commit
+# lineage: pre-parallelization CI (run 34883437354) 227.1s DAX / 261.4s NDX
+# -- CI is consistently slower than local here (higher latency to the
+# German/US issuer hosts from GitHub's network than this session's local
+# connection), local pre-parallelization 81.0s DAX / 74.9s NDX. This
+# session's parallelization fix (pipeline/universe.py: concurrent
+# per-adapter fetch, one thread per host, since BNP/Citi/gettex are three
+# independent hosts and the >=1.5s/request politeness limit is already
+# enforced per-host, not globally -- never parallelized WITHIN one host's
+# own request stream) re-measured locally at 49.9s DAX / 57.4s NDX (~1.4-1.6x
+# faster, now bounded by the single slowest adapter -- BNP at 33-41s here --
+# instead of the sum of all three). 450s (7.5 minutes) is set with a >1.7x
+# safety margin over the WORST pre-fix CI figure (261.4s) measured so far,
+# i.e. it is safe even if CI's own network conditions happened to erase all
+# of the parallelization gain on a given day; the post-fix CI run this
+# threshold shipped alongside (see this session's report/CHANGELOG.md
+# entry) confirms the realized post-fix CI duration and margin.
+max_quote_age_at_decision_s: 450
 
 # Leverage band. Products outside this band are rejected outright.
 min_leverage: 2.0

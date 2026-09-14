@@ -254,20 +254,31 @@ def _log_scan_diagnostics(
 ) -> None:
     """Aggregated, redaction-safe diagnostics for comparing environments
     (e.g. local vs. CI) that a `TURBOEDGE_PUBLIC_LOGS=1` run still shows in
-    full: per-issuer quote-age distribution (seconds, from each product's own
-    `quote_timestamp` to this scan's `evaluation_time`) and REJECT reason
-    counts. Deliberately carries no ISIN/WKN/price -- only counts and
-    durations -- so nothing here is masked by `redact_public_fields`
-    (turboedge.logging), unlike the per-candidate detail in the Gmail report.
+    full: per-issuer quote-age distribution at TWO distinct freshness
+    definitions (Build Contract freshness/duration review, 2026-09-14) plus
+    REJECT reason counts. Deliberately carries no ISIN/WKN/price -- only
+    counts and durations -- so nothing here is masked by
+    `redact_public_fields` (turboedge.logging), unlike the per-candidate
+    detail in the Gmail report.
+
+    - `quote_age_stats_by_issuer`: decision-time age (`quote_timestamp` to
+      this scan's `evaluation_time`) -- gated by
+      `risk.max_quote_age_at_decision_s`, reason `quote_age_at_decision`.
+    - `source_quote_age_stats_by_issuer`: source-side age at retrieval
+      (`quote_timestamp` to each snapshot's own `retrieved_at`) -- gated by
+      `risk.max_source_quote_age_s`, reason `source_quote_stale`. See
+      `ranking/gates.py`'s `GateThresholds` docstring for why these are two
+      separate gates.
 
     Added 2026-09-14 (CI-vs-local WATCH=0 investigation): the public CI log
     previously carried no visibility into *why* every candidate rejected --
     only the final ACTIONABLE/WATCH/REJECT/DATA_QUALITY counts
     (`reports/summary.json`). This makes the actual cause (stale quotes?
-    which reject reason? how old, from which source?) measurable from the
-    log alone, without re-running locally or guessing.
+    which reject reason? how old, from which source, measured which way?)
+    measurable from the log alone, without re-running locally or guessing.
     """
     ages_by_issuer: dict[str, list[float]] = {}
+    source_ages_by_issuer: dict[str, list[float]] = {}
     missing_timestamp = 0
     for p in products:
         if p.quote_timestamp is None:
@@ -276,8 +287,14 @@ def _log_scan_diagnostics(
         ages_by_issuer.setdefault(p.issuer, []).append(
             quote_age_seconds(p.quote_timestamp, evaluation_time)
         )
+        source_ages_by_issuer.setdefault(p.issuer, []).append(
+            quote_age_seconds(p.quote_timestamp, p.retrieved_at)
+        )
     quote_age_stats_by_issuer = {
         issuer: _quote_age_stats(ages) for issuer, ages in sorted(ages_by_issuer.items())
+    }
+    source_quote_age_stats_by_issuer = {
+        issuer: _quote_age_stats(ages) for issuer, ages in sorted(source_ages_by_issuer.items())
     }
 
     reject_reason_counts: Counter[str] = Counter()
@@ -292,6 +309,7 @@ def _log_scan_diagnostics(
         products_missing_quote_timestamp=missing_timestamp,
         fetch_duration_s=round(fetch_duration_s, 1),
         quote_age_stats_by_issuer=quote_age_stats_by_issuer,
+        source_quote_age_stats_by_issuer=source_quote_age_stats_by_issuer,
         reject_reason_counts=dict(reject_reason_counts.most_common()),
     )
 
@@ -373,6 +391,7 @@ def _gate_only_candidate(
     horizon_days: int,
     integrity: IntegrityReport,
     quote_age_s: float | None,
+    source_quote_age_s: float | None,
     distance_pct: float | None,
     distance_sigma: float | None,
     data_health_pass: bool,
@@ -394,6 +413,7 @@ def _gate_only_candidate(
         bid_only=product.bid_only,
         knocked_out=product.knocked_out,
         quote_age_s=quote_age_s,
+        source_quote_age_s=source_quote_age_s,
         spread_pct=None,
         leverage=None,
         distance_to_barrier_sigma=distance_sigma,
@@ -436,7 +456,7 @@ def _gate_only_candidate(
 def _resolve_spot(
     product: ProductSnapshot,
     consensus_value: float | None,
-    max_quote_age_s: float,
+    max_quote_age_at_decision_s: float,
     spot_ref_max_deviation_pct: float,
     now: datetime,
     warnings: list[str],
@@ -462,8 +482,11 @@ def _resolve_spot(
 
     1. it is present at all (structurally absent for Citi -- never guessed);
     2. it carries its own timestamp (``underlying_price_ref_timestamp``);
-    3. that timestamp is fresh (age <= ``max_quote_age_s``, the same
-       staleness bound applied to product quotes elsewhere in this module);
+    3. that timestamp is fresh (age <= ``max_quote_age_at_decision_s``, the
+       same decision-time staleness bound applied to product quotes
+       elsewhere in this module -- see ``ranking/gates.py``'s
+       ``GateThresholds`` docstring for why this is the decision-time bound,
+       not the stricter source-freshness one);
     4. a consensus is available *and* ``ref`` is within
        ``spot_ref_max_deviation_pct`` of it (relative deviation) -- catching
        exactly the batched/stale-reference scenario above, which a fresh
@@ -493,7 +516,7 @@ def _resolve_spot(
         return consensus_value
 
     age = quote_age_seconds(ref_ts, now)
-    if age > max_quote_age_s:
+    if age > max_quote_age_at_decision_s:
         _add_warning(warnings, "spot_ref_rejected")
         return consensus_value
 
@@ -580,6 +603,7 @@ class _PricedProduct:
     leverage_bucket_value: str
     spread_pct_value: float
     quote_age_s: float | None
+    source_quote_age_s: float | None
     distance_pct: float | None
     distance_sigma: float | None
     realized_spread: float
@@ -638,7 +662,7 @@ def _evaluate_single_product(
     spot = _resolve_spot(
         product,
         consensus_value,
-        risk.max_quote_age_s,
+        risk.max_quote_age_at_decision_s,
         risk.spot_ref_max_deviation_pct,
         evaluation_time,
         warnings,
@@ -656,7 +680,7 @@ def _evaluate_single_product(
         product,
         consensus_value,
         evaluation_time,
-        risk.max_quote_age_s,
+        risk.max_quote_age_at_decision_s,
         None,
         risk.integrity_tolerances.margin_warn_pct,
         ref_rate=r,
@@ -664,6 +688,17 @@ def _evaluate_single_product(
 
     quote_age_s = (
         quote_age_seconds(product.quote_timestamp, evaluation_time)
+        if product.quote_timestamp is not None
+        else None
+    )
+    # Source-side freshness (Build Contract freshness/duration review,
+    # 2026-09-14): how old the quote already was when THIS product's own
+    # snapshot was retrieved, independent of `quote_age_s`'s decision-time
+    # age above (which grows with the rest of this scan's fetch duration
+    # even for a quote the source handed us perfectly fresh). See
+    # ranking/gates.py's GateThresholds docstring for the full rationale.
+    source_quote_age_s = (
+        quote_age_seconds(product.quote_timestamp, product.retrieved_at)
         if product.quote_timestamp is not None
         else None
     )
@@ -698,6 +733,7 @@ def _evaluate_single_product(
             horizon_days=horizon_days,
             integrity=integrity,
             quote_age_s=quote_age_s,
+            source_quote_age_s=source_quote_age_s,
             distance_pct=distance_pct,
             distance_sigma=distance_sigma,
             data_health_pass=data_health_pass,
@@ -732,6 +768,7 @@ def _evaluate_single_product(
             horizon_days=horizon_days,
             integrity=integrity,
             quote_age_s=quote_age_s,
+            source_quote_age_s=source_quote_age_s,
             distance_pct=distance_pct,
             distance_sigma=distance_sigma,
             data_health_pass=data_health_pass,
@@ -848,6 +885,7 @@ def _evaluate_single_product(
         leverage_bucket_value=lev_bucket,
         spread_pct_value=spread_pct_value,
         quote_age_s=quote_age_s,
+        source_quote_age_s=source_quote_age_s,
         distance_pct=distance_pct,
         distance_sigma=distance_sigma,
         realized_spread=spread_for_pricing,
@@ -1010,6 +1048,7 @@ def _process_products(
             bid_only=p.product.bid_only,
             knocked_out=p.product.knocked_out,
             quote_age_s=p.quote_age_s,
+            source_quote_age_s=p.source_quote_age_s,
             spread_pct=p.spread_pct_value,
             leverage=p.leverage_value,
             distance_to_barrier_sigma=p.distance_sigma,
@@ -1682,6 +1721,7 @@ def _run_ev_pipeline(
             bid_only=p.product.bid_only,
             knocked_out=p.product.knocked_out,
             quote_age_s=p.quote_age_s,
+            source_quote_age_s=p.source_quote_age_s,
             spread_pct=p.spread_pct_value,
             leverage=p.leverage_value,
             distance_to_barrier_sigma=p.distance_sigma,
@@ -1692,12 +1732,13 @@ def _run_ev_pipeline(
         )
         category, gate_reasons = evaluate_gates(gate_input, thresholds)
         # Non-gate diagnostic annotations from the pre-EV pass
-        # (counter-baseline-signal; financing_spread_source is carried on
-        # `original`/`updated` as its own field, not a reason -- see
-        # CandidateEvaluation.financing_spread_source) stay relevant; the
-        # pre-EV *gate* reasons (e.g. "lcb_ev_not_evaluated") are now stale/
-        # misleading now that real lcb_ev/p_ko/cluster_risk_pass exist and
-        # are dropped in favor of the fresh `gate_reasons` below.
+        # (counter-baseline-signal; financing_spread_source, premium_over_fair
+        # and premium_uncertainty_term are carried on `original`/`updated` as
+        # their own fields, not reasons -- see CandidateEvaluation's
+        # docstrings for those three) stay relevant; the pre-EV *gate*
+        # reasons (e.g. "lcb_ev_not_evaluated") are now stale/misleading now
+        # that real lcb_ev/p_ko/cluster_risk_pass exist and are dropped in
+        # favor of the fresh `gate_reasons` below.
         carried_over = [
             reason for reason in original.reasons if reason == "counter_baseline_signal"
         ]
@@ -1705,12 +1746,16 @@ def _run_ev_pipeline(
             *carried_over,
             *gate_reasons,
             f"ev_horizon={ev.horizon_days}d",
-            f"premium_over_fair={premium_by_isin.get(isin, 0.0):.4f}",
-            f"premium_uncertainty_term={premium_term:.5f}",
             "p_ko_conservative_see_docs",
         ]
         updated = original.model_copy(
-            update={"category": category, "reasons": reasons, "lcb_ev": adjusted_lcb}
+            update={
+                "category": category,
+                "reasons": reasons,
+                "lcb_ev": adjusted_lcb,
+                "premium_over_fair": premium_by_isin.get(isin),
+                "premium_uncertainty_term": premium_term,
+            }
         )
         updated_candidates[isin] = updated
 

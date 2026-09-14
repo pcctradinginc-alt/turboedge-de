@@ -336,6 +336,28 @@ class CandidateEvaluation(BaseModel):
     # measurement session: this string was appearing identically on every
     # single WATCH candidate, drowning out the reasons that actually vary).
     financing_spread_source: str | None = None
+    # Current (mid - theoretical_fair_value) / mid at evaluation time (see
+    # simulation/payoff.py's `ProductTerms.premium_over_fair` -- the same
+    # quantity, carried forward through the path simulation as the exit
+    # premium assumption). A numeric measurement, not a reason a candidate
+    # was gated one way or another -- kept as its own field (like
+    # `financing_spread_source` above), not folded into `reasons` (2026-09-14
+    # freshness/duration review: `f"premium_over_fair={...:.4f}"` was showing
+    # up in `reasons` with a different formatted value on almost every single
+    # candidate, so it never repeated and `reject_reason_counts` (pipeline/
+    # scan.py's `_log_scan_diagnostics`) filled up with ~80 count-1 entries
+    # that were actually measurements, not distinguishable reject reasons).
+    # `None` for a candidate never reaching the EV pool (pre-EV WATCH/REJECT/
+    # DATA_QUALITY -- premium_over_fair is only computed once fair_value has
+    # been priced, `pipeline/scan.py._run_ev_pipeline`).
+    premium_over_fair: float | None = None
+    # `_premium_uncertainty_term()`'s output for this candidate (pipeline/
+    # scan.py): half the swing in exit value from `premium_over_fair` fully
+    # reverting to zero, subtracted from `lcb_net_return` to get this
+    # candidate's `lcb_ev`. Same rationale as `premium_over_fair` above --
+    # a numeric diagnostic, not a reject reason. `None` under the same
+    # condition as `premium_over_fair`.
+    premium_uncertainty_term: float | None = None
     # "Cost per exposure (h)": total round-trip cost over the scan horizon
     # (spread + gap premium + financing + max(issuer margin, 0)), as a %
     # of ask, divided by leverage -- i.e. re-expressed as a % of

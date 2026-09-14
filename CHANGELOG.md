@@ -291,6 +291,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Split the single `max_quote_age_s` freshness gate into two** (Build
+  Contract freshness/duration review, 2026-09-14): CI measured
+  `fetch_duration_s` of 227.1s (DAX) / 261.4s (NDX) — well above the old
+  120s "stale" cutoff, so essentially every candidate's decision-time quote
+  age (`quote_timestamp` vs. `evaluation_time`, set only after the whole
+  multi-source fetch completed) exceeded 120s regardless of how fresh the
+  source's own data was, rejecting 11,060/11,114 DAX and 7,059/10,566 NDX
+  candidates on staleness alone. `configs/risk.yaml` now has two
+  independently-configurable thresholds: `max_source_quote_age_s` (900s —
+  `quote_timestamp` vs. each snapshot's own `retrieved_at`, a source
+  data-quality signal, reason `source_quote_stale`) and
+  `max_quote_age_at_decision_s` (450s — `quote_timestamp` vs.
+  `evaluation_time`, a tradability signal that must exceed the pipeline's
+  own realistic fetch duration, reason `quote_age_at_decision`). Both
+  values are derived from measured distributions, not guesswork — see the
+  config file's comments. Verified the split still rejects genuinely stale
+  source data (a 25-day-old Goldman Sachs quote, a 9,695s-old BNP outlier)
+  via `source_quote_stale` regardless of the decision-time fix.
+- **Parallelized per-adapter product fetch** (`pipeline/universe.py`):
+  BNP/Citi/gettex are three independent hosts, each already rate-limited
+  independently (`adapters/base.py`'s per-host `_HostRateLimiter`,
+  `>=1.5s`/request, never relaxed or parallelized *within* one host's own
+  request stream), but were previously fetched one after another for no
+  reason tied to that politeness rule. Fetching them concurrently instead
+  bounds total `fetch_duration_s` by the slowest single adapter rather than
+  their sum: measured (2026-09-14) local fetch_duration_s dropped from
+  81.0s/74.9s (DAX/NDX) to 49.9s/57.4s. A full scan still realistically
+  takes on the order of a minute (local) to a few minutes (CI); see
+  README's "Known Limitations" for what that does and does not mean for
+  decision-time quote freshness.
+- **Moved `premium_over_fair`/`premium_uncertainty_term` out of
+  `CandidateEvaluation.reasons`** into their own optional float fields
+  (`pipeline/scan.py`, `storage/schemas.py`, `storage/duckdb.py`, additive
+  migration), matching the existing `financing_spread_source` pattern.
+  These are per-candidate numeric measurements, not reject reasons; left in
+  `reasons`, their formatted values (e.g. `"premium_over_fair=0.0014"`)
+  almost never repeated across candidates, so `reject_reason_counts`
+  (`pipeline/scan.py::_log_scan_diagnostics`) filled up with count-1
+  pseudo-reasons that drowned out the real, repeated reject reasons the
+  counter exists to surface: 82 distinct DAX / 73 distinct NDX pseudo-reason
+  entries measured pre-fix in CI (run 34883437354), 79 distinct / 96
+  occurrences (DAX) and 12 distinct / 12 occurrences (NDX) measured pre-fix
+  locally the same day.
+
 ### Added
 
 - **CLI wiring for the Wave-2 integration** (`cli.py`, `cli_learn.py`,

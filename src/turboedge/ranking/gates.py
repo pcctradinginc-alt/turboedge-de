@@ -20,10 +20,29 @@ from turboedge.storage.schemas import Category
 
 @dataclass(frozen=True, slots=True)
 class GateThresholds:
-    """Risk thresholds consumed by :func:`evaluate_gates` (``configs/risk.yaml``)."""
+    """Risk thresholds consumed by :func:`evaluate_gates` (``configs/risk.yaml``).
+
+    ``max_source_quote_age_s`` and ``max_quote_age_at_decision_s`` are two
+    deliberately separate freshness gates (Build Contract freshness/duration
+    review, 2026-09-14) -- see ``configs/risk.yaml`` for the measured
+    distributions behind each value:
+
+    - ``max_source_quote_age_s`` gates :attr:`GateInput.source_quote_age_s`
+      (``quote_timestamp`` vs. the product's own ``retrieved_at`` -- how old
+      the quote already was when the source handed it to us). A strict,
+      source-data-quality bound: independent of how long the rest of this
+      run's fetch takes, so it does not loosen as the pipeline grows slower.
+    - ``max_quote_age_at_decision_s`` gates :attr:`GateInput.quote_age_s`
+      (``quote_timestamp`` vs. the scan's evaluation time -- how old the
+      quote is when we actually act on it). Must stay above the pipeline's
+      own realistic fetch duration, or every candidate fetched early in a
+      multi-source scan rejects purely for having been fetched early, not
+      for anything the source did wrong.
+    """
 
     max_spread_pct: float
-    max_quote_age_s: float
+    max_source_quote_age_s: float
+    max_quote_age_at_decision_s: float
     min_leverage: float
     max_leverage: float
     min_distance_to_barrier_sigma: float
@@ -38,7 +57,8 @@ class GateThresholds:
         """
         return cls(
             max_spread_pct=risk_config.max_spread_pct,  # type: ignore[attr-defined]
-            max_quote_age_s=risk_config.max_quote_age_s,  # type: ignore[attr-defined]
+            max_source_quote_age_s=risk_config.max_source_quote_age_s,  # type: ignore[attr-defined]
+            max_quote_age_at_decision_s=risk_config.max_quote_age_at_decision_s,  # type: ignore[attr-defined]
             min_leverage=risk_config.min_leverage,  # type: ignore[attr-defined]
             max_leverage=risk_config.max_leverage,  # type: ignore[attr-defined]
             min_distance_to_barrier_sigma=risk_config.min_distance_to_barrier_sigma,  # type: ignore[attr-defined]
@@ -77,6 +97,15 @@ class GateInput:
     # "no_ask_quote" -- this is not a data-quality violation (master data
     # stays plausible), it is "this source has nothing tradable to quote".
     no_live_quote: bool = False
+    # Age (seconds) of `quote_timestamp` relative to THIS snapshot's own
+    # `retrieved_at` -- i.e. how stale the quote already was when the source
+    # handed it to us, independent of `quote_age_s`'s much larger
+    # decision-time age (see GateThresholds' docstring). `None` under the
+    # same condition as `quote_age_s` being `None` (no `quote_timestamp` at
+    # all) -- `quote_timestamp_missing` already covers that case, so this
+    # field defaults to `None` for backward compatibility with every
+    # pre-existing caller/test that never heard of source-side freshness.
+    source_quote_age_s: float | None = None
 
 
 def evaluate_gates(inp: GateInput, th: GateThresholds) -> tuple[Category, list[str]]:
@@ -87,16 +116,20 @@ def evaluate_gates(inp: GateInput, th: GateThresholds) -> tuple[Category, list[s
     1. ``DATA_QUALITY`` if the integrity check failed, or ``data_health_pass``
        is False.
     2. ``REJECT`` if ``bid_only``, ``knocked_out``, the quote timestamp is
-       missing or stale, there is no live quote at all (or no ask quote
-       specifically), the spread is too wide, leverage is outside the
-       configured band, or the barrier distance (in sigma units) is too
-       small. A stale/missing quote, a missing ask and a source-reported
-       absence of any live quote are tradability gates, not data-integrity
-       failures (Build Contract Task 2 / Citi closing-price follow-up):
-       ``pricing/integrity.check_product`` only *warns* about them (or does
-       not flag them at all when ``no_live_quote`` applies), so they reach
-       this REJECT branch rather than being pre-empted by the DATA_QUALITY
-       branch above.
+       missing or stale (BOTH at the source -- ``source_quote_age_s >
+       max_source_quote_age_s``, reason ``source_quote_stale`` -- AND at
+       decision time -- ``quote_age_s > max_quote_age_at_decision_s``,
+       reason ``quote_age_at_decision``; see ``GateThresholds``' docstring
+       for why these are separate checks with separate thresholds), there is
+       no live quote at all (or no ask quote specifically), the spread is
+       too wide, leverage is outside the configured band, or the barrier
+       distance (in sigma units) is too small. A stale/missing quote, a
+       missing ask and a source-reported absence of any live quote are
+       tradability gates, not data-integrity failures (Build Contract Task 2
+       / Citi closing-price follow-up): ``pricing/integrity.check_product``
+       only *warns* about them (or does not flag them at all when
+       ``no_live_quote`` applies), so they reach this REJECT branch rather
+       than being pre-empted by the DATA_QUALITY branch above.
     3. ``ACTIONABLE`` only if every other gate passed *and* ``lcb_ev is not
        None and lcb_ev > 0 and p_ko is not None and cluster_risk_pass is
        True``. In practice, no ACTIONABLE candidate is produced today
@@ -121,8 +154,14 @@ def evaluate_gates(inp: GateInput, th: GateThresholds) -> tuple[Category, list[s
         reject_reasons.append("knocked_out")
     if inp.quote_age_s is None:
         reject_reasons.append("quote_timestamp_missing")
-    elif inp.quote_age_s > th.max_quote_age_s:
-        reject_reasons.append("quote_stale")
+    else:
+        if (
+            inp.source_quote_age_s is not None
+            and inp.source_quote_age_s > th.max_source_quote_age_s
+        ):
+            reject_reasons.append("source_quote_stale")
+        if inp.quote_age_s > th.max_quote_age_at_decision_s:
+            reject_reasons.append("quote_age_at_decision")
     if inp.no_live_quote:
         reject_reasons.append("no_live_quote")
     elif not inp.has_ask:

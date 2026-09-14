@@ -71,7 +71,7 @@ def check_product(
     p: ProductSnapshot,
     consensus: float | None,
     now: datetime,
-    max_quote_age_s: float,
+    max_quote_age_at_decision_s: float,
     known_issuers: frozenset[str] | None,
     margin_warn_pct: float,
     *,
@@ -222,16 +222,21 @@ def check_product(
     # itself may be perfectly well-formed, it is simply too old (or entirely
     # absent) to trade on right now. Both are therefore ``warnings`` here,
     # not ``failures`` -- ranking/gates.py is what actually rejects such
-    # candidates, via reasons "quote_timestamp_missing"/"quote_stale". A
-    # quote timestamp in the future, however, remains a genuine integrity
-    # failure (a corrupted/implausible timestamp, not merely an old one).
+    # candidates, via reasons "quote_timestamp_missing"/"quote_age_at_decision"
+    # (this function only checks decision-time age against `now`, matching
+    # gates.py's `quote_age_s`/`max_quote_age_at_decision_s`; source-side
+    # freshness at retrieval -- gates.py's `source_quote_age_s`/
+    # `max_source_quote_age_s` -- is not evaluated here, since this function
+    # never receives a snapshot's `retrieved_at`). A quote timestamp in the
+    # future, however, remains a genuine integrity failure (a corrupted/
+    # implausible timestamp, not merely an old one).
     if p.quote_timestamp is None:
         warnings.append("quote_timestamp_missing")
     else:
         age_s = (now - p.quote_timestamp).total_seconds()
         if age_s < 0:
             failures.append("quote_timestamp_in_future")
-        elif age_s > max_quote_age_s:
+        elif age_s > max_quote_age_at_decision_s:
             warnings.append("quote_stale")
 
     # -- ratio factor error / implied spot deviation -----------------------

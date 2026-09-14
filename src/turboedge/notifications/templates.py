@@ -280,7 +280,8 @@ wird ausgeführt."""
 _TRADE_PROPOSAL_EXCLUDED_REASON_PREFIXES = (
     "lcb_ev_not_positive",
     "cluster_risk",
-    "quote_stale",
+    "quote_age_at_decision",
+    "source_quote_stale",
     "spread_too_high",
 )
 

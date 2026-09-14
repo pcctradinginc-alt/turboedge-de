@@ -12,7 +12,7 @@ Covers the mandatory scenarios from the build contract:
 (b) ACTIONABLE is never assigned (guaranteed here by ``run_ev=False``; see
     test_scan_ev.py for ACTIONABLE reachability with the EV pipeline on)
 (c) a ratio-factor-100 error is downgraded to DATA_QUALITY
-(d) bid_only -> REJECT; a stale quote -> REJECT ("quote_stale"); a missing
+(d) bid_only -> REJECT; a stale quote -> REJECT ("quote_age_at_decision"); a missing
     ask -> REJECT ("no_ask_quote", ask-dependent pricing steps skipped); a
     missing financing_level -> DATA_QUALITY
 (e) every product source failing raises NoProductsError and the run's
@@ -352,7 +352,10 @@ def test_stale_quote_is_rejected(
     """A stale quote is a tradability gate, not a data-integrity failure
     (Build Contract Task 2 review finding): pricing/integrity.check_product
     only warns about it, so ranking/gates.py's REJECT branch (reason
-    "quote_stale") is what actually excludes it -- not DATA_QUALITY.
+    "quote_age_at_decision" -- this fixture leaves `retrieved_at` tied to the
+    same overridden `quote_timestamp`, so source_quote_age_s stays 0 and only
+    the decision-time check fires) is what actually excludes it -- not
+    DATA_QUALITY.
     """
     stale_product = _good_long(
         dax_product_factory,
@@ -377,7 +380,7 @@ def test_stale_quote_is_rejected(
     assert len(result.candidates) == 1
     candidate = result.candidates[0]
     assert candidate.category == Category.REJECT
-    assert "quote_stale" in candidate.reasons
+    assert "quote_age_at_decision" in candidate.reasons
 
 
 def test_no_ask_quote_is_rejected_and_skips_ask_dependent_pricing(

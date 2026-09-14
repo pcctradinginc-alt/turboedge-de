@@ -27,7 +27,7 @@ def test_check_product_passes_for_a_clean_snapshot(
         product,
         consensus=18500.0,
         now=_NOW,
-        max_quote_age_s=120.0,
+        max_quote_age_at_decision_s=120.0,
         known_issuers=frozenset({"TestBank"}),
         margin_warn_pct=0.5,
     )
@@ -44,7 +44,7 @@ def test_check_product_flags_bid_above_ask(
         product,
         consensus=18500.0,
         now=_NOW,
-        max_quote_age_s=120.0,
+        max_quote_age_at_decision_s=120.0,
         known_issuers=None,
         margin_warn_pct=0.5,
     )
@@ -68,7 +68,7 @@ def test_check_product_flags_wrong_barrier_side(
         product,
         consensus=17000.0,
         now=_NOW,
-        max_quote_age_s=120.0,
+        max_quote_age_at_decision_s=120.0,
         known_issuers=None,
         margin_warn_pct=0.5,
     )
@@ -94,7 +94,7 @@ def test_check_product_flags_ratio_factor_error(
         product,
         consensus=2_400_000.0,
         now=_NOW,
-        max_quote_age_s=120.0,
+        max_quote_age_at_decision_s=120.0,
         known_issuers=None,
         margin_warn_pct=0.5,
     )
@@ -120,7 +120,7 @@ def test_check_product_flags_implied_spot_deviation_without_factor_error(
         product,
         consensus=24000.0 * 1.10,
         now=_NOW,
-        max_quote_age_s=120.0,
+        max_quote_age_at_decision_s=120.0,
         known_issuers=None,
         margin_warn_pct=0.5,
     )
@@ -140,7 +140,7 @@ def test_check_product_warns_stale_quote_but_still_passes(
         product,
         consensus=18500.0,
         now=_NOW,
-        max_quote_age_s=120.0,
+        max_quote_age_at_decision_s=120.0,
         known_issuers=None,
         margin_warn_pct=0.5,
     )
@@ -161,7 +161,7 @@ def test_check_product_warns_missing_quote_timestamp_but_still_passes(
         product,
         consensus=18500.0,
         now=_NOW,
-        max_quote_age_s=120.0,
+        max_quote_age_at_decision_s=120.0,
         known_issuers=None,
         margin_warn_pct=0.5,
     )
@@ -183,7 +183,7 @@ def test_check_product_does_not_fail_on_missing_ask(
         product,
         consensus=18500.0,
         now=_NOW,
-        max_quote_age_s=120.0,
+        max_quote_age_at_decision_s=120.0,
         known_issuers=None,
         margin_warn_pct=0.5,
     )
@@ -206,7 +206,7 @@ def test_check_product_does_not_fail_on_no_live_quote(
         product,
         consensus=18500.0,
         now=_NOW,
-        max_quote_age_s=120.0,
+        max_quote_age_at_decision_s=120.0,
         known_issuers=None,
         margin_warn_pct=0.5,
     )
@@ -228,7 +228,7 @@ def test_check_product_flags_missing_bid_when_quote_presence_true(
         product,
         consensus=18500.0,
         now=_NOW,
-        max_quote_age_s=120.0,
+        max_quote_age_at_decision_s=120.0,
         known_issuers=None,
         margin_warn_pct=0.5,
     )
@@ -249,7 +249,7 @@ def test_check_product_flags_missing_bid_when_quote_presence_none(
         product,
         consensus=18500.0,
         now=_NOW,
-        max_quote_age_s=120.0,
+        max_quote_age_at_decision_s=120.0,
         known_issuers=None,
         margin_warn_pct=0.5,
     )
@@ -269,7 +269,7 @@ def test_check_product_flags_missing_bid_when_ask_present(
         product,
         consensus=18500.0,
         now=_NOW,
-        max_quote_age_s=120.0,
+        max_quote_age_at_decision_s=120.0,
         known_issuers=None,
         margin_warn_pct=0.5,
     )
@@ -285,7 +285,7 @@ def test_check_product_flags_missing_financing_level(
         product,
         consensus=18500.0,
         now=_NOW,
-        max_quote_age_s=120.0,
+        max_quote_age_at_decision_s=120.0,
         known_issuers=None,
         margin_warn_pct=0.5,
     )
@@ -301,7 +301,7 @@ def test_check_product_flags_unknown_issuer(
         product,
         consensus=18500.0,
         now=_NOW,
-        max_quote_age_s=120.0,
+        max_quote_age_at_decision_s=120.0,
         known_issuers=frozenset({"TestBank"}),
         margin_warn_pct=0.5,
     )
@@ -317,7 +317,7 @@ def test_check_product_flags_missing_underlying_mapping(
         product,
         consensus=18500.0,
         now=_NOW,
-        max_quote_age_s=120.0,
+        max_quote_age_at_decision_s=120.0,
         known_issuers=None,
         margin_warn_pct=0.5,
     )
@@ -366,7 +366,7 @@ def test_check_product_classic_priced_at_fair_value_does_not_flag_below_intrinsi
         product,
         consensus=spot,
         now=datetime(as_of.year, as_of.month, as_of.day, 16, 0, tzinfo=UTC),
-        max_quote_age_s=120.0,
+        max_quote_age_at_decision_s=120.0,
         known_issuers=None,
         margin_warn_pct=0.15,
         ref_rate=ref_rate,
@@ -402,7 +402,7 @@ def test_check_product_classic_without_ref_rate_falls_back_to_zero_discount(
         product,
         consensus=spot,
         now=datetime(as_of.year, as_of.month, as_of.day, 16, 0, tzinfo=UTC),
-        max_quote_age_s=120.0,
+        max_quote_age_at_decision_s=120.0,
         known_issuers=None,
         margin_warn_pct=0.15,
     )
@@ -433,7 +433,7 @@ def test_check_product_classic_missing_maturity_warns_instead_of_guessing(
         product,
         consensus=35000.0,
         now=_NOW,
-        max_quote_age_s=120.0,
+        max_quote_age_at_decision_s=120.0,
         known_issuers=None,
         margin_warn_pct=0.15,
         ref_rate=0.0219,

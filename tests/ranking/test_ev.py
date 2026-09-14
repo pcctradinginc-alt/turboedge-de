@@ -427,7 +427,8 @@ def test_to_candidate_gate_input_enables_actionable_when_all_gates_pass() -> Non
 
     th = GateThresholds(
         max_spread_pct=0.03,
-        max_quote_age_s=120,
+        max_source_quote_age_s=30,
+        max_quote_age_at_decision_s=120,
         min_leverage=2.0,
         max_leverage=20.0,
         min_distance_to_barrier_sigma=1.0,
@@ -476,7 +477,8 @@ def test_to_candidate_gate_input_stays_watch_when_cluster_risk_fails() -> None:
     )
     th = GateThresholds(
         max_spread_pct=0.03,
-        max_quote_age_s=120,
+        max_source_quote_age_s=30,
+        max_quote_age_at_decision_s=120,
         min_leverage=2.0,
         max_leverage=20.0,
         min_distance_to_barrier_sigma=1.0,

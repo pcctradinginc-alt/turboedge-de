@@ -112,7 +112,20 @@ class RiskConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     max_spread_pct: float = Field(gt=0)
-    max_quote_age_s: float = Field(gt=0)
+    # Two DISTINCT freshness gates (Build Contract freshness/duration review,
+    # 2026-09-14) -- see the matching comment block in configs/risk.yaml for
+    # the measured distributions each threshold is derived from:
+    #   - max_source_quote_age_s: was the quote fresh when the SOURCE gave it
+    #     to us (quote_timestamp vs. that snapshot's own retrieved_at)? A
+    #     data-quality signal about the source, independent of how long our
+    #     own multi-page/multi-source fetch subsequently took.
+    #   - max_quote_age_at_decision_s: is the quote still fresh at the moment
+    #     we ACT on it (quote_timestamp vs. evaluation_time, after the whole
+    #     fetch has completed)? A tradability signal that must exceed the
+    #     pipeline's own realistic fetch duration, or it rejects candidates
+    #     purely for having been fetched early in a multi-minute scan.
+    max_source_quote_age_s: float = Field(gt=0)
+    max_quote_age_at_decision_s: float = Field(gt=0)
     min_leverage: float = Field(gt=0)
     max_leverage: float = Field(gt=0)
     min_distance_to_barrier_sigma: float = Field(ge=0)

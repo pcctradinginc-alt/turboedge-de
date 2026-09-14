@@ -11,7 +11,8 @@ from turboedge.storage.schemas import Category
 
 _THRESHOLDS = GateThresholds(
     max_spread_pct=0.03,
-    max_quote_age_s=120.0,
+    max_source_quote_age_s=30.0,
+    max_quote_age_at_decision_s=120.0,
     min_leverage=2.0,
     max_leverage=20.0,
     min_distance_to_barrier_sigma=1.0,
@@ -42,7 +43,8 @@ def test_gate_thresholds_from_risk_config() -> None:
     @dataclass
     class FakeRiskConfig:
         max_spread_pct: float = 0.03
-        max_quote_age_s: float = 120.0
+        max_source_quote_age_s: float = 30.0
+        max_quote_age_at_decision_s: float = 120.0
         min_leverage: float = 2.0
         max_leverage: float = 20.0
         min_distance_to_barrier_sigma: float = 1.0
@@ -79,10 +81,33 @@ def test_reject_knocked_out() -> None:
     assert "knocked_out" in reasons
 
 
-def test_reject_stale_quote() -> None:
+def test_reject_stale_quote_at_decision() -> None:
     category, reasons = evaluate_gates(_base_input(quote_age_s=999.0), _THRESHOLDS)
     assert category == Category.REJECT
-    assert "quote_stale" in reasons
+    assert "quote_age_at_decision" in reasons
+    assert "source_quote_stale" not in reasons
+
+
+def test_reject_source_quote_stale() -> None:
+    # Fresh at decision time (well under max_quote_age_at_decision_s) but the
+    # source itself had already handed us a quote older than
+    # max_source_quote_age_s -- a data-quality signal distinct from
+    # quote_age_at_decision, and must not be conflated with it.
+    category, reasons = evaluate_gates(
+        _base_input(quote_age_s=45.0, source_quote_age_s=45.0), _THRESHOLDS
+    )
+    assert category == Category.REJECT
+    assert "source_quote_stale" in reasons
+    assert "quote_age_at_decision" not in reasons
+
+
+def test_source_quote_age_none_defaults_to_no_source_staleness_check() -> None:
+    # Backward compatibility: a caller that never populates source_quote_age_s
+    # (default None) gets no source_quote_stale rejection, only the existing
+    # decision-time check.
+    category, reasons = evaluate_gates(_base_input(quote_age_s=10.0), _THRESHOLDS)
+    assert "source_quote_stale" not in reasons
+    assert category != Category.REJECT
 
 
 def test_reject_missing_quote_timestamp() -> None:

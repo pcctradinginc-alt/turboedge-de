@@ -413,6 +413,43 @@ chflags -R nohidden /Users/cc/Desktop/TURBO\ EDGE/turboedge-de/.venv
   drift and shared identically by the null model itself (see
   `docs/measured_results.md` §1–2); only paired comparisons against null
   are informative here.
+- **A full scan structurally takes on the order of a minute, and quotes
+  are correspondingly aged by that much at decision time.** BNP (~11
+  paginated requests for a ~11,500-row DAX book), gettex (~20 pages) and
+  Citi are all rate-limited to `>=1.5s` between requests to the *same*
+  host (`configs/sources.yaml`'s `min_interval_s`, enforced per-host by
+  `adapters/base.py`'s `_HostRateLimiter`) — a politeness rule this system
+  never relaxes, since these are unauthenticated third-party APIs accessed
+  without any commercial agreement. `pipeline/universe.py` fetches the
+  (at most three) product adapters concurrently rather than one after
+  another, since BNP/Citi/gettex are three independent hosts and nothing
+  requires their already-independent per-host request streams to also
+  wait on each other's wall-clock time — this bounds the total fetch by
+  the single slowest adapter instead of their sum (measured 2026-09-14:
+  local fetch_duration_s dropped from 81.0s/74.9s (DAX/NDX, sequential) to
+  49.9s/57.4s (parallel); the equivalent CI figures were 227.1s/261.4s
+  sequential — CI's network path to these German/US issuer hosts is
+  consistently slower than this project's local development connection).
+  What this concurrency fix does **not** do is make individual pages
+  fetch faster — the `>=1.5s`/host floor and each adapter's own page count
+  are unchanged, so a full scan still realistically takes somewhere
+  between under a minute (local) and a few minutes (CI, depending on
+  network conditions on the day). `configs/risk.yaml`'s
+  `max_quote_age_at_decision_s` is set well above this pipeline's own
+  worst measured fetch duration precisely because of this — see that
+  file's comment for the exact figures and margin. **Consequence for
+  short-horizon read: any candidate's `quote_age_at_decision` can
+  legitimately be on the order of a minute or more purely from where in
+  the fetch order its source happened to answer, even when the source's
+  own data was fresh at the moment we retrieved it** (see
+  `max_source_quote_age_s` in the same file for the source-side freshness
+  measurement, which is independent of this pipeline's own runtime). A
+  3-day-or-longer horizon proposal is unaffected in any way that matters;
+  a use case that needed sub-minute-fresh-at-decision quotes across the
+  full multi-issuer universe would need a fundamentally different
+  architecture (e.g. streaming/websocket feeds, which none of BNP/Citi/
+  gettex's public, unauthenticated REST APIs offer) rather than a scan
+  that must poll every product from every source once per run.
 
 ---
 

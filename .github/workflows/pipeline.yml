@@ -7,19 +7,34 @@ name: Pipeline
 # silently expires after 7 days of inactivity -- see `turboedge.state`
 # (Build Contract v2, W3).
 #
-# Two artifact shapes (unbounded-growth fix, state/archive.py):
+# Three artifact shapes, all encrypted with TURBOEDGE_STATE_KEY
+# (unbounded-growth fix, state/archive.py -- see its module docstring
+# "Parquet archiving" for the full history, including a bug in the
+# original two-shape version of this scheme, fixed below):
 #   - `turboedge-state-enc` (14-day retention): the LEAN shape every job
-#     packs -- everything except state/snapshots/, the immutable per-run
-#     Parquet archive (storage/snapshots.py), which has no retention policy
-#     of its own and does not belong in an artifact re-uploaded several
-#     times a day. This is the one every restore uses in the normal path.
-#   - `turboedge-state-full-enc` (90-day retention): the FULL shape --
-#     adds state/snapshots/ back in -- packed ONLY by the weekly job (see
-#     its second "Pack and upload..." step) and restored ONLY by the
-#     weekly job's restore (turboedge-state/action.yml's weekly-only
-#     "Restore Parquet snapshot archive baseline" step), which layers it
-#     additively onto the lean restore so the accumulated Parquet history
-#     is never silently dropped.
+#     packs several times a day -- everything except state/snapshots/, the
+#     immutable per-run Parquet archive (storage/snapshots.py), which has
+#     no retention policy of its own and does not belong in an artifact
+#     re-uploaded that often. This is the one every restore uses in the
+#     normal path.
+#   - `turboedge-state-backup-enc` (90-day retention): the SAME lean shape,
+#     packed a second time by the weekly job only, purely as a
+#     longer-retained DuckDB/ledger/registry/trials restore point in case
+#     an incident isn't noticed within the lean chain's ~14-day rolling
+#     window. Not automatically restored by anything -- a deliberate,
+#     manual `gh run download` + `state unpack` if it's ever needed.
+#   - `turboedge-snapshots-<run_id>` (90-day retention, scan job only): the
+#     INCREMENTAL Parquet snapshot artifact -- packs ONLY the
+#     state/snapshots/ file(s) that THIS run's `scan-all` itself just wrote
+#     (`state pack-snapshots`, keyed by the run_ids in
+#     reports/summary.json), not the whole accumulated history. This is
+#     what actually keeps the Parquet archive durable now: an earlier
+#     version of this scheme instead packed the *entire* state/snapshots/
+#     tree once a week from the `weekly` job -- but `weekly` never scans,
+#     so that could only ever re-upload whatever had already accumulated
+#     before the scheme shipped, never anything a scan run wrote
+#     afterwards. See the scan job's "Pack incremental Parquet snapshot
+#     artifact" step and state/archive.py's module docstring for the fix.
 #
 # This is a public repository: GitHub Actions logs, job summaries and
 # artifacts are visible to anyone. TURBOEDGE_PUBLIC_LOGS=1 (below) makes the
@@ -32,17 +47,19 @@ name: Pipeline
 # that used to be duplicated across all four mode jobs now live in local
 # composite actions under `.github/actions/`:
 #   - `turboedge-state`         checkout->this: setup uv/Python, verify
-#                                 TURBOEDGE_STATE_KEY, restore + unpack state
-#                                 (+ merge in the Parquet baseline, weekly
-#                                 only -- see above).
+#                                 TURBOEDGE_STATE_KEY, restore + unpack the
+#                                 lean state artifact.
 #   - `turboedge-state-summary` writes the job summary (counts + an optional
 #                                 state-restore note).
-#   - `turboedge-state-pack`    packs and uploads either artifact shape
-#                                 above (`include_snapshots` input selects
-#                                 which); callers gate this with
-#                                 `if: success()` so a failed mode step never
-#                                 uploads a broken state over the last good
-#                                 artifact history.
+#   - `turboedge-state-pack`    packs and uploads the lean shape (default)
+#                                 or, when the weekly job passes
+#                                 `retention_days`/`artifact_name` overrides,
+#                                 the same lean shape under a longer
+#                                 retention window (see
+#                                 `turboedge-state-backup-enc` above);
+#                                 callers gate this with `if: success()` so a
+#                                 failed mode step never uploads a broken
+#                                 state over the last good artifact history.
 # Each job keeps only its own `Checkout code` step plus whatever is unique to
 # its mode -- see the comments on the composite actions themselves for why
 # the restore step never silently starts from an empty state, and for the
@@ -172,6 +189,59 @@ jobs:
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           TURBOEDGE_EMAIL_TO: ${{ secrets.TURBOEDGE_EMAIL_TO }}
         run: uv run turboedge --log-format json scan-all --email
+
+      # ------------------------------------------------------------------
+      # Incremental Parquet snapshot artifact (unbounded-growth fix,
+      # follow-up): `scan-all` just wrote one immutable Parquet file per
+      # scanned underlying (storage/snapshots.py's write_snapshot_parquet)
+      # under state/snapshots/, keyed by the run_id `scan-all` itself
+      # generated per underlying (now recorded in reports/summary.json's
+      # `run_ids` field -- see cli_learn.py's scan_all_cmd). This step packs
+      # and uploads ONLY those files, not the whole accumulated
+      # state/snapshots/ history -- see state/archive.py's module docstring
+      # ("Parquet archiving") for why: state/snapshots/ is written only
+      # during scan/scan-all, `weekly` never scans, and the old scheme's
+      # weekly-only full archive could therefore never actually carry
+      # forward a scan run's new output, only whatever had already
+      # accumulated before that scheme shipped. Uploaded under its own,
+      # per-workflow-run-unique artifact name (github.run_id) so successive
+      # scans on the same day never overwrite each other's artifact.
+      # ------------------------------------------------------------------
+      - name: Pack incremental Parquet snapshot artifact (this run's new files only)
+        if: success()
+        env:
+          TURBOEDGE_STATE_KEY: ${{ secrets.TURBOEDGE_STATE_KEY }}
+        run: |
+          set -euo pipefail
+          run_ids=$(python3 - <<'PY'
+          import json
+
+          try:
+              with open("reports/summary.json", encoding="utf-8") as f:
+                  data = json.load(f)
+          except (OSError, json.JSONDecodeError):
+              data = {}
+          for run_id in (data.get("run_ids") or {}).values():
+              print(run_id)
+          PY
+          )
+          if [[ -z "${run_ids}" ]]; then
+            echo "No run_ids in reports/summary.json -- nothing to pack this run."
+            exit 0
+          fi
+          args=()
+          while IFS= read -r id; do
+            [[ -n "${id}" ]] && args+=(--run-id "${id}")
+          done <<< "${run_ids}"
+          uv run turboedge --state-dir ./state state pack-snapshots "${args[@]}" --out snapshot-batch.tar.enc
+
+      - name: Upload incremental snapshot artifact
+        if: success() && hashFiles('snapshot-batch.tar.enc') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: turboedge-snapshots-${{ github.run_id }}
+          path: snapshot-batch.tar.enc
+          retention-days: 90
 
       - name: Job summary
         if: always()
@@ -334,23 +404,28 @@ jobs:
         with:
           state_key: ${{ secrets.TURBOEDGE_STATE_KEY }}
 
-      # The only job that packs state/snapshots/ (the immutable Parquet
-      # archive, see storage/snapshots.py) at all: every other job now packs
-      # the lean shape above (state/archive.py LEAN_INCLUDE_DIRS). Uploaded
-      # under its own, longer-retained artifact name so it survives well
-      # past the fast-rotating lean chain's short retention window; restored
-      # by turboedge-state/action.yml's weekly-only "Restore Parquet
-      # snapshot archive baseline" step so the accumulated history is never
-      # silently dropped (CLAUDE.md rule 33).
-      - name: Pack and upload full state archive (Parquet, weekly)
+      # A second copy of the SAME lean shape (no state/snapshots/ -- see the
+      # top-of-file comment on `turboedge-state-backup-enc`), uploaded under
+      # a longer 90-day retention as a DuckDB/ledger/registry/trials restore
+      # point that survives well past the fast-rotating lean chain's ~14-day
+      # window. Deliberately NOT a Parquet backup: state/snapshots/ is kept
+      # durable instead by every scan run's own incremental snapshot
+      # artifact (see the scan job's "Pack incremental Parquet snapshot
+      # artifact" step) -- packing the accumulated Parquet history here too
+      # was the old approach, and it was broken (weekly never scans, so it
+      # could only ever re-upload stale history, never anything written
+      # after the scheme shipped; see state/archive.py's module docstring).
+      # Nothing restores this automatically; it is a deliberate, manual
+      # fallback (`gh run download` + `state unpack`) for an incident not
+      # caught within 14 days.
+      - name: Pack and upload state backup (longer retention)
         if: success()
         uses: ./.github/actions/turboedge-state-pack
         with:
           state_key: ${{ secrets.TURBOEDGE_STATE_KEY }}
-          include_snapshots: "true"
-          artifact_name: "turboedge-state-full-enc"
+          artifact_name: "turboedge-state-backup-enc"
           retention_days: "90"
-          out_file: "state-full.tar.enc"
+          out_file: "state-backup.tar.enc"
 
   # ---------------------------------------------------------------------
   # monthly -- 1st of month: success report

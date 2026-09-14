@@ -195,8 +195,9 @@ turboedge research tournament [--email]                                    # wee
 turboedge db info
 turboedge db compact [--keep-days N] [--hard-delete-after-days N]
 turboedge state pack --out state.tar.enc [--include-snapshots]
+turboedge state pack-snapshots --run-id ID [--run-id ID ...] --out PATH    # incremental per-scan Parquet snapshot artifact
 turboedge state unpack --in state.tar.enc [--allow-missing]
-turboedge state restore-snapshots --in state-full.tar.enc                  # additive merge of state/snapshots/ only
+turboedge state restore-snapshots --in state-full.tar.enc                  # additive merge of state/snapshots/ only (manual/ad hoc use)
 ```
 
 ---
@@ -222,25 +223,36 @@ of the last 50 carry a usable artifact, the run fails loudly instead of
 silently discarding history. `workflow_dispatch` with
 `allow_fresh_state: true` forces a deliberate reset.
 
-Two artifact shapes, both from `turboedge state pack` (`state/archive.py`),
-keep this bounded rather than growing forever:
+Three artifact shapes keep this bounded rather than growing forever (see
+`state/archive.py`'s module docstring, "Parquet archiving", for the full
+history — including a bug in an earlier two-shape version of this scheme,
+fixed below):
 - **`turboedge-state-enc`** (`state.tar.enc`, 14-day retention) — the
-  **lean** shape every job above packs: DuckDB + registry/ledger/trials,
-  **excluding** `state/snapshots/` (the immutable per-run Parquet archive,
-  which has no retention policy of its own and would otherwise be
-  re-uploaded several times a day for nothing). This is the one every
-  job's restore uses.
-- **`turboedge-state-full-enc`** (`state-full.tar.enc`, 90-day retention)
-  — the **full** shape (`--include-snapshots`), adding `state/snapshots/`
-  back in, packed only by the `weekly` job. The `weekly` job's restore
-  additionally merges this artifact's `state/snapshots/` on top of the
-  lean restore (`turboedge state restore-snapshots`, purely additive —
-  never touches anything the lean restore already wrote), so the
-  accumulated Parquet history is never silently dropped. Note: since
-  `state/snapshots/` is only ever written during `scan`/`scan-all`
-  (`pipeline/universe.py`) and `weekly` doesn't scan, this full archive is
-  a periodic **snapshot of whatever had already accumulated**, not a
-  continuously growing one — see "Known Limitations".
+  **lean** shape every job above packs, several times a day: DuckDB +
+  registry/ledger/trials, **excluding** `state/snapshots/` (the immutable
+  per-run Parquet archive, which has no retention policy of its own and
+  would otherwise be re-uploaded several times a day for nothing). This is
+  the one every job's restore uses.
+- **`turboedge-state-backup-enc`** (`state-backup.tar.enc`, 90-day
+  retention) — the *same* lean shape, packed a second time by the `weekly`
+  job only, as a longer-retained DuckDB/ledger/registry/trials restore
+  point for an incident not caught within the lean chain's ~14-day window.
+  Not restored automatically by anything — a deliberate, manual
+  `gh run download` + `state unpack` if it's ever needed.
+- **`turboedge-snapshots-<run_id>`** (90-day retention, `scan` job only) —
+  the **incremental** Parquet snapshot artifact: `turboedge scan-all` packs
+  and uploads ONLY the `state/snapshots/` file(s) it itself just wrote this
+  run (`turboedge state pack-snapshots --run-id ...`, one file per scanned
+  underlying), never the whole accumulated history. This is what actually
+  keeps the Parquet archive durable: an earlier version of this scheme
+  instead packed the *entire* `state/snapshots/` tree once a week from the
+  `weekly` job — but `weekly` never scans, so that could only ever
+  re-upload whatever had already accumulated before the scheme shipped,
+  never anything a scan run wrote afterwards, silently losing every scan's
+  new Parquet output. `turboedge state restore-snapshots` (additive merge
+  of `state/snapshots/` from a manual `--include-snapshots` export) still
+  exists as a manual recovery tool, but nothing in `pipeline.yml` calls it
+  automatically anymore.
 
 Two other workflows: **`tests.yml`** (every push/PR: ruff, mypy, pytest,
 live tests excluded by default) and **`source-health.yml`** (cron Mon–Fri
@@ -306,11 +318,17 @@ ISIN referenced in `forward_ledger`, either as the entry actually taken
 (`$TURBOEDGE_STATE_DIR/snapshots/<table>/date=YYYY-MM-DD/<run_id>.parquet`):
 immutable, append-only, written only during `scan`/`scan-all`; has no
 retention policy of its own (CLAUDE.md rule 33 — every prediction stays
-fully reproducible), so it is deliberately kept out of the fast-rotating
-daily state archive and backed up only weekly — see "Pipeline modes and
-schedule" above. **Encrypted archive:** `turboedge state pack`/`unpack`
-(lean by default, `--include-snapshots` for the full shape) — what
-`pipeline.yml` uses between scheduled runs.
+fully reproducible). Nothing reads it back at runtime — it exists purely
+as a byte-for-byte reproducibility record, separate from the mutable,
+retention-bounded `product_snapshots` DuckDB table above despite the
+similar name. It is deliberately kept out of the fast-rotating lean state
+archive (which every job packs several times a day) and instead archived
+incrementally: every `scan` run uploads only the Parquet file(s) it itself
+just wrote as its own small, 90-day-retention artifact — see "Pipeline
+modes and schedule" above. **Encrypted archive:** `turboedge state
+pack`/`unpack` (lean by default, `--include-snapshots` for a manual/ad hoc
+full export) and `turboedge state pack-snapshots` (the incremental
+artifact `pipeline.yml`'s scan job actually uses).
 
 ---
 
@@ -369,15 +387,12 @@ chflags -R nohidden /Users/cc/Desktop/TURBO\ EDGE/turboedge-de/.venv
   the lean DB/ledger/registry/trials shape restored every job) — 14 days
   without a successful `pipeline.yml` run loses ledger/posterior/model
   history; deliberate reset requires `allow_fresh_state=true`. The
-  `weekly`-only full archive (`turboedge-state-full-enc`) gets 90 days.
-- **The weekly Parquet backup is a frozen snapshot, not continuously
-  growing** — `state/snapshots/` is written only during `scan`/`scan-all`,
-  which the `weekly` job never runs, so the full archive it uploads each
-  Saturday only ever carries forward whatever had already accumulated by
-  the time this two-tier scheme shipped; it is not lost, but individual
-  scan runs' Parquet files are not durably archived beyond the run that
-  wrote them. `product_snapshots` (DuckDB, bounded by `db compact`, see
-  above) remains the durable, continuously-updated reproducibility record.
+  `weekly`-only backup (`turboedge-state-backup-enc`, same lean shape) gets
+  90 days but is a manual, not automatically-restored, fallback.
+  `state/snapshots/` (the Parquet reproducibility archive) is unaffected
+  either way — it is archived separately and incrementally by every scan
+  run (`turboedge-snapshots-<run_id>`, 90-day retention); see "Pipeline
+  modes and schedule" above.
 - **2010–2026 sample is a near-uninterrupted bull market** — every
   Sharpe/PSR/DSR-style statistic in this codebase is inflated by secular
   drift and shared identically by the null model itself (see

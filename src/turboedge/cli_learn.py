@@ -201,6 +201,10 @@ def scan_all_cmd(
         counts_by_underlying=result.counts_by_underlying,
         skipped=result.skipped,
         elapsed_s=round(result.elapsed_s, 2),
+        # Consumed by pipeline.yml's scan job (state pack-snapshots --run-id
+        # ...) to build the incremental per-scan Parquet snapshot artifact --
+        # see state/archive.py's module docstring ("Parquet archiving").
+        run_ids=result.run_ids,
     )
 
     if not result.results:

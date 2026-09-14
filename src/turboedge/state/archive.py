@@ -20,21 +20,54 @@ include_dirs`:
 
 - :data:`LEAN_INCLUDE_DIRS` (``registry``, ``ledger``, ``trials`` -- no
   ``snapshots``): the small package packed several times a day by every
-  scan/eod/monthly pipeline run (``turboedge state pack``'s default).
-  ``state/snapshots/`` -- the immutable, ever-growing per-run Parquet
-  archive (``storage/snapshots.py``) -- does not belong in an artifact that
-  gets re-uploaded 5x/day; see ``turboedge-state-pack/action.yml``.
-- :data:`FULL_INCLUDE_DIRS` (adds ``snapshots``): the periodic full backup
-  packed weekly (``turboedge state pack --include-snapshots``), uploaded as
-  its own longer-retained artifact.
+  scan/eod/weekly/monthly pipeline run (``turboedge state pack``'s
+  default). ``state/snapshots/`` -- the immutable, ever-growing per-run
+  Parquet archive (``storage/snapshots.py``) -- does not belong in an
+  artifact that gets re-uploaded 5x/day; see
+  ``turboedge-state-pack/action.yml``. The ``weekly`` job additionally
+  packs this same lean shape a second time under a longer (90-day)
+  retention as a standalone DuckDB restore point -- NOT a Parquet backup
+  (see below) -- so a corrupted/lost-history incident has a fallback
+  further back than the lean chain's ~14-day rolling window.
+- :data:`FULL_INCLUDE_DIRS` (adds ``snapshots``): a manual/ad hoc full
+  export shape (``turboedge state pack --include-snapshots``), for a
+  human deliberately taking a complete copy (e.g. before decommissioning a
+  state directory). No longer packed automatically by any pipeline.yml
+  job -- see "Parquet archiving" below for how the accumulated Parquet
+  history is actually kept durable now.
 
 :func:`unpack_state_subset` additively restores just the ``snapshots/``
-subtree of a full archive onto a state_dir a lean ``unpack_state`` call
-already populated, without touching (or requiring the presence of)
-anything else -- used by pipeline.yml's weekly job so the accumulated
-Parquet history from before daily packs stopped including it is never
-silently dropped (CLAUDE.md rule 33), even though it no longer gets
-re-verified/re-replaced as a whole on every run.
+subtree of a :data:`FULL_INCLUDE_DIRS`-shaped archive onto a state_dir a
+lean :func:`unpack_state` call already populated, without touching (or
+requiring the presence of) anything else. It is a general-purpose
+capability (``turboedge state restore-snapshots``) for restoring from a
+manual full export, but is no longer part of pipeline.yml's automated
+restore flow -- see the note below.
+
+Parquet archiving (state/snapshots/, CLAUDE.md rule 33)
+---------------------------------------------------------
+``state/snapshots/`` is written only during ``scan``/``scan-all``
+(``storage/snapshots.py``'s ``write_snapshot_parquet``, one file per
+underlying per run). Earlier, the *only* place this ever left a runner was
+the weekly job's full (:data:`FULL_INCLUDE_DIRS`) archive -- but the
+weekly job never scans, so that archive could only ever re-upload whatever
+had already accumulated by the time this scheme shipped, never anything
+written by a scan run afterwards; every scan run's new Parquet output was
+silently lost once its own ephemeral runner was torn down. This is now
+fixed at the source: every ``scan``/``scan-all`` run packs and uploads
+ONLY the Parquet file(s) it itself just wrote (identified by ``run_id``,
+via ``storage.snapshots.snapshot_paths_for_run_ids`` and
+:func:`pack_state_files`, CLI: ``turboedge state pack-snapshots``) as its
+own small artifact (90-day retention). Nothing under ``src/turboedge``
+reads ``state/snapshots/*.parquet`` back at runtime (confirmed by
+inspection, not by any in-code contract): labeling/reevaluation both query
+DuckDB's ``product_snapshots`` table instead -- a different, mutable,
+retention-bounded table populated by ``Store.append_product_snapshots``,
+unrelated to this Parquet tree despite the similar name. The Parquet
+archive exists purely as a byte-for-byte reproducibility record; restoring
+it (``state restore-snapshots``, above) is a manual, as-needed operation,
+not something any automated job depends on. If a future change starts
+reading it back at runtime, that would need to change.
 """
 
 from __future__ import annotations
@@ -44,6 +77,7 @@ import json
 import os
 import shutil
 import tarfile
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -160,31 +194,19 @@ def _checkpoint(db_path: Path) -> None:
         store._conn.execute("CHECKPOINT")
 
 
-def pack_state(
-    state_dir: Path,
-    out_path: Path,
-    passphrase: str,
-    *,
-    config: ArchiveConfig | None = None,
+def _pack_files(
+    state_dir: Path, out_path: Path, passphrase: str, files: Sequence[Path]
 ) -> PackResult:
-    """Checkpoint DuckDB, tar.gz + manifest the state directory, encrypt it.
+    """Shared tar.gz + manifest + encrypt + atomic-write core for
+    :func:`pack_state` and :func:`pack_state_files`.
 
-    Writes ``out_path`` atomically (temp file in the same directory, then
-    ``os.replace``). Raises :class:`~turboedge.state.crypto.StateCryptoError`
-    if ``passphrase`` is shorter than
-    :data:`turboedge.state.crypto.MIN_PASSPHRASE_LEN`.
+    ``files`` must already be the final, ordered list of existing paths
+    (each somewhere under ``state_dir``) to include -- this function does
+    no directory walking, filtering, or DuckDB checkpointing of its own;
+    callers own that decision (a full ``ArchiveConfig``-driven walk for
+    :func:`pack_state`, an explicit caller-supplied list for
+    :func:`pack_state_files`).
     """
-    cfg = config or ArchiveConfig()
-    state_dir = Path(state_dir)
-    out_path = Path(out_path)
-
-    db_path = state_dir / cfg.db_filename
-    has_any_state = db_path.exists() or any((state_dir / d).is_dir() for d in cfg.include_dirs)
-    if has_any_state:
-        _checkpoint(db_path)
-
-    files = _iter_include_files(state_dir, cfg)
-
     buf = io.BytesIO()
     manifest_files: list[ManifestFile] = []
     total_bytes = 0
@@ -231,6 +253,79 @@ def pack_state(
         total_bytes=total_bytes,
         archive_bytes=len(encrypted),
     )
+
+
+def pack_state(
+    state_dir: Path,
+    out_path: Path,
+    passphrase: str,
+    *,
+    config: ArchiveConfig | None = None,
+) -> PackResult:
+    """Checkpoint DuckDB, tar.gz + manifest the state directory, encrypt it.
+
+    Writes ``out_path`` atomically (temp file in the same directory, then
+    ``os.replace``). Raises :class:`~turboedge.state.crypto.StateCryptoError`
+    if ``passphrase`` is shorter than
+    :data:`turboedge.state.crypto.MIN_PASSPHRASE_LEN`.
+    """
+    cfg = config or ArchiveConfig()
+    state_dir = Path(state_dir)
+    out_path = Path(out_path)
+
+    db_path = state_dir / cfg.db_filename
+    has_any_state = db_path.exists() or any((state_dir / d).is_dir() for d in cfg.include_dirs)
+    if has_any_state:
+        _checkpoint(db_path)
+
+    files = _iter_include_files(state_dir, cfg)
+    return _pack_files(state_dir, out_path, passphrase, files)
+
+
+def pack_state_files(
+    state_dir: Path,
+    out_path: Path,
+    passphrase: str,
+    files: Sequence[Path],
+) -> PackResult:
+    """Pack an EXPLICIT list of files into their own small encrypted
+    archive, reusing :func:`pack_state`'s manifest/hash/atomic-write
+    machinery but skipping both the ``ArchiveConfig``-driven directory walk
+    and the DuckDB checkpoint (there is no database file in this shape).
+
+    Built for the incremental per-scan Parquet snapshot artifact
+    (``turboedge state pack-snapshots``, fed by ``storage.snapshots.
+    snapshot_paths_for_run_ids``): the caller already knows precisely which
+    snapshot files the current run wrote, so nothing here re-derives that
+    list or re-includes previously-packed history -- unlike ``pack_state
+    --include-snapshots``, which packs the *entire* accumulated
+    ``state/snapshots/`` tree every time it runs.
+
+    Raises:
+        ValueError: any path in ``files`` does not resolve to somewhere
+            inside ``state_dir`` -- the manifest's ``arcname`` is derived
+            via ``path.relative_to(state_dir)``, which silently assumes
+            every file lives there; this makes a violation an explicit
+            error instead of a confusing ``ValueError`` deep inside that
+            call.
+    """
+    state_dir = Path(state_dir)
+    out_path = Path(out_path)
+    resolved_root = state_dir.resolve()
+
+    ordered: list[Path] = []
+    for f in files:
+        path = Path(f)
+        try:
+            path.resolve().relative_to(resolved_root)
+        except ValueError:
+            raise ValueError(f"file {path!r} is not inside state_dir {state_dir!r}") from None
+        ordered.append(path)
+
+    # Sorted + de-duplicated: deterministic manifest ordering regardless of
+    # caller-supplied order, and safe against the same path appearing twice
+    # (e.g. a duplicate run_id in the caller's input).
+    return _pack_files(state_dir, out_path, passphrase, sorted(set(ordered)))
 
 
 def _validate_member(member: tarfile.TarInfo) -> None:
@@ -477,6 +572,7 @@ __all__ = [
     "StateArchiveError",
     "UnpackResult",
     "pack_state",
+    "pack_state_files",
     "unpack_state",
     "unpack_state_subset",
 ]

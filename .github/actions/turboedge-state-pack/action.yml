@@ -1,19 +1,24 @@
 name: "TurboEdge: pack and upload state"
 description: >-
   Pack the state directory (`turboedge state pack`) and upload it as a
-  workflow artifact. Two shapes share this action, selected by
-  `include_snapshots`: the small, lean package (state/snapshots/ -- the
-  immutable per-run Parquet archive -- excluded) every scan/eod/monthly
-  pipeline run packs several times a day, and the periodic full package
-  (snapshots included) the weekly job additionally uploads under a
-  separate, longer-retained artifact name. `actions/upload-artifact` is a
-  normal action step and works fine inside a composite action -- the only
-  composite-specific gotchas are that `run:` steps need their own `shell:`
-  and that a step's `if:` can only see prior steps *within this composite*,
-  not the calling job. Because of that second point, callers MUST gate the
-  call to this action with `if: success()` (never `always()`) so a failed
-  mode step never uploads a broken/incomplete state -- overwriting the
-  artifact history with bad state would corrupt every future restore.
+  workflow artifact. Every scan/eod/weekly/monthly job calls this with its
+  defaults for the small, lean shape (state/snapshots/ -- the immutable
+  per-run Parquet archive -- excluded); the weekly job additionally calls
+  it a second time with `artifact_name`/`retention_days` overrides only
+  (still the same lean shape) for a longer-retained DuckDB/ledger/registry/
+  trials restore point. `include_snapshots` (below) is for a manual/ad hoc
+  full export only -- no pipeline.yml job passes it; the accumulated
+  Parquet history is instead kept durable via the scan job's own `state
+  pack-snapshots` step, a separate mechanism from this action (see
+  state/archive.py's module docstring, "Parquet archiving"). `actions/
+  upload-artifact` is a normal action step and works fine inside a
+  composite action -- the only composite-specific gotchas are that `run:`
+  steps need their own `shell:` and that a step's `if:` can only see prior
+  steps *within this composite*, not the calling job. Because of that
+  second point, callers MUST gate the call to this action with
+  `if: success()` (never `always()`) so a failed mode step never uploads a
+  broken/incomplete state -- overwriting the artifact history with bad
+  state would corrupt every future restore.
 
 inputs:
   state_key:
@@ -22,8 +27,9 @@ inputs:
   include_snapshots:
     description: >-
       "true" to also pack state/snapshots/ (the immutable per-run Parquet
-      archive) -- the periodic full-backup shape. Default "false": the lean
-      shape (state/archive.py LEAN_INCLUDE_DIRS) packed several times a day.
+      archive) -- a manual/ad hoc full-export shape. Default "false": the
+      lean shape (state/archive.py LEAN_INCLUDE_DIRS) every pipeline.yml
+      job packs. No pipeline.yml job passes "true".
     required: false
     default: "false"
   artifact_name:
@@ -32,11 +38,11 @@ inputs:
     default: "turboedge-state-enc"
   retention_days:
     description: >-
-      Artifact retention, in days. The lean package rotates fast (several
-      uploads/day, and only the latest is ever restored in the normal
-      path) so a short window is enough to cover the restore step's
-      50-successful-run fallback search; the full package is the only
-      backup of the Parquet archive and gets a much longer window.
+      Artifact retention, in days. The default (short) window is enough to
+      cover the restore step's 50-successful-run fallback search for the
+      fast-rotating lean package (several uploads/day, only the latest ever
+      restored in the normal path); the weekly job's second call overrides
+      this to 90 for its longer-retained backup copy.
     required: false
     default: "14"
   out_file:

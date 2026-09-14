@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 from turboedge.provenance import data_snapshot_hash
 from turboedge.storage.schemas import CandidateEvaluation, ProductSnapshot
-from turboedge.storage.snapshots import write_snapshot_parquet
+from turboedge.storage.snapshots import snapshot_paths_for_run_ids, write_snapshot_parquet
 
 
 def test_write_snapshot_parquet_creates_expected_path(  # type: ignore[no-untyped-def]
@@ -173,3 +173,92 @@ class _UnsupportedField(BaseModel):
 def test_write_snapshot_parquet_unsupported_annotation_raises_type_error(tmp_path: Path) -> None:
     with pytest.raises(TypeError, match="unsupported annotation"):
         write_snapshot_parquet("bogus_table", [_UnsupportedField(value=1 + 2j)], "run-x", tmp_path)
+
+
+# --------------------------------------------------------------------------
+# snapshot_paths_for_run_ids -- the "only this run's new files" lookup that
+# `turboedge state pack-snapshots` relies on for the incremental per-scan
+# Parquet artifact (pipeline.yml's scan job), instead of re-uploading the
+# whole accumulated state/snapshots/ history on every run.
+# --------------------------------------------------------------------------
+
+
+def test_snapshot_paths_for_run_ids_finds_only_the_requested_run_ids(  # type: ignore[no-untyped-def]
+    tmp_path: Path, make_product_snapshot
+) -> None:
+    """Older history (a prior run's file) plus this run's new files coexist
+    under state/snapshots/ -- only the requested run_ids' files come back,
+    proving the lookup does not silently re-collect everything."""
+    old = write_snapshot_parquet(
+        "product_snapshots", [make_product_snapshot()], "run-old-1", tmp_path
+    )
+    new_dax = write_snapshot_parquet(
+        "product_snapshots", [make_product_snapshot()], "run-new-dax", tmp_path
+    )
+    new_ndx = write_snapshot_parquet(
+        "product_snapshots", [make_product_snapshot()], "run-new-ndx", tmp_path
+    )
+
+    found = snapshot_paths_for_run_ids(tmp_path, ["run-new-dax", "run-new-ndx"])
+
+    assert found == sorted([new_dax.path, new_ndx.path])
+    assert old.path not in found
+
+
+def test_snapshot_paths_for_run_ids_spans_multiple_tables_and_dates(  # type: ignore[no-untyped-def]
+    tmp_path: Path, make_product_snapshot
+) -> None:
+    """One turboedge scan-all run_id can appear under more than one table
+    (e.g. product_snapshots and signals both written for the same run) --
+    every matching file across every table/date partition is returned."""
+    ps = write_snapshot_parquet(
+        "product_snapshots",
+        [make_product_snapshot()],
+        "run-shared",
+        tmp_path,
+        snapshot_date=datetime(2026, 9, 10, tzinfo=UTC),
+    )
+    other_day = write_snapshot_parquet(
+        "product_snapshots",
+        [make_product_snapshot()],
+        "run-shared",
+        tmp_path,
+        snapshot_date=datetime(2026, 9, 11, tzinfo=UTC),
+    )
+
+    found = snapshot_paths_for_run_ids(tmp_path, ["run-shared"])
+
+    assert set(found) == {ps.path, other_day.path}
+
+
+def test_snapshot_paths_for_run_ids_tolerates_unknown_and_duplicate_ids(
+    tmp_path: Path, make_product_snapshot
+) -> None:
+    result = write_snapshot_parquet(
+        "product_snapshots", [make_product_snapshot()], "run-known", tmp_path
+    )
+
+    found = snapshot_paths_for_run_ids(
+        tmp_path, ["run-known", "run-known", "run-never-written", ""]
+    )
+
+    assert found == [result.path]
+
+
+def test_snapshot_paths_for_run_ids_empty_input_returns_empty(tmp_path: Path) -> None:
+    assert snapshot_paths_for_run_ids(tmp_path, []) == []
+
+
+def test_snapshot_paths_for_run_ids_no_snapshots_dir_returns_empty(tmp_path: Path) -> None:
+    assert not (tmp_path / "snapshots").exists()
+    assert snapshot_paths_for_run_ids(tmp_path, ["run-1"]) == []
+
+
+def test_snapshot_paths_for_run_ids_rejects_unsafe_run_id(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="unsafe run_id"):
+        snapshot_paths_for_run_ids(tmp_path, ["../../etc/passwd"])
+
+
+def test_snapshot_paths_for_run_ids_rejects_glob_metacharacters(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="unsafe run_id"):
+        snapshot_paths_for_run_ids(tmp_path, ["*"])

@@ -239,6 +239,45 @@ def test_scan_all_writes_summary_json(
     assert sum(payload["counts"].values()) >= 1
 
 
+def test_scan_all_summary_json_run_ids_match_written_snapshot_files(
+    tmp_config_dir: Path,
+    tmp_state_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``reports/summary.json``'s ``run_ids`` (added so pipeline.yml's scan
+    job can build the incremental Parquet snapshot artifact via ``state
+    pack-snapshots --run-id ...``) must be exactly the run_ids `scan-all`
+    used -- and each one must have a real Parquet file under
+    state/snapshots/ to show for it, otherwise the workflow step reading
+    this field would pack nothing."""
+    monkeypatch.chdir(tmp_path)
+    _patch_scan_all_adapters(monkeypatch, {"DAX": _make_bars(), "EURUSD": _make_bars()})
+
+    result = runner.invoke(
+        app,
+        [
+            *_base_args(tmp_config_dir, tmp_state_dir),
+            "scan-all",
+            "--underlying",
+            "DAX",
+            "--underlying",
+            "EURUSD",
+        ],
+    )
+    assert result.exit_code == 0, result.stdout
+
+    payload = json.loads((tmp_path / "reports" / "summary.json").read_text())
+    run_ids = payload["run_ids"]
+    assert set(run_ids) == {"DAX", "EURUSD"}
+    assert len(set(run_ids.values())) == 2  # every underlying gets its own run_id
+
+    from turboedge.storage.snapshots import snapshot_paths_for_run_ids
+
+    found = snapshot_paths_for_run_ids(tmp_state_dir, list(run_ids.values()))
+    assert len(found) == 2
+
+
 def test_label_and_learn_no_due_entries_write_summary(
     tmp_config_dir: Path, tmp_state_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

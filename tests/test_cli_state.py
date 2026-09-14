@@ -146,6 +146,158 @@ def test_state_pack_include_snapshots_flag_packs_the_parquet_archive(
     ).read_bytes() == b"fake-parquet-bytes"
 
 
+# -- state pack-snapshots (incremental per-scan Parquet artifact) -----------
+
+
+def test_state_pack_snapshots_missing_key_exits_2(
+    tmp_config_dir: Path, tmp_state_dir: Path
+) -> None:
+    result = runner.invoke(
+        app,
+        [
+            *_base_args(tmp_config_dir, tmp_state_dir),
+            "state",
+            "pack-snapshots",
+            "--run-id",
+            "run1",
+            "--out",
+            "/tmp/x.tar.enc",
+        ],
+    )
+    assert result.exit_code == 2
+    assert "TURBOEDGE_STATE_KEY" in result.stderr
+
+
+def test_state_pack_snapshots_packs_only_the_requested_run_ids(
+    tmp_config_dir: Path, tmp_state_dir: Path, tmp_path: Path
+) -> None:
+    """Simulates the scan job's real scenario: older Parquet history from a
+    prior run already sits under state/snapshots/, plus two new files this
+    "run" just wrote (one per underlying). `pack-snapshots` with only the
+    two new run_ids must produce an archive containing exactly those two
+    files -- never the older one, and never anything from state/registry or
+    state/ledger."""
+    old_dir = tmp_state_dir / "snapshots" / "product_snapshots" / "date=2026-09-09"
+    old_dir.mkdir(parents=True)
+    (old_dir / "run-old.parquet").write_bytes(b"old-bytes")
+
+    new_dir = tmp_state_dir / "snapshots" / "product_snapshots" / "date=2026-09-10"
+    new_dir.mkdir(parents=True)
+    (new_dir / "run-dax.parquet").write_bytes(b"dax-bytes")
+    (new_dir / "run-ndx.parquet").write_bytes(b"ndx-bytes")
+
+    (tmp_state_dir / "registry").mkdir()
+    (tmp_state_dir / "registry" / "models.json").write_text('{"champion": "tsmom"}')
+
+    out_path = tmp_path / "snapshot-batch.tar.enc"
+    result = runner.invoke(
+        app,
+        [
+            *_base_args(tmp_config_dir, tmp_state_dir),
+            "state",
+            "pack-snapshots",
+            "--run-id",
+            "run-dax",
+            "--run-id",
+            "run-ndx",
+            "--out",
+            str(out_path),
+        ],
+        env={"TURBOEDGE_STATE_KEY": _PASSPHRASE},
+    )
+    assert result.exit_code == 0, result.output
+    assert "Packed 2 snapshot file(s)" in result.stdout
+    assert out_path.is_file()
+
+    restore_dir = tmp_path / "restored"
+    unpack_result = runner.invoke(
+        app,
+        [*_base_args(tmp_config_dir, restore_dir), "state", "unpack", "--in", str(out_path)],
+        env={"TURBOEDGE_STATE_KEY": _PASSPHRASE},
+    )
+    assert unpack_result.exit_code == 0, unpack_result.output
+    assert (
+        restore_dir / "snapshots" / "product_snapshots" / "date=2026-09-10" / "run-dax.parquet"
+    ).read_bytes() == b"dax-bytes"
+    assert (
+        restore_dir / "snapshots" / "product_snapshots" / "date=2026-09-10" / "run-ndx.parquet"
+    ).read_bytes() == b"ndx-bytes"
+    # Neither the older run's file nor anything outside snapshots/ was pulled in.
+    assert not (
+        restore_dir / "snapshots" / "product_snapshots" / "date=2026-09-09" / "run-old.parquet"
+    ).exists()
+    assert not (restore_dir / "registry").exists()
+
+
+def test_state_pack_snapshots_no_matching_run_ids_writes_nothing(
+    tmp_config_dir: Path, tmp_state_dir: Path, tmp_path: Path
+) -> None:
+    """The scan job's workflow step relies on --out NOT being created when
+    there is nothing to pack (it gates the artifact upload on the file's
+    existence) -- this must exit 0 without writing --out."""
+    snap_dir = tmp_state_dir / "snapshots" / "product_snapshots" / "date=2026-09-10"
+    snap_dir.mkdir(parents=True)
+    (snap_dir / "run-unrelated.parquet").write_bytes(b"bytes")
+
+    out_path = tmp_path / "snapshot-batch.tar.enc"
+    result = runner.invoke(
+        app,
+        [
+            *_base_args(tmp_config_dir, tmp_state_dir),
+            "state",
+            "pack-snapshots",
+            "--run-id",
+            "run-never-written",
+            "--out",
+            str(out_path),
+        ],
+        env={"TURBOEDGE_STATE_KEY": _PASSPHRASE},
+    )
+    assert result.exit_code == 0, result.output
+    assert "nothing to pack" in result.stdout.lower()
+    assert not out_path.exists()
+
+
+def test_state_pack_snapshots_no_run_ids_given_writes_nothing(
+    tmp_config_dir: Path, tmp_state_dir: Path, tmp_path: Path
+) -> None:
+    out_path = tmp_path / "snapshot-batch.tar.enc"
+    result = runner.invoke(
+        app,
+        [
+            *_base_args(tmp_config_dir, tmp_state_dir),
+            "state",
+            "pack-snapshots",
+            "--out",
+            str(out_path),
+        ],
+        env={"TURBOEDGE_STATE_KEY": _PASSPHRASE},
+    )
+    assert result.exit_code == 0, result.output
+    assert not out_path.exists()
+
+
+def test_state_pack_snapshots_rejects_unsafe_run_id(
+    tmp_config_dir: Path, tmp_state_dir: Path, tmp_path: Path
+) -> None:
+    out_path = tmp_path / "snapshot-batch.tar.enc"
+    result = runner.invoke(
+        app,
+        [
+            *_base_args(tmp_config_dir, tmp_state_dir),
+            "state",
+            "pack-snapshots",
+            "--run-id",
+            "../../etc/passwd",
+            "--out",
+            str(out_path),
+        ],
+        env={"TURBOEDGE_STATE_KEY": _PASSPHRASE},
+    )
+    assert result.exit_code == 2
+    assert "unsafe run_id" in result.stderr
+
+
 # -- state restore-snapshots -------------------------------------------------
 
 

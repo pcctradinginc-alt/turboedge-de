@@ -32,6 +32,7 @@ polars' Arrow builder.
 from __future__ import annotations
 
 import json
+import re
 import types
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -271,3 +272,48 @@ def write_snapshot_parquet(
         row_count=len(records),
         data_snapshot_hash=data_snapshot_hash(records),
     )
+
+
+_RUN_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def snapshot_paths_for_run_ids(state_dir: Path, run_ids: Sequence[str]) -> list[Path]:
+    """Every immutable Parquet file under ``<state_dir>/snapshots/`` that
+    :func:`write_snapshot_parquet` wrote for one of ``run_ids``.
+
+    Each call to :func:`write_snapshot_parquet` writes exactly one file,
+    named ``<run_id>.parquet``, under ``snapshots/<table>/date=YYYY-MM-DD/``.
+    One ``turboedge scan-all`` invocation calls it once per underlying, each
+    under its own ``run_id`` (``pipeline.scan_all.ScanAllResult.run_ids``).
+    This lets a caller build "exactly the files THIS run wrote" without
+    walking/re-uploading the whole accumulated archive -- used by
+    ``turboedge state pack-snapshots`` for the incremental per-scan snapshot
+    artifact (state/archive.py's ``pack_state_files``), so a fast, several-
+    times-a-day job can back up its own new Parquet output without ever
+    re-shipping history it already uploaded on a prior run.
+
+    ``run_ids`` may contain duplicates or ids that produced no file at all
+    (e.g. an underlying ``run_scan_all`` skipped before
+    :func:`write_snapshot_parquet` ran for it) -- both are tolerated,
+    simply yielding fewer/no matches.
+
+    Raises:
+        ValueError: any ``run_id`` contains a character outside
+            ``[A-Za-z0-9_-]``. :func:`turboedge.provenance.new_run_id`
+            never produces those, so this is a defensive rejection of
+            building a glob pattern out of unexpected caller-supplied text
+            rather than a real expected input shape.
+    """
+    unique_ids = sorted({rid for rid in run_ids if rid})
+    for rid in unique_ids:
+        if not _RUN_ID_RE.match(rid):
+            raise ValueError(f"unsafe run_id for snapshot lookup: {rid!r}")
+
+    root = Path(state_dir) / "snapshots"
+    if not unique_ids or not root.is_dir():
+        return []
+
+    found: list[Path] = []
+    for rid in unique_ids:
+        found.extend(root.rglob(f"{rid}.parquet"))
+    return sorted(found)

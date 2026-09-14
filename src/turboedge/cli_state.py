@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Annotated
 
 import structlog
 import typer
@@ -26,6 +27,7 @@ from turboedge.state.archive import (
     ArchiveConfig,
     StateArchiveError,
     pack_state,
+    pack_state_files,
     unpack_state,
     unpack_state_subset,
 )
@@ -36,6 +38,7 @@ from turboedge.state.retention import (
     compact_product_snapshots,
 )
 from turboedge.storage.duckdb import Store
+from turboedge.storage.snapshots import snapshot_paths_for_run_ids
 
 logger = structlog.get_logger(__name__)
 
@@ -80,10 +83,12 @@ def state_pack(
         help=(
             "Include state/snapshots/ (the immutable per-run Parquet archive) in the "
             "packed archive. Default: excluded -- the small 'lean' package "
-            "(state/archive.py LEAN_INCLUDE_DIRS) every scan/eod/monthly pipeline run "
-            "packs several times a day. Pass --include-snapshots for the periodic "
-            "'full' archive (FULL_INCLUDE_DIRS) that actually backs up the Parquet "
-            "history (pipeline.yml's weekly job only)."
+            "(state/archive.py LEAN_INCLUDE_DIRS) every scan/eod/weekly/monthly pipeline "
+            "run packs several times a day. --include-snapshots produces the 'full' "
+            "shape (FULL_INCLUDE_DIRS) for a manual/ad hoc complete export; no "
+            "pipeline.yml job packs it automatically -- the accumulated Parquet "
+            "history is instead kept durable incrementally by every scan run via "
+            "'state pack-snapshots' (see state/archive.py's module docstring)."
         ),
     ),
 ) -> None:
@@ -118,6 +123,86 @@ def state_pack(
     console.print(
         f"[green]Packed {result.file_count} file(s), {result.total_bytes} bytes -> "
         f"{result.out_path} ({result.archive_bytes} bytes encrypted, {kind})[/green]"
+    )
+
+
+@state_app.command("pack-snapshots")
+def state_pack_snapshots(
+    ctx: typer.Context,
+    run_id: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--run-id",
+            help=(
+                "Only pack the Parquet snapshot file(s) written under this run_id "
+                "(repeatable) -- typically every value from one scan-all invocation's "
+                "run_ids (reports/summary.json's 'run_ids' field, one per underlying)."
+            ),
+        ),
+    ] = None,
+    out: str = typer.Option(
+        ..., "--out", help="Output path for the encrypted incremental snapshot archive"
+    ),
+) -> None:
+    """Pack ONLY the immutable Parquet snapshot file(s) that THIS run wrote
+    -- identified by --run-id -- into their own small encrypted archive.
+
+    This is the incremental counterpart to ``state pack --include-snapshots``
+    (which re-packs the *entire* accumulated state/snapshots/ history every
+    time): ``turboedge scan-all`` writes one Parquet file per underlying
+    (storage/snapshots.py's write_snapshot_parquet), and this command finds
+    exactly those files via storage.snapshots.snapshot_paths_for_run_ids and
+    packs only them, so a several-times-a-day scan job can durably archive
+    its own new output without re-uploading anything it already shipped on a
+    prior run. See state/archive.py's module docstring ("Parquet archiving")
+    for why this replaced the old weekly-only full-archive approach.
+
+    If none of the given --run-id values produced a snapshot file (e.g.
+    every underlying in the batch was skipped before writing one), no
+    archive is written -- --out will not exist -- and this exits 0 with a
+    note rather than an error; the caller (pipeline.yml) should skip the
+    upload step in that case.
+
+    Exit codes: 0 ok (including the "nothing to pack" case), 2
+    TURBOEDGE_STATE_KEY missing/too short, or a --run-id containing
+    characters new_run_id() never produces.
+    """
+    passphrase = _require_state_key()
+    state_dir = _state_dir_from_ctx(ctx)
+    out_path = Path(out)
+    run_ids = run_id or []
+
+    try:
+        files = snapshot_paths_for_run_ids(state_dir, run_ids)
+    except ValueError as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=2) from exc
+
+    if not files:
+        logger.info("state_snapshots_pack_empty", run_id_count=len(run_ids))
+        console.print(
+            f"[yellow]No snapshot Parquet file(s) found for {len(run_ids)} run_id(s) -- "
+            "nothing to pack.[/yellow]"
+        )
+        raise typer.Exit(code=0)
+
+    try:
+        result = pack_state_files(state_dir, out_path, passphrase, files)
+    except StateCryptoError as exc:
+        err_console.print(f"[red]Snapshot pack failed: {exc}[/red]")
+        raise typer.Exit(code=2) from exc
+
+    logger.info(
+        "state_snapshots_packed",
+        out=str(result.out_path),
+        file_count=result.file_count,
+        total_bytes=result.total_bytes,
+        archive_bytes=result.archive_bytes,
+        run_id_count=len(run_ids),
+    )
+    console.print(
+        f"[green]Packed {result.file_count} snapshot file(s), {result.total_bytes} bytes -> "
+        f"{result.out_path} ({result.archive_bytes} bytes encrypted)[/green]"
     )
 
 
@@ -195,12 +280,17 @@ def state_restore_snapshots(
 
     Unlike ``state unpack``, this never replaces or deletes anything in
     --state-dir -- it is a partial, additive merge, meant to run AFTER a
-    normal ``state unpack`` (which is lean by default and no longer carries
-    state/snapshots/, see ``state pack --include-snapshots``). Used by
-    pipeline.yml's weekly job to layer the periodic full Parquet backup back
-    onto an otherwise-lean restore, so previously accumulated Parquet
-    history is never silently dropped (CLAUDE.md rule 33) just because the
-    fast-rotating daily archive stopped carrying it.
+    normal ``state unpack`` (which is lean by default and never carries
+    state/snapshots/, see ``state pack --include-snapshots``). This is a
+    manual, as-needed recovery tool (e.g. restoring onto a fresh state_dir
+    from a full export someone took with ``state pack --include-snapshots``)
+    -- it is NOT part of pipeline.yml's automated restore flow. The
+    incremental per-scan Parquet snapshot artifact (``state pack-snapshots``,
+    uploaded by every scan run) is what now keeps the accumulated Parquet
+    history durable (CLAUDE.md rule 33); see state/archive.py's module
+    docstring ("Parquet archiving") for the full history of why this
+    replaced an earlier weekly-only full-archive approach that could not
+    actually carry forward scan output written after it shipped.
 
     Exit codes: 0 ok, 2 TURBOEDGE_STATE_KEY missing/too short, archive
     missing, wrong key, or a corrupted/unsafe archive.

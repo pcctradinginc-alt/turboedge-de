@@ -51,23 +51,34 @@ Konkretisierungen (z.B. Anpassungsbudget, Ruin-Grenzen) stehen versioniert in GO
 
 ---
 
-## Current Milestone: Phase 0 + Phase 1 + Minimal Gmail Notifier
+## Current Milestone: Full Pipeline Implemented — No Measured Edge Yet
 
-**Phase 0 – Data Feasibility & Product Snapshot**
-- Product sources: BNP Paribas issuer API (live bid/ask), Citi issuer API (master data + closing reference prices only, partial coverage), CSV import (optional, manual)
+Everything through the learning loop and reporting is implemented and
+wired into the scheduled pipeline (`.github/workflows/pipeline.yml`):
+product ingestion/pricing (Phase 0+1), the forecast/path-model/EV engine,
+the forward ledger, the label/learn loop, position re-evaluation, and
+monthly/weekly reporting. **ACTIONABLE is technically reachable** —
+`ranking/gates.py::evaluate_gates` assigns it whenever `lcb_ev`/`p_ko`/
+`cluster_risk_pass` (computed by the real EV pipeline in
+`pipeline/scan.py`, which every `scan-all` run exercises) clear every
+gate; it is not hard-disabled.
+
+**In practice, no ACTIONABLE candidate is produced today, for one
+reason: no forecast model has a measured, statistically significant
+out-of-sample advantage over doing nothing.** See
+`docs/measured_results.md` (updated 2026-09-13) — 0/20 forecast-model
+cells and 0/80 pre-registered challenger-signal cells clear the ladder in
+`GOVERNANCE.md` §2. The correct, deliberate behavior of the system right
+now is "no trade" on every scan; thresholds are not lowered to
+manufacture suggestions. This is a measured research result, not a
+missing feature — see the roadmap in README.md.
+
+**Data sources**
+- Product sources: BNP Paribas issuer API (live bid/ask), Citi issuer API (master data + closing reference prices only, partial coverage), gettex, CSV import (optional, manual)
 - Börse Stuttgart and Börse Frankfurt/Deutsche Börse: NOT implemented — blocked (Cloudflare bot management / anti-bot signature headers). Never bypass access protection; see docs/data_sources.md
-- Product normalization & deduplication
-- Quote health scoring
-- Financing level history
-- Persistence (DuckDB + Parquet)
 
-**Phase 1 – Pricing / Cost Engine**
-- Intrinsic value (Long/Short)
-- Financing spread inference from level changes
-- Gap premium estimation (overnight/weekend)
-- Issuer margin decomposition
-- Cross-issuer comparison
-- Integrity checks (bid ≤ ask, ratio > 0, barrier valid, etc.)
+**Pricing / Cost Engine**
+- Intrinsic value (Long/Short), financing spread inference, gap premium estimation, issuer margin decomposition, cross-issuer comparison, integrity checks (bid ≤ ask, ratio > 0, barrier valid, etc.)
 
 **Protected TSMOM Baseline (§7)**
 - Lookbacks: [21, 63, 126] trading days
@@ -77,16 +88,18 @@ Konkretisierungen (z.B. Anpassungsbudget, Ruin-Grenzen) stehen versioniert in GO
 - Threshold: 0.5 (versionized, never silent reoptimization)
 - Status: PROTECTED
 
-**Minimal Gmail Notifier**
+**Forecast / Path / EV pipeline**
+- Forecast models (TSMOM-distribution, logistic, null), path/KO simulation with calibration comparison, product×horizon EV/LCB/sizing/cluster evaluation — see `docs/measured_results.md` for measured performance of each
+
+**Forward ledger, learning loop, reporting**
+- Forward ledger (entry + counterfactual alternatives), labeling of matured entries, posterior/ensemble-weight updates, drift detection (Page-Hinkley), model registry (champion/challenger/dormant), monthly/weekly reports
+
+**Gmail Notifier**
 - SMTP SSL to smtp.gmail.com:465
 - Env: GMAIL_USER, GMAIL_APP_PASSWORD, TURBOEDGE_EMAIL_TO
 - Dry-run mode if credentials missing
 - Jinja2 templates (plaintext)
 - Deduplication via hash in DuckDB
-
-**ACTIONABLE BLOCKED**
-- ACTIONABLE category never assigned in this milestone (LCB_EV requires Path Model from Phase 3+).
-- Only WATCH, REJECT, DATA_QUALITY categories used.
 
 ---
 
@@ -124,17 +137,35 @@ If empirically unanswerable, mark as `experimental`.
 
 ---
 
-## Core CLI (Phase 0+1 subset)
+## Core CLI
+
+Global options (`--config-dir`, `--state-dir`, `--log-format`) go BEFORE
+the subcommand. Verified against `uv run turboedge --help` (and each
+subcommand's own `--help`) on 2026-09-14 — re-check there if this list and
+reality ever diverge again.
 
 ```bash
 turboedge --config-dir ./configs --state-dir ./state --log-format console universe [--underlying DAX]...
-turboedge scan --underlying DAX [--top 20] [--report-out ./reports/scan.txt] [--json-out ./reports/scan.json]
-turboedge sources health [--json-out ./reports/health.json] [--email-on-fail]
+turboedge scan --underlying DAX [--direction long|short] [--horizon 3d|5d|7d|10d|14d] [--top 20] [--report-out PATH] [--json-out PATH] [--email]
+turboedge scan-all [--underlying DAX ...] [--email] [--json-out PATH]     # every active underlying, full forecast/EV pipeline
+turboedge label                                                          # label matured forward-ledger entries
+turboedge learn                                                          # update posteriors, ensemble weights, drift
+turboedge forecast --underlying DAX                                      # diagnostic: fit models, print per-horizon forecast
+turboedge backtest [--underlying DAX]                                    # walk-forward evaluate every model, persist results
+turboedge sources health [--json-out PATH] [--email-on-fail]
 turboedge notify test
-turboedge db info
 turboedge position add --wkn XXXXX --qty 100 --price 4.86 --date 2026-09-10
-turboedge position list
+turboedge position list [--status open|closed]
 turboedge position close --wkn XXXXX --price 5.42 --date 2026-09-15
+turboedge position reevaluate [--email]                                  # HOLD/REDUCE/EXIT/INVALIDATED per open position
+turboedge report monthly [--month YYYY-MM] [--email]
+turboedge research tournament [--email]                                  # weekly champion/challenger/dormant comparison
+turboedge db info
+turboedge db compact [--keep-days N] [--hard-delete-after-days N]
+turboedge state pack --out state.tar.enc [--include-snapshots]
+turboedge state pack-snapshots --run-id ID [--run-id ID ...] --out PATH  # incremental per-scan Parquet snapshot artifact
+turboedge state unpack --in state.tar.enc [--allow-missing]
+turboedge state restore-snapshots --in state-full.tar.enc                # additive merge of state/snapshots/ only (manual/ad hoc use)
 ```
 
 ---

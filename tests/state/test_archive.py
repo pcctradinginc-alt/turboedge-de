@@ -17,6 +17,7 @@ from turboedge.state.archive import (
     ArchiveConfig,
     StateArchiveError,
     pack_state,
+    pack_state_files,
     unpack_state,
     unpack_state_subset,
 )
@@ -460,6 +461,119 @@ def test_pack_on_empty_state_dir_produces_minimal_archive(tmp_path: Path) -> Non
     unpack_result = unpack_state(archive_path, restore_dir, _PASSPHRASE)
     assert unpack_result.file_count == 0
     assert restore_dir.is_dir()
+
+
+# -- pack_state_files (incremental per-scan snapshot artifact) ----------
+
+
+def test_pack_state_files_packs_only_the_given_files(tmp_path: Path) -> None:
+    """Two files already exist under state/snapshots/ (mimicking older
+    history plus this run's new output) -- pack_state_files with only the
+    "new" one selected must not pull the other in, proving the incremental
+    artifact never silently re-includes accumulated history."""
+    state_dir = tmp_path / "state"
+    old_dir = state_dir / "snapshots" / "product_snapshots" / "date=2026-09-09"
+    old_dir.mkdir(parents=True)
+    old_file = old_dir / "run-old.parquet"
+    old_file.write_bytes(b"old-bytes")
+
+    new_dir = state_dir / "snapshots" / "product_snapshots" / "date=2026-09-10"
+    new_dir.mkdir(parents=True)
+    new_file = new_dir / "run-new.parquet"
+    new_file.write_bytes(b"new-bytes")
+
+    out_path = tmp_path / "out" / "snapshot-batch.tar.enc"
+    result = pack_state_files(state_dir, out_path, _PASSPHRASE, [new_file])
+
+    assert result.file_count == 1
+    assert result.total_bytes == len(b"new-bytes")
+    assert out_path.is_file()
+
+    restore_dir = tmp_path / "restored"
+    unpack_result = unpack_state(out_path, restore_dir, _PASSPHRASE)
+    assert unpack_result.file_count == 1
+    restored_path = (
+        restore_dir / "snapshots" / "product_snapshots" / "date=2026-09-10" / "run-new.parquet"
+    )
+    assert restored_path.read_bytes() == b"new-bytes"
+    # The old file must NOT have been carried into this archive.
+    assert not (
+        restore_dir / "snapshots" / "product_snapshots" / "date=2026-09-09" / "run-old.parquet"
+    ).exists()
+
+
+def test_pack_state_files_multiple_files_deterministic_order(tmp_path: Path) -> None:
+    """Files passed out of order still end up in a deterministic (sorted)
+    manifest order, regardless of the caller's argument order -- exact tar
+    bytes are NOT compared here since gzip/tar embed a wall-clock mtime per
+    call, which legitimately differs between two separate pack_state_files
+    invocations a few milliseconds apart."""
+    state_dir = tmp_path / "state"
+    snap_dir = state_dir / "snapshots" / "product_snapshots" / "date=2026-09-10"
+    snap_dir.mkdir(parents=True)
+    file_b = snap_dir / "run-b.parquet"
+    file_a = snap_dir / "run-a.parquet"
+    file_b.write_bytes(b"bbb")
+    file_a.write_bytes(b"aaa")
+
+    out_path = tmp_path / "out.tar.enc"
+    # Passed out of order -- the manifest/tar order must still be deterministic.
+    result1 = pack_state_files(state_dir, out_path, _PASSPHRASE, [file_b, file_a])
+
+    out_path2 = tmp_path / "out2.tar.enc"
+    result2 = pack_state_files(state_dir, out_path2, _PASSPHRASE, [file_a, file_b])
+
+    assert result1.file_count == result2.file_count == 2
+
+    def _manifest_paths(archive_path: Path) -> list[str]:
+        tar_bytes = decrypt_bytes(archive_path.read_bytes(), _PASSPHRASE)
+        with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:gz") as tar:
+            member = tar.extractfile(MANIFEST_NAME)
+            assert member is not None
+            manifest = json.loads(member.read())
+        return [f["path"] for f in manifest["files"]]
+
+    order1 = _manifest_paths(out_path)
+    order2 = _manifest_paths(out_path2)
+    assert order1 == order2 == sorted(order1)
+
+
+def test_pack_state_files_empty_list_produces_empty_archive(tmp_path: Path) -> None:
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    out_path = tmp_path / "empty.tar.enc"
+
+    result = pack_state_files(state_dir, out_path, _PASSPHRASE, [])
+
+    assert result.file_count == 0
+    assert out_path.is_file()
+    restore_dir = tmp_path / "restored-empty"
+    unpack_result = unpack_state(out_path, restore_dir, _PASSPHRASE)
+    assert unpack_result.file_count == 0
+
+
+def test_pack_state_files_rejects_path_outside_state_dir(tmp_path: Path) -> None:
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    outside = tmp_path / "elsewhere" / "not-in-state.parquet"
+    outside.parent.mkdir(parents=True)
+    outside.write_bytes(b"x")
+
+    with pytest.raises(ValueError, match="not inside state_dir"):
+        pack_state_files(state_dir, tmp_path / "out.tar.enc", _PASSPHRASE, [outside])
+
+
+def test_pack_state_files_deduplicates_repeated_paths(tmp_path: Path) -> None:
+    state_dir = tmp_path / "state"
+    snap_dir = state_dir / "snapshots" / "product_snapshots" / "date=2026-09-10"
+    snap_dir.mkdir(parents=True)
+    f = snap_dir / "run-1.parquet"
+    f.write_bytes(b"once")
+
+    out_path = tmp_path / "out.tar.enc"
+    result = pack_state_files(state_dir, out_path, _PASSPHRASE, [f, f])
+
+    assert result.file_count == 1
 
 
 # -- helpers ------------------------------------------------------------

@@ -127,7 +127,8 @@ Summary:
 {% endfor %}
 {% else %}No candidates in this milestone.
 {% endif %}
-No ACTIONABLE category in this milestone: path model / LCB(EV) not yet implemented (Phase 3/4).
+No ACTIONABLE candidates produced in practice (no forecast model has
+measured edge; see docs/measured_results.md).
 
 Research system — manual execution only."""
 

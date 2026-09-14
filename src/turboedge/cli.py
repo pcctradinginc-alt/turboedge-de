@@ -297,8 +297,9 @@ def scan_cmd(
 ) -> None:
     """Scan one underlying's turbo/knockout universe for cost-ranked candidates.
 
-    Never assigns ACTIONABLE in this milestone (``lcb_ev`` is always None --
-    the path model that would populate it is Phase 3/4 work). Exit codes:
+    ACTIONABLE is technically reachable; in practice, no ACTIONABLE candidate
+    is produced today because no forecast model has a measured out-of-sample
+    advantage over the null model (see docs/measured_results.md). Exit codes:
     0 ok (even with 0 candidates), 2 invalid --underlying/--horizon/
     --direction or adapter configuration, 3 every product source failed
     (NoProductsError) -- in that case --json-out/--report-out are still

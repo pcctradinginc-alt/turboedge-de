@@ -1,7 +1,7 @@
 # TurboEdge-DE risk gates and integrity tolerances.
-# Consumed by ranking/gates.py (WATCH/REJECT/DATA_QUALITY) and pricing/integrity.py.
-# ACTIONABLE is never assigned in this milestone regardless of these values
-# (lcb_ev is None until the Phase 3/4 path model exists).
+# Consumed by ranking/gates.py (WATCH/REJECT/DATA_QUALITY/ACTIONABLE) and pricing/integrity.py.
+# ACTIONABLE is technically reachable; in practice, no ACTIONABLE candidate is
+# produced today because no forecast model has measured out-of-sample edge.
 
 # Maximum acceptable (ask - bid) / ask before a candidate is rejected.
 max_spread_pct: 0.03

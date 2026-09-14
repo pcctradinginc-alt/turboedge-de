@@ -323,7 +323,7 @@ class CandidateEvaluation(BaseModel):
     wrapper_edge: float | None = None
     liquidity_factor: float | None = None
     integrity_passed: bool
-    # never set in this milestone; the ACTIONABLE gate requires this to be not-None
+    # Set by the EV pipeline when the path model is available; required by the ACTIONABLE gate
     lcb_ev: float | None = None
     # "Cost per exposure (h)": total round-trip cost over the scan horizon
     # (spread + gap premium + financing + max(issuer margin, 0)), as a %

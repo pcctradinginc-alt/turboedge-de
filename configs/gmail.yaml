@@ -22,8 +22,8 @@ smtp_port: 465
 # A scan mail is only sent when at least one candidate landed in one of
 # these categories this run (Master Spec §34: "Kein taeglicher
 # NO-TRADE-Spam") -- an all-REJECT/all-DATA_QUALITY scan sends nothing with
-# the default below. ACTIONABLE is listed for forward compatibility but
-# cannot occur in this milestone (lcb_ev is always None).
+# the default below. ACTIONABLE is technically reachable but not produced in
+# practice (no forecast model has measured edge; see docs/measured_results.md).
 #
 # To deliberately receive a "how did the scan go" overview mail even without
 # an ACTIONABLE candidate (e.g. while debugging a source), add the category

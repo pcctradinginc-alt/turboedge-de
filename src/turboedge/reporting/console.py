@@ -4,9 +4,9 @@
 (``turboedge universe``/``turboedge scan``); ``scan_result_to_json`` and
 ``scan_report_text`` produce the ``--json-out``/``--report-out`` file
 contents. Every renderer ends with the same "research system, no execution"
-reminder (CLAUDE.md rule 3), and the JSON/text reports structurally never
-contain an ``ACTIONABLE`` candidate in this milestone (``lcb_ev`` is always
-``None`` -- see ``ranking/gates.py``).
+reminder (CLAUDE.md rule 3), and JSON/text reports contain no ``ACTIONABLE``
+candidates in practice today (no forecast model has measured edge; see
+``docs/measured_results.md``).
 """
 
 from __future__ import annotations
@@ -94,7 +94,7 @@ def render_scan(result: ScanResult, console: Console, top: int) -> None:
     counts_line = "  ".join(f"{cat.value}={count}" for cat, count in result.counts.items())
     console.print(f"[bold]Candidates[/bold]  {counts_line}")
 
-    table = Table(title=f"Top {top} candidates (never ACTIONABLE in this milestone)")
+    table = Table(title=f"Top {top} candidates")
     for column in (
         "#",
         "WKN/ISIN",

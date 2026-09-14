@@ -2,13 +2,12 @@
 
 Formula reference: Master Spec §19 ("Candidate Gates").
 
-Build Contract, binding for this milestone: ``ACTIONABLE`` is never assigned
-(gate ``lcb_ev is None -> kein ACTIONABLE``) because ``LCB_EV`` requires the
-path model that only exists from Phase 3/4 onward. This module still
-implements the full ACTIONABLE gate so no behavior needs to change once
-``lcb_ev``/``p_ko``/``cluster_risk_pass`` are wired up by that later phase --
-in this milestone every call simply arrives with ``lcb_ev=None`` and falls
-through to WATCH.
+ACTIONABLE is technically reachable: it is assigned when ``lcb_ev > 0``,
+``p_ko`` is not None, and ``cluster_risk_pass`` is True. In practice, no
+ACTIONABLE candidate is produced today because no forecast model has a
+measured out-of-sample advantage over the null model (see
+docs/measured_results.md). Thresholds are not lowered to manufacture
+suggestions.
 """
 
 from __future__ import annotations
@@ -100,9 +99,10 @@ def evaluate_gates(inp: GateInput, th: GateThresholds) -> tuple[Category, list[s
        branch above.
     3. ``ACTIONABLE`` only if every other gate passed *and* ``lcb_ev is not
        None and lcb_ev > 0 and p_ko is not None and cluster_risk_pass is
-       True`` -- in this milestone ``lcb_ev`` is always ``None`` (no path
-       model yet), so this branch is unreachable in practice and every
-       surviving candidate falls through to ``WATCH``.
+       True``. In practice, no ACTIONABLE candidate is produced today
+       because no forecast model has measured out-of-sample edge (see
+       docs/measured_results.md), so every surviving candidate falls through
+       to ``WATCH``.
     4. ``WATCH`` otherwise, with a reason naming which ACTIONABLE
        precondition is still missing.
     """

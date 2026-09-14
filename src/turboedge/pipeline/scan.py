@@ -16,8 +16,8 @@ section) and Master Spec §3.1 ("Signal und Produkt strikt trennen") / §43
        gap premium, cross-issuer scores, liquidity -- per product, with a
        single product's failure downgrading only that product to
        DATA_QUALITY, never aborting the scan
-    7. candidate gates (ACTIONABLE is structurally unreachable this
-       milestone: lcb_ev is always None) and ranking
+    7. candidate gates (ACTIONABLE is technically reachable; no ACTIONABLE
+       candidates are produced today due to lack of measured forecast edge) and ranking
     8. candidates persisted; optional deduplicated Gmail report
 
 Every external dependency (product adapters, the underlying-price source, the

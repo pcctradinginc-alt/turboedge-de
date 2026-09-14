@@ -308,7 +308,7 @@ def test_scan_report_text_has_footer_and_no_actionable_candidates() -> None:
 
     assert text.endswith(_FOOTER)
     assert "Category: ACTIONABLE" not in text
-    assert "No ACTIONABLE category in this milestone" in text
+    assert "No ACTIONABLE candidates produced in practice" in text
     assert "DE000LONG001" in text
     assert "Run ID: run1" in text
     assert "Underlying: DAX" in text

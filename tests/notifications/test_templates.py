@@ -68,7 +68,7 @@ class TestRenderScanReport:
         assert "2 DATA_QUALITY" in subject
         assert "run_001" in body
         assert "Research system — manual execution only." in body
-        assert "No ACTIONABLE category" in body
+        assert "No ACTIONABLE candidates produced" in body
 
     def test_render_with_candidates(self) -> None:
         """Render a report with candidates."""
@@ -201,8 +201,8 @@ class TestRenderScanReport:
         _, body = render_scan_report(context)
 
         assert "Research system — manual execution only." in body
-        assert "No ACTIONABLE category in this milestone" in body
-        assert "Phase 3/4" in body
+        assert "No ACTIONABLE candidates produced in practice" in body
+        assert "measured edge" in body
 
     def test_warnings_rendered(self) -> None:
         """Test warnings are included in the report."""

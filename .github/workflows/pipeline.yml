@@ -190,6 +190,17 @@ jobs:
           TURBOEDGE_EMAIL_TO: ${{ secrets.TURBOEDGE_EMAIL_TO }}
         run: uv run turboedge --log-format json scan-all --email
 
+      # Compacting here as well as in `eod` is insurance, not an
+      # optimisation: measured saving is only ~0.65 MB/day, because
+      # same-day rows are inside keep_days no matter how often this runs.
+      # It matters because scheduled runs genuinely go missing -- on
+      # 2026-09-14 only one of three scheduled scans fired, and 37 minutes
+      # late -- so an `eod` that never starts would mean nothing is ever
+      # compacted. Must run before the state is packed below, otherwise the
+      # uncompacted database is what gets uploaded.
+      - name: Compact product_snapshots retention
+        run: uv run turboedge --log-format json db compact
+
       # ------------------------------------------------------------------
       # Incremental Parquet snapshot artifact (unbounded-growth fix,
       # follow-up): `scan-all` just wrote one immutable Parquet file per

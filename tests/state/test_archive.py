@@ -10,10 +10,15 @@ from pathlib import Path
 import pytest
 
 from turboedge.state.archive import (
+    FULL_INCLUDE_DIRS,
+    LEAN_INCLUDE_DIRS,
     MANIFEST_NAME,
+    SNAPSHOTS_PREFIX,
+    ArchiveConfig,
     StateArchiveError,
     pack_state,
     unpack_state,
+    unpack_state_subset,
 )
 from turboedge.state.crypto import (
     MIN_PASSPHRASE_LEN,
@@ -230,6 +235,212 @@ def test_unpack_missing_manifest_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(StateArchiveError, match=MANIFEST_NAME):
         unpack_state(evil_path, tmp_path / "restored6", _PASSPHRASE)
+
+
+# -- lean vs. full archive shapes (state pack --include-snapshots) --------
+
+
+def test_lean_config_excludes_snapshots_dir(
+    tmp_path: Path, make_product_snapshot: Callable[..., ProductSnapshot]
+) -> None:
+    state_dir = _make_state_dir(tmp_path, make_product_snapshot)
+    archive_path = tmp_path / "lean.tar.enc"
+    result = pack_state(
+        state_dir, archive_path, _PASSPHRASE, config=ArchiveConfig(include_dirs=LEAN_INCLUDE_DIRS)
+    )
+
+    tar_bytes = _decrypt_to_tar_bytes(archive_path)
+    with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:gz") as tar:
+        names = tar.getnames()
+    assert not any(n.startswith(SNAPSHOTS_PREFIX) for n in names)
+    assert "registry/models.json" in names
+    assert "ledger/entries.json" in names
+    assert "trials/trial1.json" in names
+    assert "turboedge.duckdb" in names
+    assert result.file_count == 4  # db + registry + ledger + trials, no snapshots
+
+    restore_dir = tmp_path / "restored_lean"
+    unpack_result = unpack_state(archive_path, restore_dir, _PASSPHRASE)
+    assert unpack_result.file_count == 4
+    assert not (restore_dir / "snapshots").exists()
+    # Everything else still round-trips.
+    assert (restore_dir / "registry" / "models.json").read_text() == '{"champion": "tsmom"}'
+
+
+def test_full_config_includes_snapshots_dir(
+    tmp_path: Path, make_product_snapshot: Callable[..., ProductSnapshot]
+) -> None:
+    state_dir = _make_state_dir(tmp_path, make_product_snapshot)
+    archive_path = tmp_path / "full.tar.enc"
+    result = pack_state(
+        state_dir, archive_path, _PASSPHRASE, config=ArchiveConfig(include_dirs=FULL_INCLUDE_DIRS)
+    )
+
+    tar_bytes = _decrypt_to_tar_bytes(archive_path)
+    with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:gz") as tar:
+        names = tar.getnames()
+    assert any(n.startswith(SNAPSHOTS_PREFIX) for n in names)
+    assert result.file_count == 5  # db + snapshots + registry + ledger + trials
+
+
+# -- unpack_state_subset (additive merge, e.g. weekly restoring snapshots/) -
+
+
+def test_unpack_state_subset_merges_onto_existing_lean_restore(
+    tmp_path: Path, make_product_snapshot: Callable[..., ProductSnapshot]
+) -> None:
+    state_dir = _make_state_dir(tmp_path, make_product_snapshot)
+    lean_path = tmp_path / "lean.tar.enc"
+    full_path = tmp_path / "full.tar.enc"
+    pack_state(
+        state_dir, lean_path, _PASSPHRASE, config=ArchiveConfig(include_dirs=LEAN_INCLUDE_DIRS)
+    )
+    pack_state(
+        state_dir, full_path, _PASSPHRASE, config=ArchiveConfig(include_dirs=FULL_INCLUDE_DIRS)
+    )
+
+    restore_dir = tmp_path / "restored"
+    unpack_state(lean_path, restore_dir, _PASSPHRASE)
+    assert not (restore_dir / "snapshots").exists()
+    # A lean restore's registry content is the baseline the subset merge
+    # below must NOT disturb.
+    assert (restore_dir / "registry" / "models.json").read_text() == '{"champion": "tsmom"}'
+
+    subset_result = unpack_state_subset(
+        full_path, restore_dir, _PASSPHRASE, prefixes=(SNAPSHOTS_PREFIX,)
+    )
+
+    assert subset_result.file_count == 1
+    assert (
+        restore_dir / "snapshots" / "product_snapshots" / "date=2026-09-10" / "run1.parquet"
+    ).read_bytes() == b"fake-parquet-bytes"
+    # Untouched: db, registry, ledger, trials survive exactly as the lean
+    # restore left them.
+    assert (restore_dir / "registry" / "models.json").read_text() == '{"champion": "tsmom"}'
+    assert (restore_dir / "ledger" / "entries.json").read_text() == "[]"
+    with Store(restore_dir / "turboedge.duckdb") as store:
+        store.init_schema()
+        assert store.table_counts()["product_snapshots"] == 1
+
+
+def test_unpack_state_subset_does_not_overwrite_newer_state_dir_files(
+    tmp_path: Path, make_product_snapshot: Callable[..., ProductSnapshot]
+) -> None:
+    """A stale full archive's non-matching content (e.g. an older db) must
+    never leak into state_dir via a subset restore -- only prefix-matching
+    entries are ever written."""
+    state_dir = _make_state_dir(tmp_path, make_product_snapshot)
+    full_path = tmp_path / "full.tar.enc"
+    pack_state(
+        state_dir, full_path, _PASSPHRASE, config=ArchiveConfig(include_dirs=FULL_INCLUDE_DIRS)
+    )
+
+    target_dir = tmp_path / "target"
+    target_dir.mkdir()
+    (target_dir / "turboedge.duckdb").write_bytes(b"sentinel-current-db")
+
+    unpack_state_subset(full_path, target_dir, _PASSPHRASE, prefixes=(SNAPSHOTS_PREFIX,))
+
+    assert (target_dir / "turboedge.duckdb").read_bytes() == b"sentinel-current-db"
+    assert (
+        target_dir / "snapshots" / "product_snapshots" / "date=2026-09-10" / "run1.parquet"
+    ).read_bytes() == b"fake-parquet-bytes"
+
+
+def test_unpack_state_subset_creates_state_dir_if_missing(
+    tmp_path: Path, make_product_snapshot: Callable[..., ProductSnapshot]
+) -> None:
+    state_dir = _make_state_dir(tmp_path, make_product_snapshot)
+    full_path = tmp_path / "full.tar.enc"
+    pack_state(
+        state_dir, full_path, _PASSPHRASE, config=ArchiveConfig(include_dirs=FULL_INCLUDE_DIRS)
+    )
+
+    fresh_dir = tmp_path / "brand_new"
+    assert not fresh_dir.exists()
+
+    result = unpack_state_subset(full_path, fresh_dir, _PASSPHRASE, prefixes=(SNAPSHOTS_PREFIX,))
+
+    assert result.file_count == 1
+    assert fresh_dir.is_dir()
+
+
+def test_unpack_state_subset_no_matching_prefix_is_a_noop(
+    tmp_path: Path, make_product_snapshot: Callable[..., ProductSnapshot]
+) -> None:
+    state_dir = _make_state_dir(tmp_path, make_product_snapshot)
+    lean_path = tmp_path / "lean.tar.enc"
+    pack_state(
+        state_dir, lean_path, _PASSPHRASE, config=ArchiveConfig(include_dirs=LEAN_INCLUDE_DIRS)
+    )
+
+    target_dir = tmp_path / "target"
+    target_dir.mkdir()
+
+    result = unpack_state_subset(lean_path, target_dir, _PASSPHRASE, prefixes=(SNAPSHOTS_PREFIX,))
+
+    assert result.file_count == 0
+    assert not (target_dir / "snapshots").exists()
+
+
+def test_unpack_state_subset_wrong_key_raises(
+    tmp_path: Path, make_product_snapshot: Callable[..., ProductSnapshot]
+) -> None:
+    state_dir = _make_state_dir(tmp_path, make_product_snapshot)
+    full_path = tmp_path / "full.tar.enc"
+    pack_state(
+        state_dir, full_path, _PASSPHRASE, config=ArchiveConfig(include_dirs=FULL_INCLUDE_DIRS)
+    )
+
+    target_dir = tmp_path / "target"
+    target_dir.mkdir()
+
+    with pytest.raises(StateCryptoError):
+        unpack_state_subset(
+            full_path, target_dir, "b" * MIN_PASSPHRASE_LEN, prefixes=(SNAPSHOTS_PREFIX,)
+        )
+
+
+def test_unpack_state_subset_tampered_hash_rejected(tmp_path: Path) -> None:
+    payload = b"tampered-parquet-bytes"
+    tampered_path = tmp_path / "tampered.tar.enc"
+    _build_tampered_archive(
+        tampered_path,
+        files={"snapshots/product_snapshots/date=2026-09-10/run1.parquet": payload},
+        manifest_override={
+            "files": [
+                {
+                    "path": "snapshots/product_snapshots/date=2026-09-10/run1.parquet",
+                    "sha256": "0" * 64,
+                    "size": len(payload),
+                }
+            ]
+        },
+    )
+
+    with pytest.raises(StateArchiveError, match="checksum mismatch"):
+        unpack_state_subset(
+            tampered_path, tmp_path / "target", _PASSPHRASE, prefixes=(SNAPSHOTS_PREFIX,)
+        )
+
+
+def test_unpack_state_subset_path_traversal_rejected(tmp_path: Path) -> None:
+    evil_path = tmp_path / "evil.tar.enc"
+    payload = b"pwned"
+    _build_tampered_archive(
+        evil_path,
+        files={"../../etc/evil": payload},
+        manifest_override={
+            "files": [
+                {"path": "../../etc/evil", "sha256": _sha256_hex(payload), "size": len(payload)}
+            ]
+        },
+    )
+
+    with pytest.raises(StateArchiveError):
+        unpack_state_subset(
+            evil_path, tmp_path / "target", _PASSPHRASE, prefixes=(SNAPSHOTS_PREFIX,)
+        )
 
 
 def test_pack_on_empty_state_dir_produces_minimal_archive(tmp_path: Path) -> None:

@@ -3,9 +3,23 @@ name: Pipeline
 # ONE workflow for every state-changing job (scan/eod/weekly/monthly). State
 # (DuckDB + snapshots/registry/ledger/trials) is carried between runs as an
 # encrypted (`turboedge state pack`, TURBOEDGE_STATE_KEY) workflow artifact
-# (90-day retention) rather than the previous scan-report.yml GitHub Actions
-# cache, which silently expires after 7 days of inactivity -- see
-# `turboedge.state` (Build Contract v2, W3).
+# rather than the previous scan-report.yml GitHub Actions cache, which
+# silently expires after 7 days of inactivity -- see `turboedge.state`
+# (Build Contract v2, W3).
+#
+# Two artifact shapes (unbounded-growth fix, state/archive.py):
+#   - `turboedge-state-enc` (14-day retention): the LEAN shape every job
+#     packs -- everything except state/snapshots/, the immutable per-run
+#     Parquet archive (storage/snapshots.py), which has no retention policy
+#     of its own and does not belong in an artifact re-uploaded several
+#     times a day. This is the one every restore uses in the normal path.
+#   - `turboedge-state-full-enc` (90-day retention): the FULL shape --
+#     adds state/snapshots/ back in -- packed ONLY by the weekly job (see
+#     its second "Pack and upload..." step) and restored ONLY by the
+#     weekly job's restore (turboedge-state/action.yml's weekly-only
+#     "Restore Parquet snapshot archive baseline" step), which layers it
+#     additively onto the lean restore so the accumulated Parquet history
+#     is never silently dropped.
 #
 # This is a public repository: GitHub Actions logs, job summaries and
 # artifacts are visible to anyone. TURBOEDGE_PUBLIC_LOGS=1 (below) makes the
@@ -18,11 +32,14 @@ name: Pipeline
 # that used to be duplicated across all four mode jobs now live in local
 # composite actions under `.github/actions/`:
 #   - `turboedge-state`         checkout->this: setup uv/Python, verify
-#                                 TURBOEDGE_STATE_KEY, restore + unpack state.
+#                                 TURBOEDGE_STATE_KEY, restore + unpack state
+#                                 (+ merge in the Parquet baseline, weekly
+#                                 only -- see above).
 #   - `turboedge-state-summary` writes the job summary (counts + an optional
 #                                 state-restore note).
-#   - `turboedge-state-pack`    packs and uploads the `turboedge-state-enc`
-#                                 artifact; callers gate this with
+#   - `turboedge-state-pack`    packs and uploads either artifact shape
+#                                 above (`include_snapshots` input selects
+#                                 which); callers gate this with
 #                                 `if: success()` so a failed mode step never
 #                                 uploads a broken state over the last good
 #                                 artifact history.
@@ -316,6 +333,24 @@ jobs:
         uses: ./.github/actions/turboedge-state-pack
         with:
           state_key: ${{ secrets.TURBOEDGE_STATE_KEY }}
+
+      # The only job that packs state/snapshots/ (the immutable Parquet
+      # archive, see storage/snapshots.py) at all: every other job now packs
+      # the lean shape above (state/archive.py LEAN_INCLUDE_DIRS). Uploaded
+      # under its own, longer-retained artifact name so it survives well
+      # past the fast-rotating lean chain's short retention window; restored
+      # by turboedge-state/action.yml's weekly-only "Restore Parquet
+      # snapshot archive baseline" step so the accumulated history is never
+      # silently dropped (CLAUDE.md rule 33).
+      - name: Pack and upload full state archive (Parquet, weekly)
+        if: success()
+        uses: ./.github/actions/turboedge-state-pack
+        with:
+          state_key: ${{ secrets.TURBOEDGE_STATE_KEY }}
+          include_snapshots: "true"
+          artifact_name: "turboedge-state-full-enc"
+          retention_days: "90"
+          out_file: "state-full.tar.enc"
 
   # ---------------------------------------------------------------------
   # monthly -- 1st of month: success report

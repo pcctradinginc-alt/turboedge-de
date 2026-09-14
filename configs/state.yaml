@@ -7,3 +7,10 @@ retention:
   # many days to one row per (isin, UTC calendar day), except ISINs present
   # in forward_ledger (kept in full, state/retention.py).
   keep_days: 45
+  # Rows still around after being thinned above (i.e. older than
+  # hard_delete_after_days) are permanently deleted -- otherwise the
+  # thinned "cold" tier grows without bound forever (~1 row/isin/day).
+  # Ledger-referenced ISINs (selected_isin AND alternatives/counterfactual)
+  # are exempt from this and from the thinning above, at any age. Must be
+  # greater than keep_days.
+  hard_delete_after_days: 400

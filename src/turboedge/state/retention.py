@@ -4,16 +4,31 @@ The public repo's always-on scheduler (``pipeline.yml``) appends a
 ``product_snapshots`` row per product per scan, several times a day,
 forever -- left alone this grows the archived (and encrypted, uploaded)
 DuckDB file without bound. :func:`compact_product_snapshots` (``turboedge db
-compact``) reduces rows older than ``keep_days`` to one snapshot per
-``(isin, UTC calendar day)`` -- the last snapshot of that day -- while
-keeping the *full* history for any ISIN that appears in ``forward_ledger``,
-since the label/learn pipeline (W6) needs the complete path, not a
-once-a-day sample, to compute realized P&L, KO timing and MFE/MAE.
+compact``) applies two rules, in order:
+
+1. Rows older than ``keep_days`` are reduced to one snapshot per
+   ``(isin, UTC calendar day)`` -- the last snapshot of that day.
+2. Rows older than ``hard_delete_after_days`` (strictly greater than
+   ``keep_days`` -- a row must pass through the thinning above before it can
+   ever be hard-deleted) are permanently removed, not just thinned. Even
+   with rule 1 applied forever, the thinned "cold" tier still grows without
+   bound (~1 row/isin/day, indefinitely) -- rule 2 is the actual size cap.
+
+Both rules keep the *full*, untouched history for any ISIN that appears in
+``forward_ledger`` -- as the entry actually taken (``selected_isin``) or only
+as a discarded alternative/counterfactual (``alternatives``, Master Spec
+§21) -- since the label/learn pipeline (W6) and counterfactual learning
+(``learning/counterfactual.py``) need the complete path for every such ISIN,
+not a once-a-day sample or nothing at all, to compute realized P&L, KO
+timing, MFE/MAE and counterfactual P&L. This protection is unconditional on
+age: a ledger-referenced ISIN's rows are never thinned *or* hard-deleted,
+no matter how old.
 
 ``forward_ledger`` is owned by another workstream (W6) and may not exist yet
-at the time this module runs -- its presence (and its ``isin`` column) is
-checked via ``information_schema`` before it is ever referenced in a query,
-so this module works standalone against a database that doesn't have it.
+at the time this module runs -- its presence (and its ``selected_isin``/
+``alternatives`` columns) is checked via ``information_schema`` before
+either is ever referenced in a query, so this module works standalone
+against a database that doesn't have it, or has an unexpected shape.
 
 Row-deletion alone does not shrink the ``.duckdb`` file. Measured against
 this DuckDB version (1.5.x, see the module-level rewrite helper below for
@@ -42,13 +57,21 @@ from uuid import uuid4
 import duckdb
 import structlog
 from duckdb import DuckDBPyConnection
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from turboedge.storage.duckdb import Store
 
 logger = structlog.get_logger(__name__)
 
 DEFAULT_KEEP_DAYS = 45
+# 400 > 365: a full year of history is always still inside the hard-delete
+# horizon (nothing gets permanently deleted before it is at least a year
+# old), while still bounding the previously-unbounded thinned "cold" tier
+# to a fixed number of days once the system has been running longer than
+# that. See README.md's "Data Storage"/"Pipeline modes and schedule"
+# sections and CLAUDE.md's Notes for the ledger-ISIN exemption this pairs
+# with.
+DEFAULT_HARD_DELETE_AFTER_DAYS = 400
 
 _LEDGER_TABLE = "forward_ledger"
 # W6's `forward_ledger` schema (storage/duckdb.py) names the column
@@ -57,6 +80,13 @@ _LEDGER_TABLE = "forward_ledger"
 # exact column name as a soft (information_schema-checked) contract, not a
 # hard-coded assumption about a table it does not own.
 _LEDGER_ISIN_COLUMN_CANDIDATES: tuple[str, ...] = ("selected_isin", "isin")
+# W6 also records every discarded alternative/counterfactual product for an
+# entry as a JSON array of ISINs in this column (storage/schemas.py's
+# `ForwardLedgerEntry.alternatives`, Master Spec §21 "Medianprodukt als
+# Counterfactual speichern"; consumed by learning/counterfactual.py). Those
+# ISINs must be protected exactly like `selected_isin` -- included only if
+# the column actually exists (soft contract, same as the isin column).
+_LEDGER_ALTERNATIVES_COLUMN = "alternatives"
 _COMPACT_TABLE_NAME = "__product_snapshots_compact"
 
 
@@ -67,14 +97,27 @@ class RetentionConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     keep_days: int = Field(gt=0, default=DEFAULT_KEEP_DAYS)
+    hard_delete_after_days: int = Field(gt=0, default=DEFAULT_HARD_DELETE_AFTER_DAYS)
+
+    @model_validator(mode="after")
+    def _hard_delete_after_keep(self) -> RetentionConfig:
+        if self.hard_delete_after_days <= self.keep_days:
+            raise ValueError(
+                f"hard_delete_after_days ({self.hard_delete_after_days}) must be greater than "
+                f"keep_days ({self.keep_days}) -- a row must be thinned to one/isin/day before "
+                "it can ever be hard-deleted"
+            )
+        return self
 
 
 @dataclass(frozen=True)
 class RetentionReport:
     keep_days: int
+    hard_delete_after_days: int
     rows_before: int
     rows_after: int
     rows_removed: int
+    rows_hard_deleted: int
     protected_isin_count: int
     forward_ledger_present: bool
     db_size_bytes_before: int
@@ -83,9 +126,11 @@ class RetentionReport:
 
 
 def _forward_ledger_isin_subquery(store: Store) -> str | None:
-    """A SQL subquery selecting distinct protected ISINs, or ``None`` if
-    ``forward_ledger`` does not exist yet, or exists but has none of
-    :data:`_LEDGER_ISIN_COLUMN_CANDIDATES`."""
+    """A SQL subquery (single ``isin`` column) selecting every distinct
+    protected ISIN -- both ``selected_isin`` (or its ``isin`` fallback, see
+    :data:`_LEDGER_ISIN_COLUMN_CANDIDATES`) and every ISIN referenced in
+    ``alternatives`` -- or ``None`` if ``forward_ledger`` does not exist
+    yet, or exists but has neither."""
     conn = store._conn  # see `compact_product_snapshots` docstring
     table_rows = conn.execute(
         "SELECT table_name FROM information_schema.tables "
@@ -103,11 +148,27 @@ def _forward_ledger_isin_subquery(store: Store) -> str | None:
             [_LEDGER_TABLE],
         ).fetchall()
     }
-    for candidate in _LEDGER_ISIN_COLUMN_CANDIDATES:
-        if candidate in existing_columns:
-            return f"SELECT DISTINCT {candidate} FROM {_LEDGER_TABLE}"
 
-    return None
+    selected_column = next(
+        (c for c in _LEDGER_ISIN_COLUMN_CANDIDATES if c in existing_columns), None
+    )
+    if selected_column is None:
+        return None
+
+    parts = [f"SELECT {selected_column} AS isin FROM {_LEDGER_TABLE}"]
+    if _LEDGER_ALTERNATIVES_COLUMN in existing_columns:
+        # `alternatives` is a JSON array of ISIN strings (see
+        # storage/duckdb.py's `json.dumps(list(e.alternatives))`);
+        # `FROM_JSON(..., '["VARCHAR"]')` parses it back into a DuckDB
+        # LIST(VARCHAR) that `UNNEST` fans out into one row per ISIN. An
+        # empty array (an entry with no alternatives) contributes zero rows,
+        # not an error.
+        parts.append(
+            f"SELECT UNNEST(FROM_JSON({_LEDGER_ALTERNATIVES_COLUMN}, '[\"VARCHAR\"]')) AS isin "
+            f"FROM {_LEDGER_TABLE}"
+        )
+
+    return f"SELECT DISTINCT isin FROM ({' UNION ALL '.join(parts)})"
 
 
 def _db_size_bytes(store: Store) -> int:
@@ -274,14 +335,18 @@ def compact_product_snapshots(
     store: Store,
     *,
     keep_days: int = DEFAULT_KEEP_DAYS,
+    hard_delete_after_days: int = DEFAULT_HARD_DELETE_AFTER_DAYS,
     now: datetime | None = None,
 ) -> RetentionReport:
     """Reduce ``product_snapshots`` rows older than ``keep_days`` to one row
-    per ``(isin, UTC calendar day)``, except ISINs present in
-    ``forward_ledger`` (kept in full). Runs a ``CHECKPOINT``, then rewrites
-    the database file in place (see :func:`_rewrite_database_file` and the
-    module docstring) so the row reduction actually shrinks the file on
-    disk instead of just moving free space around inside it.
+    per ``(isin, UTC calendar day)``, then permanently delete whatever is
+    still older than ``hard_delete_after_days`` -- except ISINs present in
+    ``forward_ledger`` (as ``selected_isin`` or anywhere in
+    ``alternatives``), which are kept in full and never thinned or deleted,
+    however old. Runs a ``CHECKPOINT``, then rewrites the database file in
+    place (see :func:`_rewrite_database_file` and the module docstring) so
+    the row reduction actually shrinks the file on disk instead of just
+    moving free space around inside it.
 
     ``store`` must have already had ``init_schema()`` called (as every CLI
     command does) -- this function only touches ``product_snapshots``
@@ -297,13 +362,23 @@ def compact_product_snapshots(
     which happened.
 
     Raises:
-        ValueError: if ``keep_days`` is not positive.
+        ValueError: if ``keep_days``/``hard_delete_after_days`` is not
+            positive, or if ``hard_delete_after_days <= keep_days`` (a row
+            must be thinned before it can ever be hard-deleted).
     """
     if keep_days <= 0:
         raise ValueError(f"keep_days must be > 0, got {keep_days}")
+    if hard_delete_after_days <= 0:
+        raise ValueError(f"hard_delete_after_days must be > 0, got {hard_delete_after_days}")
+    if hard_delete_after_days <= keep_days:
+        raise ValueError(
+            f"hard_delete_after_days ({hard_delete_after_days}) must be greater than "
+            f"keep_days ({keep_days})"
+        )
 
     as_of = now if now is not None else datetime.now(UTC)
-    cutoff = as_of - timedelta(days=keep_days)
+    keep_cutoff = as_of - timedelta(days=keep_days)
+    hard_cutoff = as_of - timedelta(days=hard_delete_after_days)
 
     # `Store` (storage/duckdb.py) is outside this module's assignment and
     # does not expose its connection publicly; see
@@ -327,9 +402,21 @@ def compact_product_snapshots(
     if ledger_subquery is not None:
         protected_count = _scalar_count(conn, f"SELECT count(*) FROM ({ledger_subquery})")
         is_protected_expr = f"(isin IN ({ledger_subquery}))"
+        not_protected_clause = f"isin NOT IN ({ledger_subquery})"
     else:
         protected_count = 0
         is_protected_expr = "FALSE"
+        not_protected_clause = "TRUE"
+
+    # Measured for reporting only (`report.rows_hard_deleted`) -- the actual
+    # deletion happens below, as part of the same rebuild that does the
+    # keep_days thinning, so the table is only ever rewritten once per call.
+    rows_hard_deleted = _scalar_count(
+        conn,
+        f"SELECT count(*) FROM product_snapshots "
+        f"WHERE observation_time < ? AND {not_protected_clause}",
+        [hard_cutoff],
+    )
 
     conn.execute(f"DROP TABLE IF EXISTS {_COMPACT_TABLE_NAME}")
     conn.execute(
@@ -344,9 +431,11 @@ def compact_product_snapshots(
                 {is_protected_expr} AS __is_protected
             FROM product_snapshots
         )
-        WHERE observation_time >= ? OR __is_protected OR __rn = 1
+        WHERE __is_protected
+           OR observation_time >= ?
+           OR (observation_time >= ? AND __rn = 1)
         """,
-        [cutoff],
+        [keep_cutoff, hard_cutoff],
     )
     conn.execute("DROP TABLE product_snapshots")
     conn.execute(f"ALTER TABLE {_COMPACT_TABLE_NAME} RENAME TO product_snapshots")
@@ -359,9 +448,11 @@ def compact_product_snapshots(
 
     return RetentionReport(
         keep_days=keep_days,
+        hard_delete_after_days=hard_delete_after_days,
         rows_before=rows_before,
         rows_after=rows_after,
         rows_removed=rows_before - rows_after,
+        rows_hard_deleted=rows_hard_deleted,
         protected_isin_count=protected_count,
         forward_ledger_present=ledger_subquery is not None,
         db_size_bytes_before=db_size_before,
@@ -371,6 +462,7 @@ def compact_product_snapshots(
 
 
 __all__ = [
+    "DEFAULT_HARD_DELETE_AFTER_DAYS",
     "DEFAULT_KEEP_DAYS",
     "RetentionConfig",
     "RetentionReport",

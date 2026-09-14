@@ -156,7 +156,7 @@ surface — Build Contract v3 §A):
 | `ranking.yaml` | `ev`/`utility`/`sizing`/`cluster` sub-sections (LCB z-scores, utility weights, Kelly caps, cluster limits) |
 | `learning.yaml` | Posterior priors, ensemble-reweighting `eta`/`w_min`, trial budget |
 | `reporting.yaml` | Report paths, thresholds for "insufficient data" |
-| `state.yaml` | State retention (`db compact` keep-days) |
+| `state.yaml` | State retention (`db compact` `keep_days` / `hard_delete_after_days`) |
 
 **Environment variables:**
 - `TURBOEDGE_CONFIG_DIR` — config directory (default `./configs`)
@@ -193,9 +193,10 @@ turboedge position reevaluate [--email]                                    # HOL
 turboedge report monthly [--month YYYY-MM] [--email]
 turboedge research tournament [--email]                                    # weekly champion/challenger/dormant comparison
 turboedge db info
-turboedge db compact [--keep-days N]
-turboedge state pack --out state.tar.enc
-turboedge state unpack --in state.tar.enc
+turboedge db compact [--keep-days N] [--hard-delete-after-days N]
+turboedge state pack --out state.tar.enc [--include-snapshots]
+turboedge state unpack --in state.tar.enc [--allow-missing]
+turboedge state restore-snapshots --in state-full.tar.enc                  # additive merge of state/snapshots/ only
 ```
 
 ---
@@ -214,13 +215,32 @@ cron expression, or from the `mode` input on manual `workflow_dispatch`.
 | `monthly` | 1st of month, 06:30 | `turboedge report monthly --email` |
 
 State (DuckDB + snapshots/registry/ledger/trials) is restored from and
-packed back into an **encrypted** GitHub Actions artifact
-(`turboedge-state-enc`, `state.tar.enc`, 90-day retention) at the start
-and end of every job — not the previous 7-day GitHub Actions cache. A
-genuine first run starts fresh (logged); if prior successful runs exist
-but none of the last 50 carry a usable artifact, the run fails loudly
-instead of silently discarding history. `workflow_dispatch` with
+packed back into an **encrypted** GitHub Actions artifact at the start and
+end of every job — not the previous 7-day GitHub Actions cache. A genuine
+first run starts fresh (logged); if prior successful runs exist but none
+of the last 50 carry a usable artifact, the run fails loudly instead of
+silently discarding history. `workflow_dispatch` with
 `allow_fresh_state: true` forces a deliberate reset.
+
+Two artifact shapes, both from `turboedge state pack` (`state/archive.py`),
+keep this bounded rather than growing forever:
+- **`turboedge-state-enc`** (`state.tar.enc`, 14-day retention) — the
+  **lean** shape every job above packs: DuckDB + registry/ledger/trials,
+  **excluding** `state/snapshots/` (the immutable per-run Parquet archive,
+  which has no retention policy of its own and would otherwise be
+  re-uploaded several times a day for nothing). This is the one every
+  job's restore uses.
+- **`turboedge-state-full-enc`** (`state-full.tar.enc`, 90-day retention)
+  — the **full** shape (`--include-snapshots`), adding `state/snapshots/`
+  back in, packed only by the `weekly` job. The `weekly` job's restore
+  additionally merges this artifact's `state/snapshots/` on top of the
+  lean restore (`turboedge state restore-snapshots`, purely additive —
+  never touches anything the lean restore already wrote), so the
+  accumulated Parquet history is never silently dropped. Note: since
+  `state/snapshots/` is only ever written during `scan`/`scan-all`
+  (`pipeline/universe.py`) and `weekly` doesn't scan, this full archive is
+  a periodic **snapshot of whatever had already accumulated**, not a
+  continuously growing one — see "Known Limitations".
 
 Two other workflows: **`tests.yml`** (every push/PR: ruff, mypy, pytest,
 live tests excluded by default) and **`source-health.yml`** (cron Mon–Fri
@@ -274,10 +294,23 @@ silently producing garbage.
 `product_snapshots`, `underlying_prices`, `signals`, `candidate_sets`,
 `source_health`, `positions_manual`, `notifications_sent`, `runs`, plus
 additive tables for the forecast engine, forward ledger, and position
-re-evaluation. Inspect with `turboedge db info`. **Parquet**
+re-evaluation. Inspect with `turboedge db info`. `product_snapshots` is
+bounded by `turboedge db compact` (`state/retention.py`, run in the `eod`
+job): rows older than `keep_days` (default 45) are thinned to one
+row/ISIN/UTC-day, and rows older than `hard_delete_after_days` (default
+400, must exceed `keep_days`) are **permanently deleted** — except any
+ISIN referenced in `forward_ledger`, either as the entry actually taken
+(`selected_isin`) or only as a discarded alternative/counterfactual
+(`alternatives`, Master Spec §21), which is kept in full at any age.
+**Parquet**
 (`$TURBOEDGE_STATE_DIR/snapshots/<table>/date=YYYY-MM-DD/<run_id>.parquet`):
-immutable, append-only. **Encrypted archive:** `turboedge state
-pack`/`unpack` — what `pipeline.yml` uses between scheduled runs.
+immutable, append-only, written only during `scan`/`scan-all`; has no
+retention policy of its own (CLAUDE.md rule 33 — every prediction stays
+fully reproducible), so it is deliberately kept out of the fast-rotating
+daily state archive and backed up only weekly — see "Pipeline modes and
+schedule" above. **Encrypted archive:** `turboedge state pack`/`unpack`
+(lean by default, `--include-snapshots` for the full shape) — what
+`pipeline.yml` uses between scheduled runs.
 
 ---
 
@@ -332,9 +365,19 @@ chflags -R nohidden /Users/cc/Desktop/TURBO\ EDGE/turboedge-de/.venv
   `configs/risk.yaml`'s `default_financing_spread`.
 - **Spot consensus is thin** — only BNP + gettex (Citi has no live
   prices); no independent intraday market-data feed.
-- **State lives in a 90-day workflow artifact** — 90 days without a
-  successful `pipeline.yml` run loses ledger/posterior/model history;
-  deliberate reset requires `allow_fresh_state=true`.
+- **State lives in a 14-day workflow artifact** (`turboedge-state-enc`,
+  the lean DB/ledger/registry/trials shape restored every job) — 14 days
+  without a successful `pipeline.yml` run loses ledger/posterior/model
+  history; deliberate reset requires `allow_fresh_state=true`. The
+  `weekly`-only full archive (`turboedge-state-full-enc`) gets 90 days.
+- **The weekly Parquet backup is a frozen snapshot, not continuously
+  growing** — `state/snapshots/` is written only during `scan`/`scan-all`,
+  which the `weekly` job never runs, so the full archive it uploads each
+  Saturday only ever carries forward whatever had already accumulated by
+  the time this two-tier scheme shipped; it is not lost, but individual
+  scan runs' Parquet files are not durably archived beyond the run that
+  wrote them. `product_snapshots` (DuckDB, bounded by `db compact`, see
+  above) remains the durable, continuously-updated reproducibility record.
 - **2010–2026 sample is a near-uninterrupted bull market** — every
   Sharpe/PSR/DSR-style statistic in this codebase is inflated by secular
   drift and shared identically by the null model itself (see

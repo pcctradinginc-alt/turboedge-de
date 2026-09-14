@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
-from turboedge.state.retention import DEFAULT_KEEP_DAYS, compact_product_snapshots
+from turboedge.state.retention import (
+    DEFAULT_HARD_DELETE_AFTER_DAYS,
+    DEFAULT_KEEP_DAYS,
+    compact_product_snapshots,
+)
 from turboedge.storage.duckdb import Store
 from turboedge.storage.schemas import ProductSnapshot
 
@@ -182,8 +187,77 @@ def test_forward_ledger_without_isin_column_ignored(
     assert report.rows_after == 1
 
 
+def test_alternatives_isin_protected_in_full(
+    store: Store, make_product_snapshot: Callable[..., ProductSnapshot]
+) -> None:
+    """An ISIN referenced only as a discarded alternative/counterfactual
+    (forward_ledger.alternatives, Master Spec §21) -- never as
+    selected_isin -- must be kept in full, exactly like the selected pick."""
+    now = datetime(2026, 9, 11, 12, 0, tzinfo=UTC)
+    old_day = now - timedelta(days=100)
+
+    selected_isin = "DE000SELEC01"
+    alt_isin = "DE000ALT0001"
+    plain_isin = "DE000PLAINX1"
+
+    snaps = []
+    for isin in (selected_isin, alt_isin, plain_isin):
+        for h in (9, 13, 17):
+            snaps.append(_snap_at(make_product_snapshot, isin=isin, when=old_day.replace(hour=h)))
+    store.append_product_snapshots(snaps)
+
+    store._conn.execute("DROP TABLE IF EXISTS forward_ledger")
+    store._conn.execute(
+        "CREATE TABLE forward_ledger "
+        "(selected_isin VARCHAR NOT NULL, alternatives VARCHAR NOT NULL)"
+    )
+    store._conn.execute(
+        "INSERT INTO forward_ledger (selected_isin, alternatives) VALUES (?, ?)",
+        [selected_isin, json.dumps([alt_isin])],
+    )
+
+    report = compact_product_snapshots(store, keep_days=45, now=now)
+
+    assert report.protected_isin_count == 2  # selected_isin + the one alternative
+    rows = store._conn.execute(
+        "SELECT isin, count(*) FROM product_snapshots GROUP BY isin"
+    ).fetchall()
+    counts = dict(rows)
+    assert counts[selected_isin] == 3
+    assert counts[alt_isin] == 3  # protected purely via `alternatives`
+    assert counts[plain_isin] == 1  # thinned like any unprotected ISIN
+
+
+def test_alternatives_column_absent_ignored(
+    store: Store, make_product_snapshot: Callable[..., ProductSnapshot]
+) -> None:
+    """A forward_ledger without an `alternatives` column (unexpected shape)
+    must not error -- protection falls back to selected_isin only."""
+    now = datetime(2026, 9, 11, 12, 0, tzinfo=UTC)
+    old_day = now - timedelta(days=100)
+    selected_isin = "DE000SELEC01"
+    snaps = [
+        _snap_at(make_product_snapshot, isin=selected_isin, when=old_day.replace(hour=h))
+        for h in (9, 13)
+    ]
+    store.append_product_snapshots(snaps)
+
+    store._conn.execute("DROP TABLE IF EXISTS forward_ledger")
+    store._conn.execute("CREATE TABLE forward_ledger (selected_isin VARCHAR NOT NULL)")
+    store._conn.execute("INSERT INTO forward_ledger (selected_isin) VALUES (?)", [selected_isin])
+
+    report = compact_product_snapshots(store, keep_days=45, now=now)
+
+    assert report.protected_isin_count == 1
+    assert store._conn.execute("SELECT count(*) FROM product_snapshots").fetchone()[0] == 2
+
+
 def test_default_keep_days_constant() -> None:
     assert DEFAULT_KEEP_DAYS == 45
+
+
+def test_default_hard_delete_after_days_constant() -> None:
+    assert DEFAULT_HARD_DELETE_AFTER_DAYS == 400
 
 
 def test_invalid_keep_days_raises(store: Store) -> None:
@@ -191,6 +265,136 @@ def test_invalid_keep_days_raises(store: Store) -> None:
         compact_product_snapshots(store, keep_days=0)
     with pytest.raises(ValueError, match="keep_days"):
         compact_product_snapshots(store, keep_days=-5)
+
+
+def test_invalid_hard_delete_after_days_raises(store: Store) -> None:
+    with pytest.raises(ValueError, match="hard_delete_after_days"):
+        compact_product_snapshots(store, keep_days=45, hard_delete_after_days=0)
+    with pytest.raises(ValueError, match="hard_delete_after_days"):
+        compact_product_snapshots(store, keep_days=45, hard_delete_after_days=-5)
+
+
+def test_hard_delete_after_days_must_exceed_keep_days(store: Store) -> None:
+    with pytest.raises(ValueError, match="hard_delete_after_days"):
+        compact_product_snapshots(store, keep_days=45, hard_delete_after_days=45)
+    with pytest.raises(ValueError, match="hard_delete_after_days"):
+        compact_product_snapshots(store, keep_days=45, hard_delete_after_days=10)
+
+
+# --------------------------------------------------------------------------
+# Hard delete (rule 2): rows still around after keep_days-thinning that are
+# older than hard_delete_after_days are permanently removed, not just
+# thinned -- unless the ISIN is ledger-protected, in which case it survives
+# no matter how old (see the alternatives-protection tests above/below).
+# --------------------------------------------------------------------------
+
+
+def test_hard_delete_removes_rows_past_hard_cutoff(
+    store: Store, make_product_snapshot: Callable[..., ProductSnapshot]
+) -> None:
+    now = datetime(2026, 9, 14, 12, 0, tzinfo=UTC)
+    beyond_hard_cutoff = now - timedelta(days=500)  # older than hard_delete_after_days=400
+    within_thin_zone = now - timedelta(days=100)  # thinned, not hard-deleted (100 < 400)
+
+    isin = "DE000AAA1111"
+    snaps = [
+        _snap_at(make_product_snapshot, isin=isin, when=beyond_hard_cutoff),
+        _snap_at(make_product_snapshot, isin=isin, when=within_thin_zone),
+    ]
+    store.append_product_snapshots(snaps)
+
+    report = compact_product_snapshots(store, keep_days=45, hard_delete_after_days=400, now=now)
+
+    assert report.rows_before == 2
+    assert report.rows_hard_deleted == 1
+    assert report.rows_after == 1
+    remaining = store._conn.execute("SELECT quote_timestamp FROM product_snapshots").fetchall()
+    assert len(remaining) == 1
+    assert remaining[0][0] == within_thin_zone
+
+
+def test_hard_delete_does_not_touch_rows_within_the_hard_cutoff(
+    store: Store, make_product_snapshot: Callable[..., ProductSnapshot]
+) -> None:
+    """A row just inside hard_delete_after_days (but outside keep_days) is
+    thinned like any other old row -- not hard-deleted."""
+    now = datetime(2026, 9, 14, 12, 0, tzinfo=UTC)
+    just_inside = now - timedelta(days=399)  # < 400: survives, thinned
+
+    isin = "DE000AAA1111"
+    store.append_product_snapshots([_snap_at(make_product_snapshot, isin=isin, when=just_inside)])
+
+    report = compact_product_snapshots(store, keep_days=45, hard_delete_after_days=400, now=now)
+
+    assert report.rows_hard_deleted == 0
+    assert report.rows_after == 1
+
+
+def test_hard_delete_protects_ledger_selected_isin_beyond_hard_cutoff(
+    store: Store, make_product_snapshot: Callable[..., ProductSnapshot]
+) -> None:
+    now = datetime(2026, 9, 14, 12, 0, tzinfo=UTC)
+    ancient = now - timedelta(days=1000)  # far beyond any sane hard_delete_after_days
+
+    protected_isin = "DE000PROTEC1"
+    unprotected_isin = "DE000PLAIN01"
+    snaps = [
+        _snap_at(make_product_snapshot, isin=protected_isin, when=ancient),
+        _snap_at(make_product_snapshot, isin=unprotected_isin, when=ancient),
+    ]
+    store.append_product_snapshots(snaps)
+
+    store._conn.execute("DROP TABLE IF EXISTS forward_ledger")
+    store._conn.execute("CREATE TABLE forward_ledger (selected_isin VARCHAR NOT NULL)")
+    store._conn.execute("INSERT INTO forward_ledger (selected_isin) VALUES (?)", [protected_isin])
+
+    report = compact_product_snapshots(store, keep_days=45, hard_delete_after_days=400, now=now)
+
+    assert report.rows_hard_deleted == 1  # only the unprotected one
+    rows = store._conn.execute("SELECT isin FROM product_snapshots").fetchall()
+    assert [r[0] for r in rows] == [protected_isin]
+
+
+def test_hard_delete_protects_ledger_alternative_isin_beyond_hard_cutoff(
+    store: Store, make_product_snapshot: Callable[..., ProductSnapshot]
+) -> None:
+    """An ISIN referenced only via `alternatives` survives the hard delete
+    too -- protection is not limited to the entry actually taken."""
+    now = datetime(2026, 9, 14, 12, 0, tzinfo=UTC)
+    ancient = now - timedelta(days=1000)
+
+    selected_isin = "DE000SELEC01"
+    alt_isin = "DE000ALT0001"
+    snaps = [
+        _snap_at(make_product_snapshot, isin=selected_isin, when=ancient),
+        _snap_at(make_product_snapshot, isin=alt_isin, when=ancient),
+    ]
+    store.append_product_snapshots(snaps)
+
+    store._conn.execute("DROP TABLE IF EXISTS forward_ledger")
+    store._conn.execute(
+        "CREATE TABLE forward_ledger "
+        "(selected_isin VARCHAR NOT NULL, alternatives VARCHAR NOT NULL)"
+    )
+    store._conn.execute(
+        "INSERT INTO forward_ledger (selected_isin, alternatives) VALUES (?, ?)",
+        [selected_isin, json.dumps([alt_isin])],
+    )
+
+    report = compact_product_snapshots(store, keep_days=45, hard_delete_after_days=400, now=now)
+
+    assert report.rows_hard_deleted == 0
+    rows = {r[0] for r in store._conn.execute("SELECT isin FROM product_snapshots").fetchall()}
+    assert rows == {selected_isin, alt_isin}
+
+
+def test_hard_delete_report_default_matches_module_default(
+    store: Store, make_product_snapshot: Callable[..., ProductSnapshot]
+) -> None:
+    now = datetime(2026, 9, 14, 12, 0, tzinfo=UTC)
+    store.append_product_snapshots([_snap_at(make_product_snapshot, isin="DE000AAA1111", when=now)])
+    report = compact_product_snapshots(store, keep_days=45, now=now)
+    assert report.hard_delete_after_days == DEFAULT_HARD_DELETE_AFTER_DAYS
 
 
 def test_runs_checkpoint_and_reports_db_size(

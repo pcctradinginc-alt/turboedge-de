@@ -81,6 +81,169 @@ def test_state_pack_success(tmp_config_dir: Path, tmp_state_dir: Path, tmp_path:
     assert "Packed" in result.stdout
 
 
+def test_state_pack_default_excludes_snapshots(
+    tmp_config_dir: Path, tmp_state_dir: Path, tmp_path: Path
+) -> None:
+    """`state pack`'s default -- no --include-snapshots -- must not pack
+    state/snapshots/ (the immutable Parquet archive): this is the lean
+    package every scan/eod/monthly pipeline run uploads several times a
+    day (see state/archive.py LEAN_INCLUDE_DIRS)."""
+    snap_dir = tmp_state_dir / "snapshots" / "product_snapshots" / "date=2026-09-10"
+    snap_dir.mkdir(parents=True)
+    (snap_dir / "run1.parquet").write_bytes(b"fake-parquet-bytes")
+
+    out_path = tmp_path / "lean.tar.enc"
+    result = runner.invoke(
+        app,
+        [*_base_args(tmp_config_dir, tmp_state_dir), "state", "pack", "--out", str(out_path)],
+        env={"TURBOEDGE_STATE_KEY": _PASSPHRASE},
+    )
+    assert result.exit_code == 0, result.output
+    assert "lean" in result.stdout.lower()
+
+    restore_dir = tmp_path / "restored_lean"
+    unpack_result = runner.invoke(
+        app,
+        [*_base_args(tmp_config_dir, restore_dir), "state", "unpack", "--in", str(out_path)],
+        env={"TURBOEDGE_STATE_KEY": _PASSPHRASE},
+    )
+    assert unpack_result.exit_code == 0, unpack_result.output
+    assert not (restore_dir / "snapshots").exists()
+
+
+def test_state_pack_include_snapshots_flag_packs_the_parquet_archive(
+    tmp_config_dir: Path, tmp_state_dir: Path, tmp_path: Path
+) -> None:
+    snap_dir = tmp_state_dir / "snapshots" / "product_snapshots" / "date=2026-09-10"
+    snap_dir.mkdir(parents=True)
+    (snap_dir / "run1.parquet").write_bytes(b"fake-parquet-bytes")
+
+    out_path = tmp_path / "full.tar.enc"
+    result = runner.invoke(
+        app,
+        [
+            *_base_args(tmp_config_dir, tmp_state_dir),
+            "state",
+            "pack",
+            "--out",
+            str(out_path),
+            "--include-snapshots",
+        ],
+        env={"TURBOEDGE_STATE_KEY": _PASSPHRASE},
+    )
+    assert result.exit_code == 0, result.output
+    assert "full" in result.stdout.lower()
+
+    restore_dir = tmp_path / "restored_full"
+    unpack_result = runner.invoke(
+        app,
+        [*_base_args(tmp_config_dir, restore_dir), "state", "unpack", "--in", str(out_path)],
+        env={"TURBOEDGE_STATE_KEY": _PASSPHRASE},
+    )
+    assert unpack_result.exit_code == 0, unpack_result.output
+    assert (
+        restore_dir / "snapshots" / "product_snapshots" / "date=2026-09-10" / "run1.parquet"
+    ).read_bytes() == b"fake-parquet-bytes"
+
+
+# -- state restore-snapshots -------------------------------------------------
+
+
+def test_state_restore_snapshots_merges_onto_lean_restore(
+    tmp_config_dir: Path, tmp_state_dir: Path, tmp_path: Path
+) -> None:
+    snap_dir = tmp_state_dir / "snapshots" / "product_snapshots" / "date=2026-09-10"
+    snap_dir.mkdir(parents=True)
+    (snap_dir / "run1.parquet").write_bytes(b"fake-parquet-bytes")
+    (tmp_state_dir / "registry").mkdir()
+    (tmp_state_dir / "registry" / "models.json").write_text('{"champion": "tsmom"}')
+
+    full_path = tmp_path / "full.tar.enc"
+    pack_result = runner.invoke(
+        app,
+        [
+            *_base_args(tmp_config_dir, tmp_state_dir),
+            "state",
+            "pack",
+            "--out",
+            str(full_path),
+            "--include-snapshots",
+        ],
+        env={"TURBOEDGE_STATE_KEY": _PASSPHRASE},
+    )
+    assert pack_result.exit_code == 0, pack_result.output
+
+    lean_path = tmp_path / "lean.tar.enc"
+    lean_pack_result = runner.invoke(
+        app,
+        [*_base_args(tmp_config_dir, tmp_state_dir), "state", "pack", "--out", str(lean_path)],
+        env={"TURBOEDGE_STATE_KEY": _PASSPHRASE},
+    )
+    assert lean_pack_result.exit_code == 0, lean_pack_result.output
+
+    restore_dir = tmp_path / "restored"
+    unpack_result = runner.invoke(
+        app,
+        [*_base_args(tmp_config_dir, restore_dir), "state", "unpack", "--in", str(lean_path)],
+        env={"TURBOEDGE_STATE_KEY": _PASSPHRASE},
+    )
+    assert unpack_result.exit_code == 0, unpack_result.output
+    assert not (restore_dir / "snapshots").exists()
+
+    restore_snapshots_result = runner.invoke(
+        app,
+        [
+            *_base_args(tmp_config_dir, restore_dir),
+            "state",
+            "restore-snapshots",
+            "--in",
+            str(full_path),
+        ],
+        env={"TURBOEDGE_STATE_KEY": _PASSPHRASE},
+    )
+    assert restore_snapshots_result.exit_code == 0, restore_snapshots_result.output
+    assert (
+        restore_dir / "snapshots" / "product_snapshots" / "date=2026-09-10" / "run1.parquet"
+    ).read_bytes() == b"fake-parquet-bytes"
+    # Untouched by the additive merge.
+    assert (restore_dir / "registry" / "models.json").read_text() == '{"champion": "tsmom"}'
+
+
+def test_state_restore_snapshots_missing_key_exits_2(
+    tmp_config_dir: Path, tmp_state_dir: Path
+) -> None:
+    result = runner.invoke(
+        app,
+        [
+            *_base_args(tmp_config_dir, tmp_state_dir),
+            "state",
+            "restore-snapshots",
+            "--in",
+            "/tmp/x.tar.enc",
+        ],
+    )
+    assert result.exit_code == 2
+    assert "TURBOEDGE_STATE_KEY" in result.stderr
+
+
+def test_state_restore_snapshots_missing_archive_exits_2(
+    tmp_config_dir: Path, tmp_state_dir: Path, tmp_path: Path
+) -> None:
+    missing = tmp_path / "does_not_exist.tar.enc"
+    result = runner.invoke(
+        app,
+        [
+            *_base_args(tmp_config_dir, tmp_state_dir),
+            "state",
+            "restore-snapshots",
+            "--in",
+            str(missing),
+        ],
+        env={"TURBOEDGE_STATE_KEY": _PASSPHRASE},
+    )
+    assert result.exit_code == 2
+
+
 # -- state unpack -------------------------------------------------------------
 
 
@@ -198,6 +361,44 @@ def test_db_compact_default_keep_days(tmp_config_dir: Path, tmp_state_dir: Path)
     result = runner.invoke(app, [*_base_args(tmp_config_dir, tmp_state_dir), "db", "compact"])
     assert result.exit_code == 0, result.output
     assert "keep_days" in result.stdout
+    assert "hard_delete_after_days" in result.stdout
+
+
+def test_db_compact_hard_delete_after_days_option(
+    tmp_config_dir: Path, tmp_state_dir: Path
+) -> None:
+    result = runner.invoke(
+        app,
+        [
+            *_base_args(tmp_config_dir, tmp_state_dir),
+            "db",
+            "compact",
+            "--keep-days",
+            "45",
+            "--hard-delete-after-days",
+            "100",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "rows hard-deleted" in result.stdout.lower()
+
+
+def test_db_compact_hard_delete_after_days_must_exceed_keep_days(
+    tmp_config_dir: Path, tmp_state_dir: Path
+) -> None:
+    result = runner.invoke(
+        app,
+        [
+            *_base_args(tmp_config_dir, tmp_state_dir),
+            "db",
+            "compact",
+            "--keep-days",
+            "45",
+            "--hard-delete-after-days",
+            "10",
+        ],
+    )
+    assert result.exit_code != 0
 
 
 def test_db_info_still_works_alongside_db_compact(

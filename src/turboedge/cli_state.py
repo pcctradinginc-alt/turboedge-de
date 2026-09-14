@@ -19,9 +19,22 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from turboedge.state.archive import StateArchiveError, pack_state, unpack_state
+from turboedge.state.archive import (
+    FULL_INCLUDE_DIRS,
+    LEAN_INCLUDE_DIRS,
+    SNAPSHOTS_PREFIX,
+    ArchiveConfig,
+    StateArchiveError,
+    pack_state,
+    unpack_state,
+    unpack_state_subset,
+)
 from turboedge.state.crypto import StateCryptoError
-from turboedge.state.retention import DEFAULT_KEEP_DAYS, compact_product_snapshots
+from turboedge.state.retention import (
+    DEFAULT_HARD_DELETE_AFTER_DAYS,
+    DEFAULT_KEEP_DAYS,
+    compact_product_snapshots,
+)
 from turboedge.storage.duckdb import Store
 
 logger = structlog.get_logger(__name__)
@@ -61,6 +74,18 @@ def _state_dir_from_ctx(ctx: typer.Context) -> Path:
 def state_pack(
     ctx: typer.Context,
     out: str = typer.Option(..., "--out", help="Output path for the encrypted state archive"),
+    include_snapshots: bool = typer.Option(
+        False,
+        "--include-snapshots/--no-include-snapshots",
+        help=(
+            "Include state/snapshots/ (the immutable per-run Parquet archive) in the "
+            "packed archive. Default: excluded -- the small 'lean' package "
+            "(state/archive.py LEAN_INCLUDE_DIRS) every scan/eod/monthly pipeline run "
+            "packs several times a day. Pass --include-snapshots for the periodic "
+            "'full' archive (FULL_INCLUDE_DIRS) that actually backs up the Parquet "
+            "history (pipeline.yml's weekly job only)."
+        ),
+    ),
 ) -> None:
     """Checkpoint DuckDB, tar.gz the state directory, encrypt with
     TURBOEDGE_STATE_KEY.
@@ -71,9 +96,12 @@ def state_pack(
     passphrase = _require_state_key()
     state_dir = _state_dir_from_ctx(ctx)
     out_path = Path(out)
+    config = ArchiveConfig(
+        include_dirs=FULL_INCLUDE_DIRS if include_snapshots else LEAN_INCLUDE_DIRS
+    )
 
     try:
-        result = pack_state(state_dir, out_path, passphrase)
+        result = pack_state(state_dir, out_path, passphrase, config=config)
     except StateCryptoError as exc:
         err_console.print(f"[red]State pack failed: {exc}[/red]")
         raise typer.Exit(code=2) from exc
@@ -84,10 +112,12 @@ def state_pack(
         file_count=result.file_count,
         total_bytes=result.total_bytes,
         archive_bytes=result.archive_bytes,
+        include_snapshots=include_snapshots,
     )
+    kind = "full (includes state/snapshots/)" if include_snapshots else "lean (no state/snapshots/)"
     console.print(
         f"[green]Packed {result.file_count} file(s), {result.total_bytes} bytes -> "
-        f"{result.out_path} ({result.archive_bytes} bytes encrypted)[/green]"
+        f"{result.out_path} ({result.archive_bytes} bytes encrypted, {kind})[/green]"
     )
 
 
@@ -152,6 +182,61 @@ def state_unpack(
     )
 
 
+@state_app.command("restore-snapshots")
+def state_restore_snapshots(
+    ctx: typer.Context,
+    in_path: str = typer.Option(
+        ..., "--in", help="Path to a full (--include-snapshots) encrypted state archive"
+    ),
+) -> None:
+    """Additively restore ONLY state/snapshots/ (the immutable Parquet
+    archive) from a full state archive into --state-dir, without touching
+    anything else already there.
+
+    Unlike ``state unpack``, this never replaces or deletes anything in
+    --state-dir -- it is a partial, additive merge, meant to run AFTER a
+    normal ``state unpack`` (which is lean by default and no longer carries
+    state/snapshots/, see ``state pack --include-snapshots``). Used by
+    pipeline.yml's weekly job to layer the periodic full Parquet backup back
+    onto an otherwise-lean restore, so previously accumulated Parquet
+    history is never silently dropped (CLAUDE.md rule 33) just because the
+    fast-rotating daily archive stopped carrying it.
+
+    Exit codes: 0 ok, 2 TURBOEDGE_STATE_KEY missing/too short, archive
+    missing, wrong key, or a corrupted/unsafe archive.
+    """
+    passphrase = _require_state_key()
+    state_dir = _state_dir_from_ctx(ctx)
+    src = Path(in_path)
+
+    if not src.is_file():
+        err_console.print(f"[red]No state archive found at {src}[/red]")
+        raise typer.Exit(code=2)
+
+    try:
+        result = unpack_state_subset(src, state_dir, passphrase, prefixes=(SNAPSHOTS_PREFIX,))
+    except StateCryptoError as exc:
+        err_console.print(
+            f"[red]Snapshot restore failed (wrong TURBOEDGE_STATE_KEY or corrupted archive): "
+            f"{exc}[/red]"
+        )
+        raise typer.Exit(code=2) from exc
+    except StateArchiveError as exc:
+        err_console.print(f"[red]Snapshot restore failed: {exc}[/red]")
+        raise typer.Exit(code=2) from exc
+
+    logger.info(
+        "state_snapshots_restored",
+        state_dir=str(result.state_dir),
+        file_count=result.file_count,
+        total_bytes=result.total_bytes,
+    )
+    console.print(
+        f"[green]Merged {result.file_count} snapshot file(s), {result.total_bytes} bytes into "
+        f"{result.state_dir}[/green]"
+    )
+
+
 def db_compact(
     ctx: typer.Context,
     keep_days: int = typer.Option(
@@ -159,26 +244,42 @@ def db_compact(
         "--keep-days",
         help="Compact product_snapshots rows older than N days to one row/isin/day",
     ),
+    hard_delete_after_days: int = typer.Option(
+        DEFAULT_HARD_DELETE_AFTER_DAYS,
+        "--hard-delete-after-days",
+        help=(
+            "Permanently delete product_snapshots rows older than N days (must be > "
+            "--keep-days), except ISINs present in forward_ledger (selected or as an "
+            "alternative/counterfactual), which are never thinned or deleted"
+        ),
+    ),
 ) -> None:
     """Reduce ``product_snapshots`` rows older than --keep-days to one row
-    per (isin, UTC calendar day); ISINs present in ``forward_ledger`` (if
-    that table exists yet) keep their full history. Runs CHECKPOINT, then
-    rewrites the database file in place so the reduction actually shrinks
-    it on disk (see ``state/retention.py`` module docstring).
+    per (isin, UTC calendar day), then permanently delete whatever is still
+    older than --hard-delete-after-days; ISINs present in ``forward_ledger``
+    (if that table exists yet -- as the selected pick or anywhere in
+    ``alternatives``) keep their full history and are never thinned or
+    deleted, however old. Runs CHECKPOINT, then rewrites the database file
+    in place so the reduction actually shrinks it on disk (see
+    ``state/retention.py`` module docstring).
     """
     app_ctx = ctx.obj
     db_path: Path = app_ctx.state_dir / "turboedge.duckdb"
 
     with Store(db_path) as store:
         store.init_schema()
-        report = compact_product_snapshots(store, keep_days=keep_days)
+        report = compact_product_snapshots(
+            store, keep_days=keep_days, hard_delete_after_days=hard_delete_after_days
+        )
 
     logger.info(
         "db_compact",
         keep_days=report.keep_days,
+        hard_delete_after_days=report.hard_delete_after_days,
         rows_before=report.rows_before,
         rows_after=report.rows_after,
         rows_removed=report.rows_removed,
+        rows_hard_deleted=report.rows_hard_deleted,
         protected_isin_count=report.protected_isin_count,
         forward_ledger_present=report.forward_ledger_present,
         db_size_bytes_before=report.db_size_bytes_before,
@@ -190,11 +291,13 @@ def db_compact(
     table.add_column("Metric")
     table.add_column("Value", justify="right")
     table.add_row("keep_days", str(report.keep_days))
+    table.add_row("hard_delete_after_days", str(report.hard_delete_after_days))
     table.add_row("forward_ledger present", str(report.forward_ledger_present))
     table.add_row("protected ISINs", str(report.protected_isin_count))
     table.add_row("product_snapshots rows before", str(report.rows_before))
     table.add_row("product_snapshots rows after", str(report.rows_after))
-    table.add_row("rows removed", str(report.rows_removed))
+    table.add_row("rows removed (total)", str(report.rows_removed))
+    table.add_row("rows hard-deleted", str(report.rows_hard_deleted))
     table.add_row("db size before (bytes)", str(report.db_size_bytes_before))
     table.add_row("db size after (bytes)", str(report.db_size_bytes_after))
     table.add_row("db file physically rewritten", str(report.file_rewritten))

@@ -81,7 +81,7 @@ runs:
     #      genuine first run. A fresh, empty state is expected and fine;
     #      log it and surface it in the job summary.
     #   B. Previous successful runs exist, but none of the last 50 have a
-    #      usable `turboedge-state-enc` artifact (expired past the 90-day
+    #      usable `turboedge-state-enc` artifact (expired past its 14-day
     #      retention window, never uploaded, or the download failed).
     #      Abort loudly (`::error::` + exit 1) -- UNLESS `allow_fresh_state`
     #      was explicitly passed in via workflow_dispatch, in which case a
@@ -90,8 +90,9 @@ runs:
     #
     # Search depth is 50 successful runs (not 20): scan runs 5x/day but
     # weekly/monthly run far less often, so 20 runs of *this* workflow can
-    # be far short of covering the 90-day artifact retention window once
-    # scan/eod runs are interleaved in the same run history.
+    # be far short of covering even the lean artifact's 14-day retention
+    # window once scan/eod runs are interleaved in the same run history
+    # (roughly 30+ runs/week across all modes).
     # ------------------------------------------------------------------
     - name: Restore encrypted state from the latest usable successful pipeline run
       id: restore
@@ -153,7 +154,7 @@ runs:
           exit 0
         fi
 
-        echo "::error::${total_success} prior successful pipeline.yml run(s) exist, but none of the last 50 have a usable turboedge-state-enc artifact (expired past the 90-day retention window, missing, or a failed download). Refusing to silently continue with an empty state -- that would discard the forward-ledger, posteriors, model weights and product history without anyone noticing. If this reset is intentional, re-run manually via workflow_dispatch with allow_fresh_state=true."
+        echo "::error::${total_success} prior successful pipeline.yml run(s) exist, but none of the last 50 have a usable turboedge-state-enc artifact (expired past its 14-day retention window, missing, or a failed download). Refusing to silently continue with an empty state -- that would discard the forward-ledger, posteriors, model weights and product history without anyone noticing. If this reset is intentional, re-run manually via workflow_dispatch with allow_fresh_state=true."
         exit 1
 
     - name: Unpack state
@@ -168,3 +169,50 @@ runs:
         else
           uv run turboedge --state-dir ./state state unpack --in state-download/state.tar.enc
         fi
+
+    # ------------------------------------------------------------------
+    # Weekly-only: layer the latest periodic full archive's state/snapshots/
+    # (the immutable Parquet archive) additively on top of the lean restore
+    # above. Every other mode now packs lean (turboedge-state-pack/
+    # action.yml's default, snapshots excluded) several times a day, so the
+    # restore above never carries state/snapshots/ forward on its own --
+    # without this step the weekly job's own `state pack --include-snapshots`
+    # (pipeline.yml) would pack an empty snapshots/ every single week,
+    # silently discarding whatever Parquet history had already accumulated
+    # (CLAUDE.md rule 33). `state restore-snapshots` (state/archive.py's
+    # `unpack_state_subset`) only ever ADDS/overwrites state/snapshots/ --
+    # it never touches the db/registry/ledger/trials the lean unpack above
+    # just restored. Best-effort: if no turboedge-state-full-enc artifact
+    # exists yet (e.g. the first week after this mechanism was introduced),
+    # this logs a note and continues rather than failing the job.
+    # ------------------------------------------------------------------
+    - name: Restore Parquet snapshot archive baseline (weekly only)
+      if: inputs.mode == 'weekly'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+        TURBOEDGE_STATE_KEY: ${{ inputs.state_key }}
+      run: |
+        set -euo pipefail
+        mkdir -p state-full-download
+
+        if ! run_ids=$(gh run list --workflow pipeline.yml --status success --json databaseId --limit 50 --jq '.[].databaseId'); then
+          echo "::warning::'gh run list' failed while looking for a turboedge-state-full-enc artifact -- continuing without merging Parquet history this run."
+          exit 0
+        fi
+
+        found=""
+        for run_id in ${run_ids}; do
+          if gh run download "${run_id}" -n turboedge-state-full-enc -D state-full-download 2>/dev/null; then
+            echo "Found turboedge-state-full-enc artifact from pipeline.yml run ${run_id}"
+            found="${run_id}"
+            break
+          fi
+        done
+
+        if [[ -z "${found}" ]]; then
+          echo "No usable turboedge-state-full-enc artifact found in the last 50 successful runs -- nothing to merge yet (expected on the first weekly run after this mechanism was introduced)."
+          exit 0
+        fi
+
+        uv run turboedge --state-dir ./state state restore-snapshots --in state-full-download/state-full.tar.enc

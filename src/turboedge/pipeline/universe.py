@@ -215,7 +215,12 @@ def _run_universe_body(
             try:
                 products = future.result()
             except Exception as exc:
-                logger.error("universe_source_failed", source=adapter.name, error=str(exc))
+                logger.error(
+                    "universe_source_failed",
+                    source=adapter.name,
+                    error=str(exc),
+                    fetch_duration_s=per_adapter_duration_s.get(adapter.name),
+                )
                 source_errors[adapter.name] = str(exc)
                 continue
             counts_by_source[adapter.name] = len(products)

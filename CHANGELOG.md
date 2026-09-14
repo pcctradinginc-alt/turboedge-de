@@ -300,17 +300,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   age (`quote_timestamp` vs. `evaluation_time`, set only after the whole
   multi-source fetch completed) exceeded 120s regardless of how fresh the
   source's own data was, rejecting 11,060/11,114 DAX and 7,059/10,566 NDX
-  candidates on staleness alone. `configs/risk.yaml` now has two
-  independently-configurable thresholds: `max_source_quote_age_s` (900s —
-  `quote_timestamp` vs. each snapshot's own `retrieved_at`, a source
-  data-quality signal, reason `source_quote_stale`) and
-  `max_quote_age_at_decision_s` (450s — `quote_timestamp` vs.
-  `evaluation_time`, a tradability signal that must exceed the pipeline's
-  own realistic fetch duration, reason `quote_age_at_decision`). Both
-  values are derived from measured distributions, not guesswork — see the
-  config file's comments. Verified the split still rejects genuinely stale
+  candidates on staleness alone (run 34883437354, commit 1fe080e:
+  ACTIONABLE=0, WATCH=**0**, REJECT=18,119, DATA_QUALITY=3,561, combined).
+  `configs/risk.yaml` now has two independently-configurable thresholds:
+  `max_source_quote_age_s` (900s — `quote_timestamp` vs. each snapshot's
+  own `retrieved_at`, a source data-quality signal, reason
+  `source_quote_stale`) and `max_quote_age_at_decision_s` (450s —
+  `quote_timestamp` vs. `evaluation_time`, a tradability signal that must
+  exceed the pipeline's own realistic fetch duration, reason
+  `quote_age_at_decision`). Both values are derived from measured
+  distributions, not guesswork — see the config file's comments, which
+  also document a several-tens-of-seconds issuer/local clock offset found
+  while reproducing the source-side numbers (BNP's median source age is
+  slightly negative). Verified the split still rejects genuinely stale
   source data (a 25-day-old Goldman Sachs quote, a 9,695s-old BNP outlier)
-  via `source_quote_stale` regardless of the decision-time fix.
+  via `source_quote_stale` regardless of the decision-time fix. Re-ran the
+  full pipeline in CI after the fix (run 34888059675, commit 90513f5):
+  ACTIONABLE=0, WATCH=**12,497**, REJECT=5,680, DATA_QUALITY=3,572 —
+  fetch_duration_s 186.4s (DAX) / 128.3s (NDX), `source_quote_stale`
+  750/6, `quote_age_at_decision` 1,850/133 (DAX/NDX).
 - **Parallelized per-adapter product fetch** (`pipeline/universe.py`):
   BNP/Citi/gettex are three independent hosts, each already rate-limited
   independently (`adapters/base.py`'s per-host `_HostRateLimiter`,
@@ -319,10 +327,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reason tied to that politeness rule. Fetching them concurrently instead
   bounds total `fetch_duration_s` by the slowest single adapter rather than
   their sum: measured (2026-09-14) local fetch_duration_s dropped from
-  81.0s/74.9s (DAX/NDX) to 49.9s/57.4s. A full scan still realistically
-  takes on the order of a minute (local) to a few minutes (CI); see
-  README's "Known Limitations" for what that does and does not mean for
-  decision-time quote freshness.
+  81.0s/74.9s (DAX/NDX) to 49.9s/57.4s; the same-day CI figures above
+  (227.1s/261.4s pre-fix to 186.4s/128.3s post-fix) confirm the effect
+  survives CI's noisier, slower network path. A full scan still
+  realistically takes on the order of a minute (local) to a few minutes
+  (CI); see README's "Known Limitations" for what that does and does not
+  mean for decision-time quote freshness. New concurrency-specific test
+  coverage in `tests/pipeline/test_universe.py`: every adapter is still
+  called when another is slow/fails, a failing adapter's error lands in
+  `source_errors` without blocking a faster one, `counts_by_source`/log
+  order stay in original adapter order regardless of completion order, and
+  each adapter's own fetch duration is recorded (and now logged) on both
+  the success and failure path.
 - **Moved `premium_over_fair`/`premium_uncertainty_term` out of
   `CandidateEvaluation.reasons`** into their own optional float fields
   (`pipeline/scan.py`, `storage/schemas.py`, `storage/duckdb.py`, additive
@@ -332,10 +348,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   almost never repeated across candidates, so `reject_reason_counts`
   (`pipeline/scan.py::_log_scan_diagnostics`) filled up with count-1
   pseudo-reasons that drowned out the real, repeated reject reasons the
-  counter exists to surface: 82 distinct DAX / 73 distinct NDX pseudo-reason
-  entries measured pre-fix in CI (run 34883437354), 79 distinct / 96
-  occurrences (DAX) and 12 distinct / 12 occurrences (NDX) measured pre-fix
-  locally the same day.
+  counter exists to surface: 81 distinct / 96 occurrences (DAX) and 72
+  distinct / 78 occurrences (NDX) pseudo-reason entries measured pre-fix in
+  CI (run 34883437354, `gh run view 34883437354 --log | grep
+  scan_diagnostics`), 79 distinct / 96 occurrences (DAX) and 12 distinct /
+  12 occurrences (NDX) measured pre-fix locally the same day. Confirmed
+  absent from both `reject_reason_counts` post-fix (local and CI, run
+  34888059675).
 
 ### Added
 

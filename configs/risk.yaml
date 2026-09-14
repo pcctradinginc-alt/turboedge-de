@@ -31,29 +31,64 @@ max_spread_pct: 0.03
 # did the ISSUER hand us a quote that was already fresh? This must be (and
 # is) measured from each product's OWN retrieval timestamp, never from
 # evaluation_time -- otherwise it silently re-measures the pipeline's own
-# runtime under a different name. Measured directly from
-# state/turboedge.duckdb's product_snapshots (live BNP+gettex+Citi DAX+NDX
-# scan, 2026-09-14, per-issuer age-at-retrieval = quote_timestamp vs. that
-# row's own retrieved_at, p90/max seconds): BNP Paribas 63/11,304;
-# UniCredit 172/673; HSBC 360/596; Goldman Sachs 425/2,149,029
-# (gettex-relayed market-maker quotes, all three issued through the same
-# gettex feed with no anti-bot throttling of their own -- the wide
-# issuer-to-issuer spread is each market maker's own update cadence, not
-# anything this pipeline controls); Citigroup 980/1,031 (Citi's feed is
-# explicitly closing-price/partial-coverage only, CLAUDE.md "Data sources"
-# -- structurally slower-cadence by design, not a pipeline defect). 900s
-# sits above every issuer's routine p90 (so BNP/gettex-relayed candidates
-# are essentially never rejected here purely for their normal per-source
-# cadence) while still well below the observed outlier tail (11,304s /
-# 2,149,029s) this gate exists to catch, and correctly flags roughly the
-# stalest half of Citi's closing-price rows as "source_quote_stale"
-# (accurate -- a closing price genuinely isn't a fresh live quote), while
-# still evaluating the fresher half on their own merits. Verified live
-# (2026-09-14 post-fix local run): the Goldman Sachs 25-day-old quote
-# (DE000GN0E3D8, source age 2,158,028s) and a BNP outlier (DE000BY6V0W5,
-# source age 9,695s) both still REJECT with "source_quote_stale" under this
-# threshold -- this gate is set to catch genuinely stale source data, not to
-# improve category counts by letting real staleness through.
+# runtime under a different name.
+#
+# Measured directly from state/turboedge.duckdb's product_snapshots with:
+#   SELECT issuer, count(*),
+#          min(epoch(retrieved_at) - epoch(quote_timestamp)),
+#          quantile_cont(epoch(retrieved_at) - epoch(quote_timestamp), 0.5),
+#          quantile_cont(epoch(retrieved_at) - epoch(quote_timestamp), 0.9),
+#          max(epoch(retrieved_at) - epoch(quote_timestamp))
+#   FROM product_snapshots WHERE quote_timestamp IS NOT NULL
+#   GROUP BY issuer;
+# Reproduced 2026-09-14 against the accumulated local state (69,424 rows,
+# retrieved_at spanning 2026-09-11 10:45 to 2026-09-14 21:29 CEST across
+# every local scan-all run this session, not a single isolated run -- an
+# EARLIER version of this comment quoted a smaller same-day snapshot before
+# further local runs added rows, which shifted BNP's p90/UniCredit's max
+# materially; re-run the query above against the live database before
+# trusting any number here again). n / min_s / p50_s / p90_s / max_s per
+# issuer: BNP Paribas 66,418 / -36.6 / -4.1 / 134.4 / 11,473.0; UniCredit
+# 1,162 / 52.5 / 170.6 / 301.7 / 9,982.7; HSBC 582 / -11.7 / 171.4 / 363.8 /
+# 595.5; Goldman Sachs 1,187 / -6.0 / 169.5 / 423.8 / 2,158,027.4 (HSBC/
+# UniCredit/Goldman Sachs are gettex-relayed market-maker quotes, all three
+# issued through the same gettex feed with no anti-bot throttling of their
+# own -- the wide issuer-to-issuer spread is each market maker's own update
+# cadence, not anything this pipeline controls); Citigroup 75 / 744.9 /
+# 797.3 / 999.8 / 1,085.3 (Citi's feed is explicitly closing-price/partial-
+# coverage only, CLAUDE.md "Data sources" -- structurally slower-cadence by
+# design, not a pipeline defect). Rows exceeding a 900s cutoff, by issuer:
+# BNP 39/66,418; Goldman Sachs 12/1,187; UniCredit 1/1,162; HSBC 0/582;
+# Citigroup 34/75.
+#
+# LIMITATION -- source/local clock offset: BNP's median is *negative*
+# (-4.1s) and its minimum is -36.6s; Goldman Sachs and HSBC also have small
+# negative minimums (-6.0s / -11.7s). This means quote_timestamp
+# occasionally sits a few seconds to tens of seconds AFTER this snapshot's
+# own retrieved_at -- not genuinely a quote "from the future", but a small,
+# real clock offset between the issuer's own clock and this process's
+# clock (retrieved_at is stamped once per adapter fetch_products() call,
+# see adapters/issuer_feeds.py/gettex.py). Harmless for this 900s
+# threshold (a negative age trivially passes) and does not affect
+# universe/discover.py's `_pick_winner`, which sorts candidates directly by
+# `quote_timestamp` and never touches `retrieved_at` -- but it does mean
+# every source_quote_age_s value here carries an unremoved, unmeasured
+# systematic offset of up to several tens of seconds; do not read the
+# small end of this distribution as sub-second-precise.
+#
+# 900s sits above every issuer's routine p90 (so BNP/gettex-relayed
+# candidates are essentially never rejected here purely for their normal
+# per-source cadence) while still well below the observed outlier tail
+# (11,473s / 2,158,027s) this gate exists to catch, and correctly flags
+# roughly the stalest half of Citi's closing-price rows as
+# "source_quote_stale" (accurate -- a closing price genuinely isn't a fresh
+# live quote: 34 of 75 measured rows), while still evaluating the fresher
+# half on their own merits. Verified live (2026-09-14 post-fix local run):
+# the Goldman Sachs 25-day-old quote (DE000GN0E3D8, source age 2,158,028s)
+# and a BNP outlier (DE000BY6V0W5, source age 9,695s) both still REJECT
+# with "source_quote_stale" under this threshold -- this gate is set to
+# catch genuinely stale source data, not to improve category counts by
+# letting real staleness through.
 max_source_quote_age_s: 900
 
 # Trading relevance at decision time: is quote_timestamp still fresh at
@@ -75,12 +110,17 @@ max_source_quote_age_s: 900
 # enforced per-host, not globally -- never parallelized WITHIN one host's
 # own request stream) re-measured locally at 49.9s DAX / 57.4s NDX (~1.4-1.6x
 # faster, now bounded by the single slowest adapter -- BNP at 33-41s here --
-# instead of the sum of all three). 450s (7.5 minutes) is set with a >1.7x
-# safety margin over the WORST pre-fix CI figure (261.4s) measured so far,
-# i.e. it is safe even if CI's own network conditions happened to erase all
-# of the parallelization gain on a given day; the post-fix CI run this
-# threshold shipped alongside (see this session's report/CHANGELOG.md
-# entry) confirms the realized post-fix CI duration and margin.
+# instead of the sum of all three), and in CI (workflow run 34888059675,
+# commit 90513f5, same-day) at 186.4s DAX / 128.3s NDX -- confirming the
+# effect survives CI's noisier, slower network path even though the
+# absolute improvement there is smaller and less consistent than locally
+# (network-bound, not just rate-limit-bound). 450s (7.5 minutes) was set,
+# BEFORE that confirming CI run existed, with a >1.7x safety margin over
+# the worst PRE-fix CI figure (261.4s) specifically so it would already be
+# safe even if CI's network conditions had erased the entire
+# parallelization gain on a given day; the post-fix CI run above (186.4s
+# worst case) confirms an even wider realized margin (>2.4x) without this
+# value needing to be tightened.
 max_quote_age_at_decision_s: 450
 
 # Leverage band. Products outside this band are rejected outright.

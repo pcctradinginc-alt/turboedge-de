@@ -427,10 +427,13 @@ chflags -R nohidden /Users/cc/Desktop/TURBO\ EDGE/turboedge-de/.venv
   wait on each other's wall-clock time — this bounds the total fetch by
   the single slowest adapter instead of their sum (measured 2026-09-14:
   local fetch_duration_s dropped from 81.0s/74.9s (DAX/NDX, sequential) to
-  49.9s/57.4s (parallel); the equivalent CI figures were 227.1s/261.4s
-  sequential — CI's network path to these German/US issuer hosts is
-  consistently slower than this project's local development connection).
-  What this concurrency fix does **not** do is make individual pages
+  49.9s/57.4s (parallel); the equivalent CI figures dropped from
+  227.1s/261.4s (sequential, run 34883437354) to 186.4s/128.3s (parallel,
+  run 34888059675) — a smaller and less consistent improvement than
+  locally, since CI's network path to these German/US issuer hosts is
+  consistently slower and noisier than this project's local development
+  connection, so it is more network-bound than rate-limit-bound to begin
+  with). What this concurrency fix does **not** do is make individual pages
   fetch faster — the `>=1.5s`/host floor and each adapter's own page count
   are unchanged, so a full scan still realistically takes somewhere
   between under a minute (local) and a few minutes (CI, depending on

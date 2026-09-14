@@ -162,8 +162,9 @@ def db_compact(
 ) -> None:
     """Reduce ``product_snapshots`` rows older than --keep-days to one row
     per (isin, UTC calendar day); ISINs present in ``forward_ledger`` (if
-    that table exists yet) keep their full history. Runs CHECKPOINT
-    afterwards.
+    that table exists yet) keep their full history. Runs CHECKPOINT, then
+    rewrites the database file in place so the reduction actually shrinks
+    it on disk (see ``state/retention.py`` module docstring).
     """
     app_ctx = ctx.obj
     db_path: Path = app_ctx.state_dir / "turboedge.duckdb"
@@ -182,6 +183,7 @@ def db_compact(
         forward_ledger_present=report.forward_ledger_present,
         db_size_bytes_before=report.db_size_bytes_before,
         db_size_bytes_after=report.db_size_bytes_after,
+        file_rewritten=report.file_rewritten,
     )
 
     table = Table(title="db compact report")
@@ -195,6 +197,7 @@ def db_compact(
     table.add_row("rows removed", str(report.rows_removed))
     table.add_row("db size before (bytes)", str(report.db_size_bytes_before))
     table.add_row("db size after (bytes)", str(report.db_size_bytes_after))
+    table.add_row("db file physically rewritten", str(report.file_rewritten))
     console.print(table)
 
 

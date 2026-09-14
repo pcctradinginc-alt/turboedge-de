@@ -1,0 +1,201 @@
+{
+  "actionable": {
+    "ambiguous_path_rate": null,
+    "brier": null,
+    "calibration_n": 0,
+    "dsr": null,
+    "ece": null,
+    "expected_shortfall_95": null,
+    "financing_drag_n": 0,
+    "issuer_drag": null,
+    "issuer_drag_n": 0,
+    "ko_frequency": null,
+    "mean_financing_drag_pct": null,
+    "mean_holding_days": null,
+    "mean_return": null,
+    "mean_return_ci": null,
+    "mean_spread_pct": null,
+    "median_holding_days": null,
+    "median_return": null,
+    "n": 0,
+    "n_effective": 0.0,
+    "notes": [
+      "Keine gelabelten Trades in diesem Zeitraum/dieser Gruppe."
+    ],
+    "product_selection_edge": null,
+    "product_selection_edge_n": 0,
+    "product_selection_regret": null,
+    "product_selection_regret_n": 0,
+    "profit_factor": null,
+    "psr": null,
+    "reliable": false,
+    "sharpe": null,
+    "sortino": null,
+    "success_rate": null,
+    "success_rate_ci": null
+  },
+  "as_of": "2026-09-14T03:45:00.711008Z",
+  "category_counts_in_month": {},
+  "data_quality_notes": [],
+  "drift_events": [],
+  "generated_at": "2026-09-14T03:45:00.727794Z",
+  "groupings_actionable": [
+    {
+      "buckets": {},
+      "dimension": "underlying"
+    },
+    {
+      "buckets": {},
+      "dimension": "direction"
+    },
+    {
+      "buckets": {},
+      "dimension": "horizon"
+    },
+    {
+      "buckets": {},
+      "dimension": "issuer"
+    },
+    {
+      "buckets": {},
+      "dimension": "leverage_bucket"
+    },
+    {
+      "buckets": {},
+      "dimension": "signal_family"
+    }
+  ],
+  "groupings_shadow": [
+    {
+      "buckets": {},
+      "dimension": "underlying"
+    },
+    {
+      "buckets": {},
+      "dimension": "direction"
+    },
+    {
+      "buckets": {},
+      "dimension": "horizon"
+    },
+    {
+      "buckets": {},
+      "dimension": "issuer"
+    },
+    {
+      "buckets": {},
+      "dimension": "leverage_bucket"
+    },
+    {
+      "buckets": {},
+      "dimension": "signal_family"
+    }
+  ],
+  "model_weights": [],
+  "month": "2026-09-01",
+  "month_end": "2026-09-30",
+  "n_scans_in_month": 0,
+  "narrative": [
+    "Keine gelabelten Vorschläge fällig im Zeitraum 2026-09-01-2026-09-30.",
+    "Keine Scan-Läufe mit Vorhersagen in diesem Monat protokolliert."
+  ],
+  "open_trials": [],
+  "shadow": {
+    "ambiguous_path_rate": null,
+    "brier": null,
+    "calibration_n": 0,
+    "dsr": null,
+    "ece": null,
+    "expected_shortfall_95": null,
+    "financing_drag_n": 0,
+    "issuer_drag": null,
+    "issuer_drag_n": 0,
+    "ko_frequency": null,
+    "mean_financing_drag_pct": null,
+    "mean_holding_days": null,
+    "mean_return": null,
+    "mean_return_ci": null,
+    "mean_spread_pct": null,
+    "median_holding_days": null,
+    "median_return": null,
+    "n": 0,
+    "n_effective": 0.0,
+    "notes": [
+      "Keine gelabelten Trades in diesem Zeitraum/dieser Gruppe."
+    ],
+    "product_selection_edge": null,
+    "product_selection_edge_n": 0,
+    "product_selection_regret": null,
+    "product_selection_regret_n": 0,
+    "profit_factor": null,
+    "psr": null,
+    "reliable": false,
+    "sharpe": null,
+    "sortino": null,
+    "success_rate": null,
+    "success_rate_ci": null
+  },
+  "shadow_portfolio": [
+    {
+      "mean_net_return": null,
+      "n": 0,
+      "n_realized": 0,
+      "portfolio": "top1"
+    },
+    {
+      "mean_net_return": null,
+      "n": 0,
+      "n_realized": 0,
+      "portfolio": "top3"
+    },
+    {
+      "mean_net_return": null,
+      "n": 0,
+      "n_realized": 0,
+      "portfolio": "top5"
+    },
+    {
+      "mean_net_return": null,
+      "n": 0,
+      "n_realized": 0,
+      "portfolio": "random_valid_turbo"
+    },
+    {
+      "mean_net_return": null,
+      "n": 0,
+      "n_realized": 0,
+      "portfolio": "lowest_spread"
+    },
+    {
+      "mean_net_return": null,
+      "n": 0,
+      "n_realized": 0,
+      "portfolio": "lowest_financing_cost"
+    },
+    {
+      "mean_net_return": null,
+      "n": 0,
+      "n_realized": 0,
+      "portfolio": "highest_leverage"
+    },
+    {
+      "mean_net_return": null,
+      "n": 0,
+      "n_realized": 0,
+      "portfolio": "lowest_leverage"
+    },
+    {
+      "mean_net_return": null,
+      "n": 0,
+      "n_realized": 0,
+      "portfolio": "median_product"
+    }
+  ],
+  "status_only": true,
+  "strategy_posteriors": [],
+  "trial_budget": {
+    "budget": 6,
+    "quarter": "2026Q3",
+    "used": 0
+  }
+}

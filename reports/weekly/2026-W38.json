@@ -1,0 +1,38 @@
+{
+  "as_of": "2026-09-14T03:45:02.034625Z",
+  "champion_model_id": null,
+  "demotions": [],
+  "families": [
+    {
+      "bh_rejected": null,
+      "brier": null,
+      "dsr": null,
+      "ece": null,
+      "evidence_source": "forward_ledger",
+      "mean_regret": null,
+      "mean_return": null,
+      "n": 0,
+      "n_effective": 0.0,
+      "notes": [
+        "Keine Forward-Ledger- oder Walk-Forward-Backtest-Daten."
+      ],
+      "p_value": null,
+      "protected": true,
+      "psr": null,
+      "reliable": false,
+      "sharpe": null,
+      "signal_family": "tsmom",
+      "z_score": null
+    }
+  ],
+  "fdr_alpha": 0.1,
+  "generated_at": "2026-09-14T03:45:02.051075Z",
+  "notes": [
+    "Vergleich nutzt Forward-Ledger-Daten, wo verfügbar; Walk-Forward-Backtest-Ergebnisse als Fallback (nicht im Store persistiert), wenn Forward-Ledger leer (Spec §29). Fenster: 2026-07-16..2026-09-14.",
+    "Kein Modell mit status=champion im Registry gefunden."
+  ],
+  "promotions": [],
+  "weight_preview": [],
+  "window_end": "2026-09-14",
+  "window_start": "2026-07-16"
+}

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -417,3 +418,82 @@ def test_run_universe_records_per_adapter_fetch_duration_on_success_and_failure(
     failed_event = next(e for e in logs if e.get("event") == "universe_source_failed")
     assert ok_event["fetch_duration_s"] is not None and ok_event["fetch_duration_s"] >= 0.0
     assert failed_event["fetch_duration_s"] is not None and failed_event["fetch_duration_s"] >= 0.0
+
+
+def test_run_universe_adapters_actually_run_concurrently(
+    cfg: TurboEdgeConfig,
+    store: Store,
+    tmp_path: Path,
+    make_product_adapter: Callable[..., Any],
+    dax_product_factory: Callable[..., ProductSnapshot],
+) -> None:
+    """The one test in this file that a regression back to the old
+    sequential ``for adapter in adapters:`` loop cannot pass.
+
+    Every one of the tests above this one (calls-every-adapter,
+    failure-isolation, deterministic ordering, duration-on-failure) holds
+    just as well under the OLD sequential loop -- a slow/failing adapter
+    there only delays or is skipped, it never blocks a later one, so none
+    of those assertions actually distinguish "fetched one after another"
+    from "fetched concurrently". This test does: three fake adapters each
+    block on a shared ``threading.Barrier(3)`` the instant their
+    ``fetch_products()`` is called. A barrier only releases once all three
+    parties have arrived. Under genuine concurrent fetching (one thread per
+    adapter, as ``pipeline/universe.py`` does today), all three threads
+    call ``fetch_products()`` at roughly the same time, all three reach the
+    barrier within milliseconds of each other, and it releases immediately.
+    Under a REGRESSION to the sequential loop, only one adapter's
+    ``fetch_products()`` is ever running at a time -- the first adapter
+    blocks alone at the barrier, waiting for two parties that can never
+    arrive (the second and third adapters' ``fetch_products()`` calls
+    haven't started yet, and never will until the first one returns) -- so
+    the wait times out and raises ``BrokenBarrierError``, which this
+    adapter's ``fetch_products()`` propagates as an ordinary fetch failure.
+    A generous 5s barrier timeout keeps this from false-alarming on a
+    loaded machine; the wall-clock assertion below is a secondary,
+    ADDITIONAL check (never a substitute for the barrier itself, which is
+    the reliable signal here).
+    """
+    n = 3
+    barrier_timeout_s = 5.0
+    barrier = threading.Barrier(n, timeout=barrier_timeout_s)
+
+    # Distinct 12-character ISINs, passed through verbatim: `merge_snapshots`
+    # deduplicates by ISIN, so three 13-character values truncated to 12
+    # ("DE000BARR0001"[:12] == "DE000BARR0002"[:12]) would collapse into a
+    # single merged product and the product-count assertion below would fail
+    # even while the barrier proves the fetches really did run concurrently.
+    isins = ("DE000BARR001", "DE000BARR002", "DE000BARR003")
+    adapters = [
+        make_product_adapter(
+            f"source_{i}",
+            products=[
+                dax_product_factory(
+                    isin=isin,
+                    issuer=f"source_{i}",
+                    direction=Direction.LONG,
+                    financing_level=20000.0,
+                    quote_timestamp=_NOW,
+                )
+            ],
+            on_fetch=barrier.wait,
+        )
+        for i, isin in enumerate(isins)
+    ]
+
+    started = time.monotonic()
+    result = run_universe(cfg, store, tmp_path, adapters, ["DAX"], run_id=new_run_id())
+    elapsed = time.monotonic() - started
+
+    assert result.source_errors == {}, (
+        "one or more adapters timed out waiting at the barrier for the "
+        "other two to arrive (BrokenBarrierError) -- this means "
+        "fetch_products() calls are no longer running concurrently; "
+        "parallelization was lost. source_errors: " + repr(result.source_errors)
+    )
+    assert len(result.products) == n
+    # Secondary wall-clock sanity check, additional to the barrier above:
+    # three concurrent barrier waits resolve in well under a second; three
+    # SEQUENTIAL ones would each individually time out after
+    # barrier_timeout_s, so a regression would take >= 3 * 5s = 15s here.
+    assert elapsed < barrier_timeout_s

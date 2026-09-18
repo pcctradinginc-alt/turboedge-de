@@ -2,19 +2,25 @@
 
 This document is the single source of truth for what has actually been measured
 in TurboEdge-DE so far. It replaces impressions with numbers, dates, methods
-and sample sizes. Everything below comes from one of the three internal
-research workstreams (W4, W5, W9) whose full write-ups live outside this
-repository, on the machine this project was developed on
+and sample sizes. Sections 1–4 come from the three internal research
+workstreams (W4, W5, W9) whose full write-ups live outside this repository,
+on the machine this project was developed on
 (`scratchpad/w4_walkforward_results.md`, `scratchpad/w9_challenger_results.md`,
-`scratchpad/w5_simulation_validation.md`) — this file is a faithful, condensed
-summary of those runs for anyone reading the repository.
+`scratchpad/w5_simulation_validation.md`) — for those, this file is a
+faithful, condensed summary of those runs for anyone reading the repository.
+Section 5 is different in kind: it records what the scheduled pipeline
+itself produced in CI, and its numbers come from the run logs and artifacts
+named there, which anyone with repository access can re-read.
 
-**Read this first if you read nothing else:** as of 2026-09-13, **no forecast
+**Read this first if you read nothing else:** as of 2026-09-18, **no forecast
 model and no challenger signal family in this codebase has a measured,
 statistically significant out-of-sample advantage over doing nothing (the
 unconditional/null model).** The correct behavior of the system today is to
 output "no trade" on every scan. Thresholds are not lowered to manufacture
-suggestions.
+suggestions. This is now confirmed live as well as offline: across 22
+scheduled CI runs (2026-09-14 to 2026-09-18), with up to 874 products fully
+priced and path-simulated per run, **not one candidate reached a positive
+lower-bound EV** — see section 5.
 
 ---
 
@@ -250,7 +256,135 @@ barrier distances, not a calibrated probability.**
 
 ---
 
-## 5. Conclusion
+## 5. Live pipeline results (scheduled CI runs, 2026-09-14 to 2026-09-18)
+
+Sections 1–3 are offline research measurements. This section records what
+the scheduled pipeline actually produced once it ran unattended in CI for
+five days (22 scheduled runs, `.github/workflows/pipeline.yml`). It exists
+because two of the findings below were only visible in production, and one
+of them silently disabled the entire evaluation stage.
+
+### Finding: a single freshness threshold rejected the whole universe
+
+Until 2026-09-14 one threshold (`max_quote_age_s: 120`) answered two
+different questions at once, and was measured against `evaluation_time` —
+i.e. after the *complete* multi-source fetch had finished. Measured in CI
+(run 34883437354): the fetch itself took 227.1 s (DAX) / 261.4 s (NDX), so
+the **minimum** decision-time quote age in the entire run was already
+171.5 s / 208.3 s — above the 120 s cutoff. No product could pass,
+regardless of data quality. Result: `quote_stale` on 11,060 of 11,114 DAX
+and 7,059 of 10,566 NDX candidates, `WATCH = 0`.
+
+The gate was split into two thresholds, each derived only from the
+measurement that answers its own question:
+
+| | threshold | measures |
+|---|---|---|
+| `max_source_quote_age_s` | 900 s | `quote_timestamp` vs. that row's own `retrieved_at` |
+| `max_quote_age_at_decision_s` | 450 s | `quote_timestamp` vs. `evaluation_time` |
+
+Source-side age per issuer (`product_snapshots`, 69,424 rows, 2026-09-14,
+`epoch(retrieved_at - quote_timestamp)`, p50 / p90 / max seconds): BNP
+Paribas (n=66,418) −4.1 / 134.4 / 11,473.0; UniCredit (n=1,162) 170.6 /
+301.7 / 9,982.7; HSBC (n=582) 171.4 / 363.8 / 595.5; Goldman Sachs
+(n=1,187) 169.5 / 423.8 / 2,158,027.4; Citigroup (n=75) 797.3 / 999.8 /
+1,085.3. Rows exceeding the 900 s cutoff: BNP 39, Goldman Sachs 12,
+UniCredit 1, HSBC 0, Citigroup 34 of 75. The gate therefore rejects
+genuinely dead quotes — including a 25-day-old Goldman Sachs quote — while
+no longer rejecting the universe for the pipeline's own runtime.
+
+**Caveat, measured and unresolved:** source-side age is systematically
+negative for BNP (median −4.1 s, minimum −36.6 s) and negative at the
+minimum for Goldman Sachs and HSBC. The issuer's quote timestamp precedes
+our own retrieval clock, so the two clocks disagree by seconds. Harmless at
+a 900 s cutoff (negative values pass trivially) and irrelevant to merging
+(`universe/discover.py::_pick_winner` sorts on `quote_timestamp` itself),
+but the quantity carries a systematic offset of a few seconds.
+
+### Effect of the split, measured in CI
+
+| | before (run 34883437354) | after (run 34888059675) |
+|---|---|---|
+| ACTIONABLE | 0 | **0** |
+| WATCH | 0 | 12,497 |
+| REJECT | 18,119 | 5,680 |
+| DATA_QUALITY | 3,561 | 3,572 |
+| products EV-evaluated | 120 | **874** |
+| product × horizon evaluations | 600 | 4,370 |
+| fetch duration DAX / NDX | 227.1 s / 261.4 s | 186.4 s / 128.3 s |
+
+The decisive number is the second-to-last row: before the fix the pipeline
+priced and path-simulated **120** products in CI, essentially only those
+drawn by the shadow sample, because the regular pre-EV pool was empty. The
+gap between 12,497 WATCH and 874 evaluated is by design, not loss — the
+pre-EV pool is the 25 cheapest candidates per (direction, leverage bucket)
+plus 3 per stratum drawn from the full pool for selection-bias protection
+(`pipeline/scan.py::_select_ev_pool`).
+
+**ACTIONABLE remained 0 in all 22 scheduled runs.** With 874 products fully
+evaluated, no candidate reached a positive lower-bound EV. The fix restored
+the measurement basis; it did not produce an edge, and was not expected to.
+
+### Fetch duration and concurrency
+
+The three product hosts are fetched concurrently (one thread per host).
+This does not weaken the politeness rule: `derivate.bnpparibas.com`,
+`de.citifirst.com` and `gettex.wsd.com` are distinct hosts, each adapter
+holds its own per-host rate limiter (`adapters/base.py::_HostRateLimiter`,
+lock-protected, ≥1.5 s between requests), and requests within one host stay
+serialized. Measured: local 81.0 s / 74.9 s → 49.9 s / 57.4 s; CI 227.1 s /
+261.4 s → 186.4 s / 128.3 s (CI is network-bound rather than rate-limit
+bound, so it gains less). A scan still takes 1–3 minutes structurally.
+
+Concurrency is covered by a test that a sequential loop cannot pass
+(`tests/pipeline/test_universe.py`): three fake adapters block on a shared
+`threading.Barrier(3)`. Verified in both directions — green as shipped, and
+red with the pool forced to one worker (the first adapter blocks the full
+5 s, then all three fail with `BrokenBarrierError`).
+
+### After-hours runs correctly produce nothing
+
+Four scheduled runs (21:13–21:45 UTC, i.e. after both the Xetra and the US
+close) produced `WATCH = 0` with ≈16,500 REJECT. Both freshness gates fire
+on the same products (DAX: `source_quote_stale` 9,900 and
+`quote_age_at_decision` 9,900 of 10,022). This is correct behavior — the
+quotes genuinely are hours old — not a regression.
+
+### Learning loop: first run on real data
+
+The evening chain (label → learn → position reevaluate) first processed
+real data on 2026-09-17 (run 35287791715):
+
+- `label`: labeled = 221, ko = 1, ambiguous = 0, missing_data = 0
+- `learn`: posteriors_updated = 4, models_reweighted = 0, drift_events = 3
+- `position reevaluate`: mails_sent = 0
+
+`models_reweighted = 0` is consistent with sections 1–2: there is no model
+with a measured advantage to re-weight toward. `drift_events = 3` are
+Page-Hinkley detections, which reduce weights but never delete a model
+(rule 32).
+
+### Open risk: state growth is not yet bounded
+
+The encrypted state artifact grew monotonically from 43.6 MB (2026-09-14)
+to 168.8 MB (2026-09-18); the database reached 241.2 MB. `db compact` on
+2026-09-17 removed **0 of 517,548 rows**. That is correct, not a defect:
+with `keep_days: 5` and the first data written 2026-09-13, every row was
+still inside the retention window, so nothing was eligible for thinning
+(the 241.2 → 229.7 MB reduction that run came purely from the file
+rewrite). Thinning first becomes eligible from 2026-09-18.
+
+Projected effect, measured against the local database (69,428 rows):
+reducing aged rows to one per (ISIN, UTC calendar day) leaves 26,499 rows,
+a 61.8% reduction, i.e. roughly 2.9 snapshot rows per ISIN per day. Applied
+to the CI volume (≈21,000 products per scan, several scans per day) the
+steady state after 90 days is still on the order of millions of rows, so
+thinning alone slows growth rather than bounding it. This is an open item,
+not a solved one.
+
+---
+
+## 6. Conclusion
 
 Across every avenue tested so far — the protected TSMOM baseline mapped to
 a full predictive distribution (W4), six independently pre-registered

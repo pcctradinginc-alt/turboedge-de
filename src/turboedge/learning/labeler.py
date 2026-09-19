@@ -43,6 +43,7 @@ from turboedge.storage.schemas import (
     LedgerLabel,
     ProductSnapshot,
     ProductType,
+    ShadowPosition,
     UnderlyingBar,
 )
 
@@ -74,6 +75,9 @@ class LabelRunResult(BaseModel):
     ambiguous: int = 0
     skipped_not_due: int = 0
     missing_data: int = 0
+    # -- Phase F (Master Spec §46 shadow portfolio) -- see
+    # `label_due_shadow_positions`, appended by `label_due_entries` below.
+    shadow_positions_labeled: int = 0
 
 
 @dataclass(frozen=True)
@@ -368,6 +372,118 @@ def resolve_exit_with_fallback(
     )
 
 
+def _shadow_entry_terms(
+    store: Store, isin: str, as_of: datetime
+) -> tuple[Direction, float | None, float, ProductType | None, str | None, datetime] | None:
+    """Reconstruct one shadow position's own entry terms -- ``(direction,
+    barrier, spread, product_type, underlying_id, entry_quote_timestamp)``
+    -- as of ``as_of`` (never after -- CLAUDE.md rule 5), from the same
+    product-snapshot/instrument data the real ledger entry for that isin
+    would have used. ``ShadowPosition`` itself (Master Spec §46's table)
+    stores only ``isin``/``entry_ask``/``exit_due``, not these -- same
+    reconstruction problem, same fix, as
+    ``learning/counterfactual.py``'s ``_alternative_entry_terms`` for
+    discarded ledger alternatives.
+
+    ``None`` if no instrument master data or no product snapshot at/before
+    ``as_of`` exists at all for this isin -- nothing to resolve an exit
+    from, never guessed (rule 29).
+    """
+    instrument = store.get_instrument(isin)
+    if instrument is None:
+        return None
+    snapshot = store.latest_product_snapshot_at_or_before(isin, as_of)
+    if snapshot is None or not snapshot.ask:
+        return None
+    spread = (
+        (snapshot.ask - snapshot.bid) / snapshot.ask
+        if snapshot.bid is not None and snapshot.ask
+        else 0.0
+    )
+    entry_quote_timestamp = snapshot.quote_timestamp or snapshot.observation_time
+    return (
+        instrument.direction,
+        snapshot.knockout_barrier,
+        spread,
+        instrument.product_type,
+        instrument.underlying_id,
+        entry_quote_timestamp,
+    )
+
+
+def label_due_shadow_positions(
+    store: Store,
+    as_of: datetime,
+    *,
+    price_bars_lookup: Callable[[str], Sequence[UnderlyingBar]],
+    config: LabelerConfig | None = None,
+) -> int:
+    """Attach ``realized_net_return`` to every due, not-yet-labeled shadow
+    position (Master Spec §46; CLAUDE.md guiding question / Phase F: "is
+    our product SELECTION worth money even if the direction model can do
+    nothing?").
+
+    Resolves each position's exit through the *exact same*
+    :func:`resolve_exit_with_fallback` path real ledger entries use below --
+    not a re-implementation -- so a shadow arm can never be scored more
+    favorably than an equivalent real entry would have been (rule 17:
+    ambiguous paths are never optimistically resolved, on either side of
+    the comparison; entry is always this product's own recorded ask, exit
+    is always its bid, exactly like a real entry).
+
+    Returns the number of positions actually labeled. A due position whose
+    entry terms cannot be reconstructed at all, or whose exit resolves to
+    ``EXPIRED_NO_DATA`` (no snapshot anywhere in the window and no
+    fallback bid), is left unlabeled -- never assigned a fabricated return
+    (rule 29) -- so it still counts toward ``reporting/monthly.py``'s
+    ``n`` (due) but not its ``n_realized``, exactly like a real
+    ``missing_data`` ledger entry.
+    """
+    positions: Sequence[ShadowPosition] = store.shadow_positions_due_for_labeling(as_of)
+    bars_cache: dict[str, Sequence[UnderlyingBar]] = {}
+    labeled = 0
+    for position in positions:
+        terms = _shadow_entry_terms(store, position.isin, position.created_at)
+        if terms is None:
+            continue
+        direction, barrier, spread, product_type, underlying_id, entry_quote_timestamp = terms
+
+        bars: Sequence[UnderlyingBar] = ()
+        if underlying_id is not None:
+            cached = bars_cache.get(underlying_id)
+            if cached is None:
+                cached = price_bars_lookup(underlying_id)
+                bars_cache[underlying_id] = cached
+            bars = cached
+
+        resolution = resolve_exit_with_fallback(
+            store,
+            isin=position.isin,
+            direction=direction,
+            entry_ask=position.entry_ask,
+            entry_bid=None,
+            entry_spread=spread,
+            entry_quote_timestamp=entry_quote_timestamp,
+            entry_underlying_date=position.created_at.date(),
+            exit_due=position.exit_due,
+            barrier=barrier,
+            underlying_bars=bars,
+            product_type=product_type,
+            config=config,
+        )
+        if resolution.realized_pnl is None:
+            continue
+        store.update_shadow_position_realized_return(
+            position.run_id,
+            position.portfolio,
+            position.isin,
+            position.horizon_days,
+            resolution.realized_pnl,
+        )
+        labeled += 1
+    return labeled
+
+
 def label_due_entries(
     store: Store,
     as_of: datetime,
@@ -453,6 +569,10 @@ def label_due_entries(
             if resolution.ambiguous_path:
                 result.ambiguous += 1
 
+    result.shadow_positions_labeled = label_due_shadow_positions(
+        store, as_of, price_bars_lookup=price_bars_lookup, config=config
+    )
+
     return result
 
 
@@ -475,6 +595,7 @@ __all__ = [
     "LabelRunResult",
     "LabelerConfig",
     "label_due_entries",
+    "label_due_shadow_positions",
     "resolve_exit",
     "resolve_exit_with_fallback",
 ]

@@ -245,6 +245,7 @@ def label_cmd(ctx: typer.Context) -> None:
         "ko": result.ko,
         "ambiguous": result.ambiguous,
         "missing_data": result.missing_data,
+        "shadow_positions_labeled": result.shadow_positions_labeled,
     }
     if redact_console_enabled():
         _print_counts("label", counts)

@@ -1625,6 +1625,21 @@ class Store:
         ).fetchall()
         return [_row_to_shadow_position(row) for row in rows]
 
+    def shadow_positions_due_for_labeling(self, as_of: datetime) -> list[ShadowPosition]:
+        """Shadow-portfolio rows not yet labeled (``realized_net_return IS
+        NULL``) whose ``exit_due`` has arrived by ``as_of`` -- the shadow-
+        portfolio analog of :meth:`ledger_entries_due_for_labeling` (Master
+        Spec §46, ``learning/labeler.py``'s ``label_due_shadow_positions``).
+        """
+        rows = self._conn.execute(
+            "SELECT run_id, portfolio, isin, horizon_days, entry_ask, exit_due, "
+            "realized_net_return, created_at FROM shadow_portfolio "
+            "WHERE realized_net_return IS NULL AND exit_due <= ? "
+            "ORDER BY exit_due ASC, isin ASC",
+            [_to_utc(as_of).date()],
+        ).fetchall()
+        return [_row_to_shadow_position(row) for row in rows]
+
     # -- forecasts (Contract v3 integration wave) ------------------------------
 
     def append_forecasts(self, records: Sequence[ForecastRecord]) -> int:

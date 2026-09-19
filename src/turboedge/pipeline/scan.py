@@ -34,7 +34,7 @@ import weakref
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Protocol
 from zoneinfo import ZoneInfo
@@ -127,6 +127,8 @@ from turboedge.storage.schemas import (
     ModelStatus,
     ProductSnapshot,
     ProductType,
+    ShadowPortfolioKind,
+    ShadowPosition,
     SignalSnapshot,
     SourceHealthRecord,
     UnderlyingBar,
@@ -235,6 +237,10 @@ class ScanResult:
     # `run_scan(..., run_ev=False)`, i.e. the EV step never ran -- see run_scan).
     ledger_entries_written: int = 0
     forecasts_written: int = 0
+    # -- Phase F (Master Spec §46 shadow portfolio, CLAUDE.md guiding
+    # question): baseline-arm rows appended this run, same semantics as
+    # `ledger_entries_written` -- see `_build_shadow_positions`.
+    shadow_positions_written: int = 0
     actionable_notifications: list[SendResult] = field(default_factory=list)
     new_cluster_positions: list[OpenClusterPosition] = field(default_factory=list)
     # Set only on the run that actually sent (or attempted and failed to
@@ -1509,6 +1515,7 @@ class EvPipelineResult:
     new_cluster_positions: list[OpenClusterPosition]
     newly_actionable: list[CandidateEvaluation]
     evaluations_by_isin: dict[str, ProductHorizonEvaluation] = field(default_factory=dict)
+    shadow_positions: list[ShadowPosition] = field(default_factory=list)
 
 
 def _select_ev_pool(
@@ -1733,6 +1740,171 @@ def _annotate_not_evaluated(
         else:
             annotated.append(c)
     return annotated
+
+
+_SHADOW_TOP_N: dict[ShadowPortfolioKind, int] = {
+    ShadowPortfolioKind.TOP1: 1,
+    ShadowPortfolioKind.TOP3: 3,
+    ShadowPortfolioKind.TOP5: 5,
+}
+
+
+def _build_shadow_positions(
+    *,
+    run_id: str,
+    best_by_isin: dict[str, ProductHorizonEvaluation],
+    priced: dict[str, _PricedProduct],
+    evaluation_time: datetime,
+    rng: np.random.Generator,
+    warnings: list[str],
+) -> list[ShadowPosition]:
+    """Build this scan+underlying's baseline-arm rows (Master Spec §46,
+    CLAUDE.md guiding question / Phase F): "Is our product SELECTION worth
+    money, even if the direction model can do nothing?"
+
+    Every arm is drawn from exactly the pool the real TurboEdge pick came
+    from -- ``best_by_isin`` (only candidates the EV pipeline actually
+    simulated this run, i.e. the same universe ``ledger_entries`` is built
+    from), restricted to the same ``direction`` and ``horizon_days`` as the
+    top-ranked candidate (the one ``ledger_entries`` itself is headed by,
+    per the identical ``sorted(..., key=score, reverse=True)`` ordering
+    used here) -- and every row shares that candidate's ``exit_due``
+    (same ``evaluation_time`` + ``horizon_days``, computed the same way as
+    the ledger entries' own ``exit_due``). Holding direction/time/horizon
+    fixed across every arm is the entire point of the experiment: it
+    isolates product *selection* skill from direction-*calling* skill, so
+    any measured difference between arms is attributable only to which
+    product was picked. Diverging on any of those three turns the
+    comparison into apples-to-oranges and voids the measurement.
+
+    ``ShadowPosition`` (Master Spec §46's table) stores one real ISIN and
+    one real ``entry_ask`` per row -- there is no basket/composite field.
+    TOP3/TOP5's "gleichgewichtete Zusammenfassung" (equally-weighted
+    summary) is therefore realized as N rows (one per real constituent
+    ISIN) sharing ``run_id``/``portfolio``/``horizon_days``, rather than a
+    single row with a synthetic ISIN or an averaged price (which would
+    fabricate a value CLAUDE.md rule 29 forbids inventing). The unweighted
+    mean of ``realized_net_return`` across all rows tagged with one
+    ``portfolio`` -- already what ``reporting/monthly.py``'s frozen read
+    path computes -- is then exactly the equal-weighted-basket return, so
+    no change to that read path is needed to get a correct TOP3/TOP5
+    number out of N real, separately-labelable rows.
+
+    Every other arm (single-pick by construction) writes at most one row.
+    An arm whose defining quantity is unavailable for every pool member
+    (e.g. every candidate missing ``costs``) writes no row for itself and
+    appends a reason to ``warnings`` instead of silently substituting a
+    placeholder value (rule 29) -- it does not suppress the other arms.
+    """
+    if not best_by_isin:
+        _add_warning(warnings, "shadow_pool_empty")
+        return []
+
+    # Same ordering `ledger_entries` are built in (the main loop in
+    # `_run_ev_pipeline` below) -- so `top_isin` is byte-for-byte the same
+    # candidate that heads this scan's real ledger entries.
+    top_isin = sorted(best_by_isin, key=lambda i: best_by_isin[i].score, reverse=True)[0]
+    top = best_by_isin[top_isin]
+
+    pool = sorted(
+        isin
+        for isin, ev in best_by_isin.items()
+        if ev.direction == top.direction and ev.horizon_days == top.horizon_days
+    )
+    if not pool:
+        # Unreachable (top_isin always satisfies its own filter), kept as an
+        # explicit guard for the same reason every arm below has one.
+        _add_warning(warnings, "shadow_pool_empty")
+        return []
+
+    def _exit_due(horizon_days: int) -> date:
+        return (
+            evaluation_time + timedelta(days=round(horizon_days * _CALENDAR_DAYS_PER_TRADING_DAY))
+        ).date()
+
+    def _row(kind: ShadowPortfolioKind, isin: str) -> ShadowPosition:
+        ev = best_by_isin[isin]
+        return ShadowPosition(
+            run_id=run_id,
+            portfolio=kind,
+            isin=isin,
+            horizon_days=ev.horizon_days,
+            entry_ask=priced[isin].ask,
+            exit_due=_exit_due(ev.horizon_days),
+            realized_net_return=None,
+            created_at=evaluation_time,
+        )
+
+    positions: list[ShadowPosition] = []
+
+    # TOP1 / TOP3 / TOP5: best-N by the existing ranking (`ev.score`, the
+    # same quantity `ledger_entries` are ordered by). A pool smaller than N
+    # is not a "missing data" case (rule 29) -- it is a genuinely small
+    # eligible universe this scan, so as many rows as exist are written.
+    ranked = sorted(pool, key=lambda i: best_by_isin[i].score, reverse=True)
+    for kind, n in _SHADOW_TOP_N.items():
+        positions.extend(_row(kind, isin) for isin in ranked[:n])
+
+    # RANDOM_VALID_TURBO: drawn via the injected, seeded numpy Generator --
+    # never `random`, never a fresh Generator -- so the same run/seed always
+    # reproduces the same draw (CLAUDE.md rule 33) and a different seed can
+    # draw differently. `pool` is isin-sorted above so the mapping from
+    # `rng.integers` draw to product is itself deterministic.
+    random_index = int(rng.integers(0, len(pool)))
+    positions.append(_row(ShadowPortfolioKind.RANDOM_VALID_TURBO, pool[random_index]))
+
+    # MEDIAN_PRODUCT (rule 21: "Medianprodukt als Counterfactual
+    # speichern"): the middle of the existing ranking; the lower of the two
+    # middle elements on an even-sized pool, so the pick is always a real,
+    # never an interpolated, product.
+    positions.append(_row(ShadowPortfolioKind.MEDIAN_PRODUCT, ranked[(len(ranked) - 1) // 2]))
+
+    # LOWEST_SPREAD / LOWEST_FINANCING_COST / HIGHEST_LEVERAGE /
+    # LOWEST_LEVERAGE: the extremum of an existing, already-computed
+    # quantity -- never a new metric. `priced[isin].costs` is populated for
+    # every isin that reaches `best_by_isin` (it is copied verbatim onto
+    # `CandidateEvaluation.costs` earlier in the pipeline), but the lookup
+    # still goes through `value_fn` returning `float | None` and an
+    # empty-after-filtering pool still skips the arm (never treated as 0,
+    # rule 29) so this stays correct even if that invariant ever changes.
+    def _extremum(
+        kind: ShadowPortfolioKind,
+        value_fn: Callable[[str], float | None],
+        *,
+        lowest: bool,
+    ) -> None:
+        valued = [(isin, v) for isin in pool if (v := value_fn(isin)) is not None]
+        if not valued:
+            _add_warning(warnings, f"shadow_arm_no_value:{kind.value}")
+            return
+        if lowest:
+            pick = min(valued, key=lambda pair: pair[1])
+        else:
+            pick = max(valued, key=lambda pair: pair[1])
+        positions.append(_row(kind, pick[0]))
+
+    _extremum(
+        ShadowPortfolioKind.LOWEST_SPREAD,
+        lambda isin: priced[isin].costs.spread_pct,
+        lowest=True,
+    )
+    _extremum(
+        ShadowPortfolioKind.LOWEST_FINANCING_COST,
+        lambda isin: priced[isin].costs.financing_drag_pct,
+        lowest=True,
+    )
+    _extremum(
+        ShadowPortfolioKind.HIGHEST_LEVERAGE,
+        lambda isin: priced[isin].leverage_value,
+        lowest=False,
+    )
+    _extremum(
+        ShadowPortfolioKind.LOWEST_LEVERAGE,
+        lambda isin: priced[isin].leverage_value,
+        lowest=True,
+    )
+
+    return positions
 
 
 def _run_ev_pipeline(
@@ -2059,6 +2231,15 @@ def _run_ev_pipeline(
             )
         )
 
+    shadow_positions = _build_shadow_positions(
+        run_id=run_id,
+        best_by_isin=best_by_isin,
+        priced=priced,
+        evaluation_time=evaluation_time,
+        rng=rng,
+        warnings=warnings,
+    )
+
     return EvPipelineResult(
         candidates=[updated_candidates[c.isin] for c in candidates],
         ledger_entries=ledger_entries,
@@ -2066,6 +2247,7 @@ def _run_ev_pipeline(
         new_cluster_positions=running_cluster_positions,
         newly_actionable=newly_actionable,
         evaluations_by_isin=best_by_isin,
+        shadow_positions=shadow_positions,
     )
 
 
@@ -2337,6 +2519,7 @@ def _run_scan_body(
     # caller ever passes it.
     ledger_entries_written = 0
     forecasts_written = 0
+    shadow_positions_written = 0
     actionable_notifications: list[SendResult] = []
     new_cluster_positions: list[OpenClusterPosition] = list(cluster_open_positions)
     evaluations_by_isin: dict[str, ProductHorizonEvaluation] = {}
@@ -2369,6 +2552,8 @@ def _run_scan_body(
             forecasts_written = store.append_forecasts(ev_result.forecast_records)
         if ev_result.ledger_entries:
             ledger_entries_written = ForwardLedger(store).record(ev_result.ledger_entries)
+        if ev_result.shadow_positions:
+            shadow_positions_written = store.append_shadow_positions(ev_result.shadow_positions)
         new_cluster_positions = ev_result.new_cluster_positions
         actionable_notifications = _maybe_send_trade_proposals(
             store=store,
@@ -2443,6 +2628,7 @@ def _run_scan_body(
         notification=notification,
         ledger_entries_written=ledger_entries_written,
         forecasts_written=forecasts_written,
+        shadow_positions_written=shadow_positions_written,
         actionable_notifications=actionable_notifications,
         new_cluster_positions=new_cluster_positions,
         daily_research_protocol_notification=daily_research_protocol_notification,

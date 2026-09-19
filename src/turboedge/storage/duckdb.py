@@ -474,7 +474,11 @@ _DDL_STATEMENTS: tuple[str, ...] = (
         n_effective DOUBLE NOT NULL,
         config_hash VARCHAR NOT NULL,
         git_commit VARCHAR,
-        params VARCHAR NOT NULL
+        params VARCHAR NOT NULL,
+        crps DOUBLE,
+        pinball_loss VARCHAR,
+        coverage_90 DOUBLE,
+        coverage_50 DOUBLE
     )
     """,
     # -- W10: KO-probability calibration (docs/measured_results.md §3, ---------
@@ -2645,6 +2649,10 @@ _WALKFORWARD_COLUMNS: tuple[str, ...] = (
     "config_hash",
     "git_commit",
     "params",
+    "crps",
+    "pinball_loss",
+    "coverage_90",
+    "coverage_50",
 )
 
 
@@ -2668,6 +2676,10 @@ def _walkforward_row(r: WalkforwardResultRecord) -> tuple[Any, ...]:
         r.config_hash,
         r.git_commit,
         json.dumps(r.params, sort_keys=True, default=str),
+        r.crps,
+        json.dumps(r.pinball_loss, sort_keys=True, default=str),
+        r.coverage_90,
+        r.coverage_50,
     )
 
 
@@ -2691,6 +2703,12 @@ def _row_to_walkforward(row: tuple[Any, ...]) -> WalkforwardResultRecord:
         config_hash=row[15],
         git_commit=row[16],
         params=json.loads(row[17]),
+        # Phase D additions: rows written before this migration have NULL here
+        # (see the additive-nullable DDL above) -- never crash on old data.
+        crps=row[18] if len(row) > 18 else None,
+        pinball_loss=json.loads(row[19]) if len(row) > 19 and row[19] is not None else {},
+        coverage_90=row[20] if len(row) > 20 else None,
+        coverage_50=row[21] if len(row) > 21 else None,
     )
 
 

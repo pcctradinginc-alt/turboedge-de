@@ -10,17 +10,24 @@ on the machine this project was developed on
 faithful, condensed summary of those runs for anyone reading the repository.
 Section 5 is different in kind: it records what the scheduled pipeline
 itself produced in CI, and its numbers come from the run logs and artifacts
-named there, which anyone with repository access can re-read.
+named there, which anyone with repository access can re-read. Section 6
+(Phase D, 2026-09-19) is a fourth workstream, run directly against this
+repository's own `backtest/walkforward.py`.
 
-**Read this first if you read nothing else:** as of 2026-09-18, **no forecast
+**Read this first if you read nothing else:** as of 2026-09-19, **no forecast
 model and no challenger signal family in this codebase has a measured,
-statistically significant out-of-sample advantage over doing nothing (the
-unconditional/null model).** The correct behavior of the system today is to
-output "no trade" on every scan. Thresholds are not lowered to manufacture
-suggestions. This is now confirmed live as well as offline: across 22
-scheduled CI runs (2026-09-14 to 2026-09-18), with up to 874 products fully
-priced and path-simulated per run, **not one candidate reached a positive
-lower-bound EV** — see section 5.
+statistically significant out-of-sample advantage in net Expected Value over
+doing nothing (the unconditional/null model).** The correct behavior of the
+system today is to output "no trade" on every scan. Thresholds are not
+lowered to manufacture suggestions. This is now confirmed live as well as
+offline: across 22 scheduled CI runs (2026-09-14 to 2026-09-18), with up to
+874 products fully priced and path-simulated per run, **not one candidate
+reached a positive lower-bound EV** — see section 5. Section 6 (Phase D)
+adds one nuance without changing this conclusion: three pre-registered
+baselines show a consistent, 20/20-cell improvement in CRPS (a proper
+distributional scoring rule) over the null model — real, but a
+distributional finding, not a measured directional or net-EV edge; see §6.3
+for why this does not change the "no trade" conclusion.
 
 ---
 
@@ -516,16 +523,177 @@ not a solved one.
 
 ---
 
-## 6. Conclusion
+## 6. Phase D: distributional evaluation infrastructure and baseline measurement
+
+**Date of measurement:** 2026-09-19. **Motivation:** W4/W9 (§1-2) evaluate
+every model exclusively on `p_up`/`brier`/`log_loss`/`ece` — binary
+metrics of the directional call. `models/forecast.py::HorizonForecast`
+already carries a full predictive distribution (`mean`, `sigma`,
+`quantiles`, `expected_shortfall_05`, `uncertainty`) on every prediction,
+but `backtest/walkforward.py::walk_forward_evaluate` discarded everything
+except `p_up` before scoring. A model whose *distribution* is informative
+but whose binary hit rate is unremarkable therefore could not win under
+W4/W9's own evaluation, by construction — not because it lacks value, but
+because the harness never looked at anything but the coin-flip call. This
+section reports the fix (a proper, quantile-based distributional scoring
+harness) and the first measurement run through it.
+
+### 6.1 What was built
+
+- **Primary target:** `y_h(t) = ln(P_t+h / P_t) / (sigma_t * sqrt(h))`,
+  `sigma_t` the causal EWMA daily volatility "as of" `t`
+  (`features/volatility.py::causal_ewma_sigma`/`ewma_volatility`, only bars
+  with `available_at <= t` ever enter it — covered by a dedicated
+  look-ahead test). `features/volatility.py::normalized_horizon_target`
+  vectorizes this over a whole bar series. Used only as an *internal*
+  fitting target by the three new baseline models below (§6.2); every
+  model still emits `HorizonForecast` in ordinary return units (mean/sigma
+  in log-return space), converted back via the *current* `sigma_t` before
+  returning — the payoff/path simulation, gates and every existing
+  consumer are completely unaffected.
+- **New metrics (`backtest/metrics.py`):** `pinball_loss`/`mean_pinball_loss`
+  (quantile loss), `crps_from_quantiles`/`mean_crps_from_quantiles` (the
+  standard quantile-averaging CRPS approximation, `CRPS ≈ 2 * mean(pinball
+  loss over the quantile grid)` — Gneiting & Raftery 2007; Bracher et al.
+  2021), `pinball_loss_by_level` (per-quantile breakdown), and
+  `interval_coverage` (empirical coverage of a `[lower, upper]` interval
+  against its nominal level — verified in tests to correctly flag a
+  deliberately-too-narrow interval).
+- **`backtest/walkforward.py::WalkForwardResult`** now additionally
+  collects `oos_forecasts` (the full `HorizonForecast` per out-of-sample
+  point, not just `p_up`) and reports `crps`, `pinball_by_quantile`,
+  `coverage_90` (nominal 90%, `[q05, q95]`) and `coverage_50` (nominal 50%,
+  `[q25, q75]`) per `(model, horizon)`. `p_up`, `brier`, `log_loss`, `ece`,
+  `hit_rate` and `psr` are all still computed exactly as before — purely
+  additive, verified by a dedicated regression test.
+- **`storage/schemas.py::WalkforwardResultRecord`** and the
+  `walkforward_results` table gain `crps`, `pinball_loss`, `coverage_90`,
+  `coverage_50` via the existing additive `_migrate_table_columns`
+  migration (nullable/empty-default on any pre-Phase-D row).
+- **Four pre-registered baselines**, measured in this fixed order before any
+  challenger, per `models/baselines.py` (b-d) and the existing
+  `models/directional.py::NullModel` (a):
+  - (a) unconditional empirical distribution — `NullModel`, unchanged.
+  - (b) `RegimeConditionalEmpiricalModel` — the empirical distribution of
+    `y_h`, conditioned on a trailing, pre-registered 3-bucket volatility
+    regime (rolling tercile of causal EWMA vol); falls back to the
+    unconditional distribution when the current regime has too few
+    training samples.
+  - (c) `RegularizedLinearLocationModel` — ridge regression of `y_h` on a
+    single, independently re-derived causal trend z-score (same shape as
+    the protected `tsmom_horizon_norm_v1` score, never imported or
+    modified), residual quantiles for the shape.
+  - (d) `RobustLocationScaleModel` — robust (median/MAD) location-scale fit
+    of `y_h`, mapped onto a fixed-shape (`df=5`, pre-registered, never
+    fit) Student-t distribution for quantiles/expected shortfall.
+  - GAM and a from-scratch LightGBM challenger were **not** built in this
+    pass — per the pre-registered priority order, baselines (a)-(d) are
+    measured first, and doing so (plus building the harness itself) filled
+    the available session budget. `models/quantile.py::RidgeReturnModel`
+    already exists and is exercised indirectly through
+    `LogisticDirectionModel`, but was not separately re-measured against
+    the new CRPS/pinball/coverage metrics in this pass — an open item, not
+    a negative result.
+
+### 6.2 Measurement
+
+Same methodology as W4 (§1): `backtest.walkforward.walk_forward_evaluate`,
+expanding window, `min_train=750`, `step=21`, `embargo=horizon_days`,
+horizons `(3, 5, 7, 10, 14)` trading days, `yfinance` daily bars for
+`DAX`/`ESTX50`/`SPX`/`NDX` through 2026-09-18 (4881-6200 bars per
+underlying). **Full scope: 4 underlyings × 5 horizons × 4 models = 80
+cells, all measured (no reduction).** Total walk-forward compute: 1248s
+(~21 min).
+
+**Aggregate results (mean over all 20 `(underlying, horizon)` cells per model):**
+
+| model | brier | crps | hit_rate | coverage_90 (nom. 0.90) | coverage_50 (nom. 0.50) | ece |
+|---|---:|---:|---:|---:|---:|---:|
+| `null` (a) | 0.2427 | 0.01511 | 0.586 | 0.924 | 0.548 | 0.0276 |
+| `regime_conditional_empirical` (b) | 0.2437 | 0.01465 | 0.582 | 0.894 | 0.509 | 0.0324 |
+| `regularized_linear_location` (c) | 0.2428 | 0.01461 | 0.584 | 0.887 | 0.503 | 0.0277 |
+| `robust_location_scale_t` (d) | 0.2428 | 0.01476 | 0.586 | 0.931 | 0.538 | 0.0288 |
+
+**CRPS wins vs. null, per baseline: 20/20 cells for (b), (c) and (d) alike**
+(every one of DAX/ESTX50/SPX/NDX × 3/5/7/10/14d), a consistent -2.5% to
+-3.5% mean relative CRPS improvement (min -0.99%, max -5.61% across
+cells; `regularized_linear_location` largest mean improvement at -3.45%).
+**Brier wins vs. null, per baseline: 3/20 (b), 8/20 (c), 9/20 (d)** — flat
+to slightly worse on average (mean Δbrier +0.0010, +0.00009, +0.00004
+respectively), consistent with W4/W9's own finding that this evaluation
+axis shows essentially nothing here. **This is exactly the pattern the
+Phase D hypothesis predicted:** a real, monotonically consistent
+improvement in the *distribution* (CRPS, every single cell) that a
+binary/Brier-only evaluation cannot see at all.
+
+Per-quantile pinball loss (mean over all 20 cells) improves for every
+baseline at every quantile level versus `null` except `q75`
+(`robust_location_scale_t` alone is very slightly worse there, 0.00853 vs.
+0.00877) — the tails (`q05`/`q95`) show the largest relative gains,
+consistent with volatility-conditioning mattering most where the
+unconditional model's fixed-width distribution is furthest from today's
+actual regime.
+
+### 6.3 Interpretation — not a directional edge, and not yet promotable
+
+The most parsimonious explanation for a *consistent* CRPS improvement with
+a *flat* Brier is **heteroskedasticity awareness, not forecasting skill**:
+`NullModel` pools raw historical returns into one fixed-width distribution
+per horizon regardless of current volatility; all three new baselines
+rescale by the *current* causal `sigma_t` before returning quantiles. Since
+volatility clustering is a well-established, uncontroversial property of
+daily index returns (not an edge), a model whose predictive interval width
+tracks current volatility will mechanically score better on a proper
+scoring rule like CRPS than one that always reports the unconditional
+average dispersion, with no directional information required at all. The
+coverage numbers support this reading: coverage_90/50 are within roughly
+1-4 percentage points of nominal for every baseline (regime/ridge trend
+slightly narrow — 88-89% actual vs. 90% nominal, i.e. mildly overconfident;
+`robust_location_scale_t`'s Student-t tails trend slightly wide, 93%) —
+small, explainable miscalibrations, not a directional bias.
+
+**Per `SIGNAL_REGISTRY.md` §1.10 and this project's own governance rule
+("kein Modell befoerdern, nur weil seine Likelihood besser ist"), a CRPS
+improvement alone — like a Brier improvement alone — is explicitly
+insufficient for promotion.** Promotion requires a reproducible advantage
+in downstream net Expected Value, after realistic Turbo costs, path/KO
+risk and multiple-testing deflation (`GOVERNANCE.md` §2). **No such
+net-EV measurement was performed in this pass** — that requires running
+the full product/pricing/payoff simulation per candidate, a materially
+larger undertaking than building and exercising the distributional
+evaluation harness itself, and out of scope for this workstream.
+
+**Recommendation:** none of (b)/(c)/(d) is promoted or added to the live
+scan ensemble (`models.forecast.build_default_models`/`pipeline/scan.py`)
+— they are wired only into the `turboedge backtest` measurement/persistence
+path. The CRPS result is a genuine, reproducible, 20/20-consistent finding
+worth carrying forward — specifically as a candidate for **volatility-aware
+position sizing / interval width in the existing EV pipeline**, which is a
+plausible mechanism for the "no measured edge" conclusion of §1-2 and §6
+Conclusion below to eventually change without needing any new directional
+signal — but until a net-EV measurement is run on this same infrastructure,
+the honest conclusion is: **a measured distributional improvement,
+explicitly not yet a trading edge.** No thresholds, gates or the protected
+`tsmom_horizon_norm_v1` score were touched to produce this result.
+
+---
+
+## 7. Conclusion
 
 Across every avenue tested so far — the protected TSMOM baseline mapped to
 a full predictive distribution (W4), six independently pre-registered
 challenger signal families covering sizing, regime-gating, reversal,
 volatility-term-structure, genuine cross-asset information, and calendar
-seasonality (W9) — **no model has a measured, multiple-testing-deflated
-out-of-sample advantage over the null (unconditional) benchmark, and no
-tested effect survives realistic Turbo trading costs even before
-deflation.** The knock-out path model (W5) is, after calibration work,
+seasonality (W9), and four pre-registered distributional baselines measured
+under a new CRPS/pinball/coverage harness (Phase D, §6) — **no model has a
+measured, multiple-testing-deflated out-of-sample advantage in net
+Expected Value over the null (unconditional) benchmark, and no tested
+effect survives realistic Turbo trading costs even before deflation.**
+Phase D's baselines *do* show a consistent, 20/20-cell CRPS improvement
+over the null model (§6.2) — a real, distributional (not directional)
+finding — but per this project's own promotion rule, a proper-scoring-rule
+improvement alone is not evidence of a net-EV edge, and none was measured.
+The knock-out path model (W5) is, after calibration work,
 measurably closer to realized history than its previous default but still
 runs conservative (over-predicts KO risk) at the barrier distances that
 matter most for gating — a known, quantified, safe-direction bias, not a

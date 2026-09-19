@@ -1,19 +1,24 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import numpy as np
 import pytest
 
 from turboedge.features.volatility import (
+    causal_ewma_sigma,
     downside_semivariance,
     ewma_volatility,
     garman_klass_volatility,
     kurtosis,
     log_returns,
+    normalized_horizon_target,
     parkinson_volatility,
     realized_volatility,
     skewness,
     volatility_of_volatility,
 )
+from turboedge.storage.schemas import UnderlyingBar
 
 
 def test_log_returns_length_and_values() -> None:
@@ -119,3 +124,106 @@ def test_no_lookahead_realized_volatility() -> None:
     future = np.concatenate([closes[: t + 1], np.array([9999.0, 1.0, 5000.0])])
     result_with_future = realized_volatility(future[: t + 1], window=20)[-1]
     assert prefix_result == pytest.approx(result_with_future)
+
+
+# --- Phase D: causal_ewma_sigma / normalized_horizon_target ------------------------------------
+
+
+def test_causal_ewma_sigma_matches_ewma_volatility_last_value(
+    make_bars: Callable[..., list[UnderlyingBar]],
+) -> None:
+    bars = make_bars(200, seed=6)
+    as_of = bars[-1].available_at
+    closes = np.array([b.close for b in bars])
+    expected = ewma_volatility(closes)[-1]
+    assert causal_ewma_sigma(bars, as_of) == pytest.approx(expected)
+
+
+def test_causal_ewma_sigma_matches_prefix_when_as_of_is_earlier(
+    make_bars: Callable[..., list[UnderlyingBar]],
+) -> None:
+    bars = make_bars(200, seed=6)
+    as_of = bars[120].available_at
+    prefix_closes = np.array([b.close for b in bars[:121]])
+    expected = ewma_volatility(prefix_closes)[-1]
+    assert causal_ewma_sigma(bars, as_of) == pytest.approx(expected)
+
+
+def test_causal_ewma_sigma_ignores_bars_with_later_available_at(
+    make_bars: Callable[..., list[UnderlyingBar]],
+) -> None:
+    """A bar whose ``available_at`` is after ``as_of`` must not influence
+    ``sigma_t`` even though it is present in the input sequence -- CLAUDE.md
+    rule 5 / Phase D's causal-target requirement."""
+    bars = make_bars(200, seed=7)
+    as_of = bars[120].available_at
+    baseline = causal_ewma_sigma(bars, as_of)
+
+    tampered = list(bars)
+    for i in range(121, len(tampered)):
+        b = tampered[i]
+        # Corrupt future closes wildly; since their available_at (== ts) is
+        # still after as_of, this must not change the result.
+        tampered[i] = b.model_copy(update={"close": b.close * 1000.0})
+    tampered_result = causal_ewma_sigma(tampered, as_of)
+    assert tampered_result == pytest.approx(baseline)
+
+    # But a bar *reported* as available before as_of (its available_at
+    # backdated) DOES legitimately change the result if its close differs --
+    # confirming the gate is actually available_at, not ts or list position.
+    corrupted_but_eligible = list(bars)
+    b = corrupted_but_eligible[100]
+    corrupted_but_eligible[100] = b.model_copy(update={"close": b.close * 5.0})
+    changed_result = causal_ewma_sigma(corrupted_but_eligible, as_of)
+    assert changed_result != pytest.approx(baseline)
+
+
+def test_normalized_horizon_target_hand_example() -> None:
+    closes = np.array([100.0, 101.0, 102.0, 100.0, 99.0])
+    sigma = np.array([0.01, 0.01, 0.02, 0.02, np.nan])
+    h = 2
+    y = normalized_horizon_target(closes, sigma, h)
+    # y[0] = ln(closes[2]/closes[0]) / (sigma[0]*sqrt(2))
+    expected_0 = np.log(102.0 / 100.0) / (0.01 * np.sqrt(2))
+    # y[1] = ln(closes[3]/closes[1]) / (sigma[1]*sqrt(2))
+    expected_1 = np.log(100.0 / 101.0) / (0.01 * np.sqrt(2))
+    # y[2] = ln(closes[4]/closes[2]) / (sigma[2]*sqrt(2))
+    expected_2 = np.log(99.0 / 102.0) / (0.02 * np.sqrt(2))
+    assert y[0] == pytest.approx(expected_0)
+    assert y[1] == pytest.approx(expected_1)
+    assert y[2] == pytest.approx(expected_2)
+    # index 3, 4: t + h out of range -> NaN
+    assert np.isnan(y[3])
+    assert np.isnan(y[4])
+
+
+def test_normalized_horizon_target_nan_when_sigma_missing_or_nonpositive() -> None:
+    closes = np.array([100.0, 101.0, 102.0, 103.0])
+    sigma = np.array([np.nan, 0.0, 0.01, 0.02])
+    y = normalized_horizon_target(closes, sigma, horizon=1)
+    assert np.isnan(y[0])  # sigma NaN
+    assert np.isnan(y[1])  # sigma == 0 -- never divide by zero
+    assert not np.isnan(y[2])
+
+
+def test_normalized_horizon_target_rejects_bad_horizon() -> None:
+    with pytest.raises(ValueError):
+        normalized_horizon_target(np.array([1.0, 2.0]), np.array([0.1, 0.1]), horizon=0)
+
+
+def test_normalized_horizon_target_no_lookahead(
+    make_bars: Callable[..., list[UnderlyingBar]],
+) -> None:
+    """Truncating the input to an earlier length never changes an
+    already-computed value of the normalized target (same causal-prefix
+    guarantee every other feature in this module carries)."""
+    bars = make_bars(300, seed=8)
+    closes = np.array([b.close for b in bars])
+    sigma = ewma_volatility(closes)
+    h = 5
+    full = normalized_horizon_target(closes, sigma, h)
+    t = 150
+    prefix_closes = closes[: t + h + 1]
+    prefix_sigma = ewma_volatility(prefix_closes)
+    prefix = normalized_horizon_target(prefix_closes, prefix_sigma, h)
+    assert prefix[t] == pytest.approx(full[t])

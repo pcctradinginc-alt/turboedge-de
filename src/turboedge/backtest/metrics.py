@@ -5,6 +5,8 @@ Formula reference: Master Spec §10 ("Calibration") and §38 ("Metrics").
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+
 import numpy as np
 import numpy.typing as npt
 from sklearn.linear_model import LogisticRegression  # type: ignore[import-untyped]
@@ -219,3 +221,132 @@ def hit_rate(returns: npt.NDArray[np.float64]) -> float:
     if r.size == 0:
         raise ValueError("returns must not be empty")
     return float(np.mean(r > 0.0))
+
+
+# --- Phase D: distributional evaluation (CRPS, pinball loss, interval coverage) -------------
+#
+# docs/measured_results.md Phase D: the existing binary metrics above (brier_score,
+# log_loss, ece, hit_rate) only ever score p_up/label -- they structurally cannot
+# reward a model whose full predictive distribution (mean/sigma/quantiles/ES,
+# models.forecast.HorizonForecast) is informative but whose binary hit rate is
+# unremarkable. These functions score the distribution itself, via the quantiles
+# every ForecastModel already produces.
+
+
+def pinball_loss(y_true: float, q_pred: float, tau: float) -> float:
+    """Quantile (pinball) loss of one predicted ``tau``-quantile against one realized value.
+
+    ``L_tau(y, q) = tau * (y - q)`` if ``y >= q``, else ``(1 - tau) * (q - y)``
+    -- equivalently ``max(tau * (y - q), (tau - 1) * (y - q))``, the form used
+    here. Always ``>= 0``; ``0`` only for a perfect quantile hit. Minimized in
+    expectation exactly at the true ``tau``-quantile of ``y``'s distribution,
+    which is what makes it the standard proper scoring rule for one quantile
+    (Koenker & Bassett 1978; Gneiting & Raftery 2007).
+    """
+    if not (0.0 < tau < 1.0):
+        raise ValueError(f"tau must be within (0, 1), got {tau!r}")
+    diff = float(y_true) - float(q_pred)
+    return float(max(tau * diff, (tau - 1.0) * diff))
+
+
+def mean_pinball_loss(
+    y_true: npt.NDArray[np.float64], q_pred: npt.NDArray[np.float64], tau: float
+) -> float:
+    """Mean pinball loss (see :func:`pinball_loss`) across many ``(y_true, q_pred)`` pairs."""
+    if not (0.0 < tau < 1.0):
+        raise ValueError(f"tau must be within (0, 1), got {tau!r}")
+    y = np.asarray(y_true, dtype=np.float64)
+    q = np.asarray(q_pred, dtype=np.float64)
+    if y.shape != q.shape:
+        raise ValueError(f"y_true and q_pred must have the same shape, got {y.shape!r}/{q.shape!r}")
+    if y.size == 0:
+        raise ValueError("y_true and q_pred must not be empty")
+    diff = y - q
+    return float(np.mean(np.maximum(tau * diff, (tau - 1.0) * diff)))
+
+
+def crps_from_quantiles(y_true: float, quantiles: Mapping[float, float]) -> float:
+    """Quantile-based CRPS approximation for one realized value against a
+    distribution given only by a finite set of quantiles.
+
+    ``CRPS(F, y) = 2 * integral_0^1 pinball_tau(y, F^-1(tau)) dtau`` exactly,
+    for the true quantile function ``F^-1`` (Gneiting & Raftery 2007, eq. 21;
+    Matheson & Winkler 1976); with only a finite quantile grid (e.g. the
+    ``q05/q25/q50/q75/q95`` every :class:`~turboedge.models.forecast.HorizonForecast`
+    carries) the integral is approximated by ``2 * mean`` of the pinball loss
+    over the given ``{tau: quantile_value}`` levels -- the standard
+    quantile-averaging CRPS approximation used across forecast-evaluation
+    literature (e.g. Bracher et al. 2021, "Evaluating epidemic forecasts").
+    Coarser grids give a coarser (typically slightly conservative/smoothed)
+    approximation, never a wrong sign or direction of comparison between two
+    models scored on the same grid.
+    """
+    if not quantiles:
+        raise ValueError("quantiles must not be empty")
+    losses = [pinball_loss(y_true, q, tau) for tau, q in quantiles.items()]
+    return float(2.0 * np.mean(losses))
+
+
+def mean_crps_from_quantiles(
+    y_true: npt.NDArray[np.float64], quantiles_per_obs: Sequence[Mapping[float, float]]
+) -> float:
+    """Mean :func:`crps_from_quantiles` across many observations."""
+    y = np.asarray(y_true, dtype=np.float64)
+    if y.shape[0] != len(quantiles_per_obs):
+        raise ValueError("y_true and quantiles_per_obs must have the same length")
+    if y.size == 0:
+        raise ValueError("y_true must not be empty")
+    values = [crps_from_quantiles(float(yi), q) for yi, q in zip(y, quantiles_per_obs, strict=True)]
+    return float(np.mean(values))
+
+
+def pinball_loss_by_level(
+    y_true: npt.NDArray[np.float64], quantiles_per_obs: Sequence[Mapping[float, float]]
+) -> dict[float, float]:
+    """Mean pinball loss per quantile level ``tau``, across every observation carrying that level.
+
+    ``quantiles_per_obs[i]`` need not carry the exact same set of levels for
+    every observation; the mean for a given ``tau`` is only taken over
+    observations that actually have it.
+    """
+    y = np.asarray(y_true, dtype=np.float64)
+    if y.shape[0] != len(quantiles_per_obs):
+        raise ValueError("y_true and quantiles_per_obs must have the same length")
+    if y.size == 0:
+        raise ValueError("y_true must not be empty")
+    levels: set[float] = set()
+    for q in quantiles_per_obs:
+        levels.update(q.keys())
+    result: dict[float, float] = {}
+    for tau in sorted(levels):
+        losses = [
+            pinball_loss(float(yi), qi[tau], tau)
+            for yi, qi in zip(y, quantiles_per_obs, strict=True)
+            if tau in qi
+        ]
+        if losses:
+            result[tau] = float(np.mean(losses))
+    return result
+
+
+def interval_coverage(
+    y_true: npt.NDArray[np.float64],
+    lower: npt.NDArray[np.float64],
+    upper: npt.NDArray[np.float64],
+) -> float:
+    """Fraction of ``y_true`` falling within the closed interval ``[lower, upper]``, elementwise.
+
+    For a well-calibrated central prediction interval (e.g. ``[q05, q95]``,
+    nominal coverage 90%), this should be close to the nominal level out of
+    sample; a materially lower empirical coverage means the interval is too
+    narrow (overconfident) -- exactly the failure mode this function is
+    meant to catch (``docs/measured_results.md`` Phase D coverage checks).
+    """
+    y = np.asarray(y_true, dtype=np.float64)
+    lo = np.asarray(lower, dtype=np.float64)
+    hi = np.asarray(upper, dtype=np.float64)
+    if not (y.shape == lo.shape == hi.shape):
+        raise ValueError("y_true, lower and upper must have the same shape")
+    if y.size == 0:
+        raise ValueError("y_true must not be empty")
+    return float(np.mean((y >= lo) & (y <= hi)))

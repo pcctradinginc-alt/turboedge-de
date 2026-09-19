@@ -171,6 +171,35 @@ live ensemble.** Per CLAUDE.md rule 26 ("keine Verbesserung nur anhand
 In-Sample behaupten") and Master Spec §53, this is reported as the
 unembellished, negative result it is.
 
+### 3.3 Phase D distributional baselines (`models/baselines.py`) — measured 2026-09-19
+
+W4/W9 (§3.1-3.2) evaluate every model only on `p_up`/Brier -- Phase D
+(`docs/measured_results.md` §6) adds a proper distributional scoring harness
+(CRPS, pinball loss, interval coverage) to `backtest/walkforward.py` and
+measures four pre-registered baselines under it, in order: (a) the
+unconditional empirical distribution (`NullModel`, unchanged), (b)
+`RegimeConditionalEmpiricalModel`, (c) `RegularizedLinearLocationModel`, (d)
+`RobustLocationScaleModel`.
+
+| model_id / signal_family | class | scope measured | CRPS vs. null | Brier vs. null | status |
+|---|---|---|---|---|---|
+| `regime_conditional_empirical_v1` (`regime_conditional_empirical`) | `RegimeConditionalEmpiricalModel` | 4 underlyings × 5 horizons (20/20) | better in 20/20 cells (mean -3.22%) | better in 3/20 | measured, not promoted |
+| `regularized_linear_location_v1` (`regularized_linear_location`) | `RegularizedLinearLocationModel` | 4 underlyings × 5 horizons (20/20) | better in 20/20 cells (mean -3.45%) | better in 8/20 | measured, not promoted |
+| `robust_location_scale_t_v1` (`robust_location_scale_t`) | `RobustLocationScaleModel` | 4 underlyings × 5 horizons (20/20) | better in 20/20 cells (mean -2.47%) | better in 9/20 | measured, not promoted |
+
+**Not promoted, and not added to the live scan ensemble** (they are wired
+only into the `turboedge backtest` measurement path). Per this section's
+own §1.10 rule (a challenger needs a measured net-EV advantage, not just a
+better score on one axis) and this project's promotion rule, a CRPS
+improvement alone is exactly as insufficient for promotion as a Brier
+improvement alone was for §3.1/§3.2 -- no net-EV measurement was performed
+against these baselines in this pass. See `docs/measured_results.md` §6 for
+the full measurement, per-horizon/per-quantile breakdown, and the
+heteroskedasticity-awareness interpretation of the CRPS result (most likely
+explanation: these baselines rescale their predicted interval width by
+*current* volatility, `NullModel` does not -- a distributional
+improvement, not evidence of directional skill).
+
 ---
 
 ## 4. Change Protocol

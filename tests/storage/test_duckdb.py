@@ -683,6 +683,158 @@ def test_init_schema_raises_on_incompatible_existing_column_type(tmp_path: Path)
 
 
 # --------------------------------------------------------------------------
+# Phase D: walkforward_results gains crps/pinball_loss/coverage_90/coverage_50
+# (docs/measured_results.md Phase D) -- additive columns, same migration
+# contract as every other table above.
+# --------------------------------------------------------------------------
+
+
+def _make_walkforward_record(**overrides: object):  # type: ignore[no-untyped-def]
+    from turboedge.storage.schemas import WalkforwardResultRecord
+
+    defaults: dict[str, object] = dict(
+        model_id="test_model",
+        model_hash="hash-test",
+        signal_family="test_family",
+        underlying_id="DAX",
+        horizon_days=5,
+        evaluated_at=datetime(2026, 9, 19, 12, 0, tzinfo=UTC),
+        n_folds=5,
+        brier=0.22,
+        brier_null=0.25,
+        log_loss=0.65,
+        ece=0.08,
+        hit_rate=0.58,
+        mean_oos_return=0.0025,
+        psr=0.72,
+        n_effective=42.5,
+        config_hash="cfg-hash",
+        git_commit="abc1234",
+        params={},
+    )
+    defaults.update(overrides)
+    return WalkforwardResultRecord(**defaults)  # type: ignore[arg-type]
+
+
+def test_walkforward_result_phase_d_fields_survive_write_and_read(store: Store) -> None:
+    record = _make_walkforward_record(
+        crps=0.0123,
+        pinball_loss={"q05": 0.001, "q25": 0.003, "q50": 0.004, "q75": 0.003, "q95": 0.001},
+        coverage_90=0.884,
+        coverage_50=0.517,
+    )
+    n = store.append_walkforward_results([record])
+    assert n == 1
+
+    [roundtripped] = store.list_walkforward_results(
+        signal_family="test_family", underlying_id="DAX", horizon_days=5
+    )
+    assert roundtripped.crps == pytest.approx(0.0123)
+    assert roundtripped.pinball_loss == pytest.approx(
+        {"q05": 0.001, "q25": 0.003, "q50": 0.004, "q75": 0.003, "q95": 0.001}
+    )
+    assert roundtripped.coverage_90 == pytest.approx(0.884)
+    assert roundtripped.coverage_50 == pytest.approx(0.517)
+    # every pre-existing binary field is still there, untouched
+    assert roundtripped.brier == pytest.approx(0.22)
+    assert roundtripped.hit_rate == pytest.approx(0.58)
+
+
+def test_walkforward_result_phase_d_fields_default_to_empty_when_omitted(store: Store) -> None:
+    """A caller (or an old test/call site) that never sets the Phase D
+    fields still round-trips cleanly: `None`/empty-dict, not a crash."""
+    record = _make_walkforward_record()
+    store.append_walkforward_results([record])
+    [roundtripped] = store.list_walkforward_results(
+        signal_family="test_family", underlying_id="DAX", horizon_days=5
+    )
+    assert roundtripped.crps is None
+    assert roundtripped.pinball_loss == {}
+    assert roundtripped.coverage_90 is None
+    assert roundtripped.coverage_50 is None
+
+
+def test_init_schema_adds_phase_d_columns_to_a_pre_phase_d_walkforward_results_table(
+    tmp_path: Path,
+) -> None:
+    """A `walkforward_results` table created before Phase D (missing
+    crps/pinball_loss/coverage_90/coverage_50) gains them additively, and
+    its pre-existing row survives with NULL/None in the new columns."""
+    db_path = tmp_path / "turboedge.duckdb"
+    conn = duckdb.connect(str(db_path))
+    try:
+        conn.execute(
+            """
+            CREATE TABLE walkforward_results (
+                model_id VARCHAR NOT NULL,
+                model_hash VARCHAR,
+                signal_family VARCHAR NOT NULL,
+                underlying_id VARCHAR NOT NULL,
+                horizon_days INTEGER NOT NULL,
+                evaluated_at TIMESTAMPTZ NOT NULL,
+                n_folds INTEGER NOT NULL,
+                brier DOUBLE NOT NULL,
+                brier_null DOUBLE,
+                log_loss DOUBLE NOT NULL,
+                ece DOUBLE NOT NULL,
+                hit_rate DOUBLE NOT NULL,
+                mean_oos_return DOUBLE NOT NULL,
+                psr DOUBLE NOT NULL,
+                n_effective DOUBLE NOT NULL,
+                config_hash VARCHAR NOT NULL,
+                git_commit VARCHAR,
+                params VARCHAR NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO walkforward_results "
+            "(model_id, model_hash, signal_family, underlying_id, horizon_days, evaluated_at, "
+            "n_folds, brier, brier_null, log_loss, ece, hit_rate, mean_oos_return, psr, "
+            "n_effective, config_hash, git_commit, params) VALUES "
+            "('old_model', NULL, 'old_family', 'DAX', 5, TIMESTAMPTZ '2026-01-01 00:00:00+00', "
+            "3, 0.24, 0.25, 0.6, 0.05, 0.5, 0.001, 0.9, 30.0, 'cfg', NULL, '{}')"
+        )
+    finally:
+        conn.close()
+
+    with Store(db_path) as store:
+        store.init_schema()
+        columns = {
+            row[1]
+            for row in store._conn.execute("PRAGMA table_info(walkforward_results)").fetchall()
+        }
+        assert {"crps", "pinball_loss", "coverage_90", "coverage_50"} <= columns
+
+        [old_row] = store.list_walkforward_results(signal_family="old_family")
+        assert old_row.model_id == "old_model"
+        assert old_row.crps is None
+        assert old_row.pinball_loss == {}
+        assert old_row.coverage_90 is None
+
+        migrations = {
+            (m[1], m[2]) for m in store.list_schema_migrations() if m[1] == "walkforward_results"
+        }
+        assert ("walkforward_results", "crps") in migrations
+        assert ("walkforward_results", "pinball_loss") in migrations
+        assert ("walkforward_results", "coverage_90") in migrations
+        assert ("walkforward_results", "coverage_50") in migrations
+
+        # a fresh row (with the new fields populated) can now be appended
+        new_record = _make_walkforward_record(
+            model_id="new_model",
+            signal_family="new_family",
+            crps=0.01,
+            pinball_loss={"q50": 0.002},
+            coverage_90=0.9,
+            coverage_50=0.5,
+        )
+        store.append_walkforward_results([new_record])
+        [new_row] = store.list_walkforward_results(signal_family="new_family")
+        assert new_row.crps == pytest.approx(0.01)
+
+
+# --------------------------------------------------------------------------
 # W6: a DuckDB file predating the Forward Ledger / Learning tables (Master
 # Spec §20-27, §46) must gain them via `init_schema()`, without touching
 # pre-existing tables/data -- the same "state/turboedge.duckdb restored from

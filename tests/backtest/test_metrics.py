@@ -9,11 +9,17 @@ from turboedge.backtest.metrics import (
     calibration_intercept,
     calibration_slope,
     calibration_slope_intercept,
+    crps_from_quantiles,
     expected_calibration_error,
     hit_rate,
+    interval_coverage,
     log_loss,
     max_drawdown,
+    mean_crps_from_quantiles,
+    mean_pinball_loss,
     mean_signed_error,
+    pinball_loss,
+    pinball_loss_by_level,
     profit_factor,
     reliability_curve,
     sharpe,
@@ -169,3 +175,107 @@ def test_absolute_calibration_error_differs_from_ece_weighting() -> None:
     ece = expected_calibration_error(p, y, n_bins=10)
     ace = absolute_calibration_error(p, y, n_bins=10)
     assert ace > ece
+
+
+# --- Phase D: pinball loss, CRPS, interval coverage -------------------------------------------
+
+
+def test_pinball_loss_hand_examples() -> None:
+    # y >= q branch: L = tau * (y - q)
+    assert pinball_loss(1.0, 0.8, tau=0.5) == pytest.approx(0.5 * 0.2)
+    # y < q branch: L = (1 - tau) * (q - y)
+    assert pinball_loss(1.0, 1.5, tau=0.9) == pytest.approx(0.1 * 0.5)
+    # exact hit is zero loss regardless of tau
+    assert pinball_loss(2.0, 2.0, tau=0.05) == pytest.approx(0.0)
+    assert pinball_loss(2.0, 2.0, tau=0.95) == pytest.approx(0.0)
+
+
+def test_pinball_loss_rejects_bad_tau() -> None:
+    with pytest.raises(ValueError):
+        pinball_loss(1.0, 0.5, tau=0.0)
+    with pytest.raises(ValueError):
+        pinball_loss(1.0, 0.5, tau=1.0)
+
+
+def test_mean_pinball_loss_hand_example() -> None:
+    y = np.array([1.0, 1.0])
+    q = np.array([0.8, 1.2])
+    expected = np.mean([pinball_loss(1.0, 0.8, 0.3), pinball_loss(1.0, 1.2, 0.3)])
+    assert mean_pinball_loss(y, q, tau=0.3) == pytest.approx(expected)
+
+
+def test_crps_from_quantiles_hand_example() -> None:
+    # y=0 against a symmetric 5-quantile distribution; every pinball term
+    # computed by hand (max(tau*diff, (tau-1)*diff), diff = y - q):
+    #   tau=.05, q=-2  -> diff=2  -> max(.1, -1.9)  = .1
+    #   tau=.25, q=-.5 -> diff=.5 -> max(.125, -.375) = .125
+    #   tau=.50, q=0   -> diff=0  -> 0
+    #   tau=.75, q=.5  -> diff=-.5-> max(-.375, .125) = .125
+    #   tau=.95, q=2   -> diff=-2 -> max(-1.9, .1)   = .1
+    # mean = 0.45 / 5 = 0.09; CRPS = 2 * mean = 0.18
+    quantiles = {0.05: -2.0, 0.25: -0.5, 0.50: 0.0, 0.75: 0.5, 0.95: 2.0}
+    assert crps_from_quantiles(0.0, quantiles) == pytest.approx(0.18)
+
+
+def test_crps_from_quantiles_perfect_point_mass_is_low() -> None:
+    # A (degenerate) "distribution" whose every quantile equals the realized
+    # value scores zero -- CRPS's minimum.
+    quantiles = {0.05: 1.0, 0.25: 1.0, 0.50: 1.0, 0.75: 1.0, 0.95: 1.0}
+    assert crps_from_quantiles(1.0, quantiles) == pytest.approx(0.0)
+
+
+def test_crps_from_quantiles_rejects_empty() -> None:
+    with pytest.raises(ValueError):
+        crps_from_quantiles(0.0, {})
+
+
+def test_mean_crps_from_quantiles_matches_manual_average() -> None:
+    q_a = {0.05: -2.0, 0.25: -0.5, 0.50: 0.0, 0.75: 0.5, 0.95: 2.0}
+    q_b = {0.05: -1.0, 0.25: -0.25, 0.50: 0.0, 0.75: 0.25, 0.95: 1.0}
+    y = np.array([0.0, 0.0])
+    expected = np.mean([crps_from_quantiles(0.0, q_a), crps_from_quantiles(0.0, q_b)])
+    assert mean_crps_from_quantiles(y, [q_a, q_b]) == pytest.approx(expected)
+
+
+def test_pinball_loss_by_level_matches_manual_mean_per_level() -> None:
+    q_list = [{0.5: 0.8, 0.9: 1.5}, {0.5: 1.2, 0.9: 1.1}]
+    y = np.array([1.0, 1.0])
+    result = pinball_loss_by_level(y, q_list)
+    assert result[0.5] == pytest.approx(
+        np.mean([pinball_loss(1.0, 0.8, 0.5), pinball_loss(1.0, 1.2, 0.5)])
+    )
+    assert result[0.9] == pytest.approx(
+        np.mean([pinball_loss(1.0, 1.5, 0.9), pinball_loss(1.0, 1.1, 0.9)])
+    )
+
+
+def test_interval_coverage_hand_example() -> None:
+    y = np.array([0.0, 0.0, 0.0, 0.0, 0.0])
+    lower = np.full(5, -1.0)
+    upper = np.full(5, 1.0)
+    assert interval_coverage(y, lower, upper) == pytest.approx(1.0)
+
+
+def test_interval_coverage_detects_deliberately_too_narrow_interval() -> None:
+    """A miscalibrated, deliberately-too-narrow interval must show up as
+    empirical coverage far below its nominal level -- this is the whole
+    point of measuring coverage instead of trusting the model's own claimed
+    quantile levels."""
+    rng = np.random.default_rng(0)
+    y = rng.normal(0.0, 1.0, size=5000)
+    # True 90% interval for N(0,1) is roughly [-1.645, 1.645]; shrink it by
+    # 10x so it is deliberately far too narrow.
+    lower = np.full(y.shape, -0.1645)
+    upper = np.full(y.shape, 0.1645)
+    coverage = interval_coverage(y, lower, upper)
+    assert coverage < 0.20  # nominal was 0.90 -- badly, detectably miscalibrated
+    # the same interval at its correct (un-shrunk) width should recover
+    # coverage close to the nominal 90%
+    wide_coverage = interval_coverage(y, lower * 10.0, upper * 10.0)
+    assert wide_coverage == pytest.approx(0.90, abs=0.03)
+    assert wide_coverage > coverage
+
+
+def test_interval_coverage_rejects_mismatched_shapes() -> None:
+    with pytest.raises(ValueError):
+        interval_coverage(np.array([0.0, 0.0]), np.array([-1.0]), np.array([1.0, 1.0]))

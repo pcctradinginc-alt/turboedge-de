@@ -841,6 +841,15 @@ class WalkforwardResultRecord(BaseModel):
     config_hash: str
     git_commit: str | None = None
     params: dict[str, Any] = Field(default_factory=dict)
+    # -- Phase D additions (docs/measured_results.md): score the full predictive
+    # distribution, not just p_up/brier -- additive, `None`/empty on any row
+    # written before this migration (storage/duckdb.py's `_migrate_table_columns`
+    # adds these columns nullable; brier/log_loss/ece/hit_rate/psr above are
+    # unchanged and still always populated).
+    crps: float | None = None  # mean quantile-based CRPS approximation
+    pinball_loss: dict[str, float] = Field(default_factory=dict)  # mean pinball per "q05".."q95"
+    coverage_90: float | None = None  # empirical coverage of [q05, q95] (nominal 0.90)
+    coverage_50: float | None = None  # empirical coverage of [q25, q75] (nominal 0.50)
 
 
 # -- W10: KO-probability calibration (docs/measured_results.md §3, --------------

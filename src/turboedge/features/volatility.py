@@ -14,11 +14,18 @@ history is ``NaN`` -- never imputed (Build Contract v2 item 1).
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from datetime import datetime
+from typing import TYPE_CHECKING
+
 import numpy as np
 import numpy.typing as npt
 import pandas as pd
 
 from turboedge.features.product import ewma_volatility as _ewma_daily_vol
+
+if TYPE_CHECKING:
+    from turboedge.storage.schemas import UnderlyingBar
 
 _LN2 = float(np.log(2.0))
 _GK_CONST = 2.0 * _LN2 - 1.0
@@ -75,6 +82,68 @@ def ewma_volatility(
     ewma = ewma.copy()
     ewma[: min(warmup, ewma.size)] = np.nan
     return _align_from_returns(ewma, arr.shape[0])
+
+
+def causal_ewma_sigma(
+    bars: Sequence[UnderlyingBar],
+    as_of: datetime,
+    *,
+    lam: float = 0.94,
+    warmup: int = _EWMA_WARMUP,
+) -> float:
+    """EWMA daily volatility "as of" ``as_of``, built only from bars whose
+    ``available_at <= as_of`` (CLAUDE.md rule 5).
+
+    This is ``sigma_t`` in Phase D's normalized forecasting target
+    ``y_h = ln(P_t+h / P_t) / (sigma_t * sqrt(h))`` (``docs/measured_results.md``
+    Phase D, backtest/walkforward.py). Filters and sorts ``bars`` itself
+    (rather than requiring a pre-filtered, pre-sorted sequence like
+    :func:`ewma_volatility` does) so every caller applies the exact same
+    look-ahead cutoff; returns ``NaN`` when there is not enough eligible
+    history to form even a single EWMA estimate.
+    """
+    eligible = [b for b in bars if b.available_at <= as_of]
+    eligible.sort(key=lambda b: b.ts)
+    if len(eligible) < 2:
+        return float("nan")
+    closes = np.array([b.close for b in eligible], dtype=np.float64)
+    sigma_series = ewma_volatility(closes, lam=lam, warmup=warmup)
+    return float(sigma_series[-1])
+
+
+def normalized_horizon_target(
+    closes: npt.NDArray[np.float64], sigma: npt.NDArray[np.float64], horizon: int
+) -> npt.NDArray[np.float64]:
+    """Phase D primary forecasting target, vectorized: ``y_h[t] = ln(closes[t+h]/closes[t]) /
+    (sigma[t] * sqrt(h))``.
+
+    ``closes`` and ``sigma`` must be aligned, chronological (ts-ascending)
+    and ``sigma[t]`` must already be a *causal* volatility estimate "as of"
+    bar ``t`` (e.g. :func:`ewma_volatility` applied to the same, already
+    as-of-filtered ``closes`` -- its own causal-prefix guarantee is what
+    makes this vectorized batch form equivalent to calling
+    :func:`causal_ewma_sigma` separately for every ``t``, the same
+    equivalence :class:`~turboedge.models.directional.TsmomForecastModel`
+    relies on for its own vectorized score series). Output is aligned to
+    ``closes``; ``NaN`` wherever ``t + h`` is out of range or ``sigma[t]``
+    is ``NaN``/``<= 0`` (never divided-by-zero, never silently imputed).
+    """
+    if horizon < 1:
+        raise ValueError(f"horizon must be >= 1, got {horizon!r}")
+    c = np.asarray(closes, dtype=np.float64)
+    s = np.asarray(sigma, dtype=np.float64)
+    if c.shape != s.shape:
+        raise ValueError("closes and sigma must have the same shape")
+    n = c.shape[0]
+    out = np.full(n, np.nan, dtype=np.float64)
+    if n <= horizon:
+        return out
+    denom = s[: n - horizon] * np.sqrt(horizon)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        ratio = np.log(c[horizon:] / c[: n - horizon]) / denom
+    valid = denom > 0.0
+    out[: n - horizon] = np.where(valid, ratio, np.nan)
+    return out
 
 
 def parkinson_volatility(

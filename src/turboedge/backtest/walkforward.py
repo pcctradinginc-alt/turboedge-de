@@ -16,8 +16,14 @@ import numpy as np
 from turboedge.backtest import metrics as bt_metrics
 from turboedge.backtest.purged_cv import PurgedWalkForwardSplit
 from turboedge.backtest.significance import probabilistic_sharpe_ratio
-from turboedge.models.forecast import ForecastModel
+from turboedge.models.forecast import ForecastModel, HorizonForecast
+from turboedge.models.quantile import QUANTILE_LEVELS
 from turboedge.storage.schemas import UnderlyingBar
+
+#: Nominal coverage of the two central prediction intervals every
+#: HorizonForecast's quantiles imply: q05/q95 (90%) and q25/q75 (50%).
+_INTERVAL_90 = ("q05", "q95")
+_INTERVAL_50 = ("q25", "q75")
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,7 +38,16 @@ class WalkForwardResult:
     mean_oos_return_when_short: float
     hit_rate: float
     psr: float
-    oos_predictions: list[tuple[datetime, float, float]]  # (t, p_up, realized_return)
+    oos_predictions: list[tuple[datetime, float, float]]  # (t, p_up, realized_return) -- diagnostic
+    # Phase D (docs/measured_results.md): the full predictive distribution
+    # collected per out-of-sample prediction, instead of throwing everything
+    # but p_up away before scoring (the "Bewertungsziel auf die Verteilung
+    # umstellen" problem statement). Same order/length as ``oos_predictions``.
+    oos_forecasts: list[tuple[datetime, HorizonForecast, float]]  # (t, forecast, realized_return)
+    crps: float  # mean quantile-based CRPS approximation (bt_metrics.mean_crps_from_quantiles)
+    pinball_by_quantile: dict[str, float]  # mean pinball loss per "q05".."q95" key
+    coverage_90: float  # empirical coverage of the [q05, q95] interval (nominal 0.90)
+    coverage_50: float  # empirical coverage of the [q25, q75] interval (nominal 0.50)
 
 
 def walk_forward_evaluate(
@@ -68,6 +83,7 @@ def walk_forward_evaluate(
         t0 = np.arange(n, dtype=np.int64)
         t1 = t0 + h
         oos: list[tuple[datetime, float, float]] = []
+        oos_forecasts: list[tuple[datetime, HorizonForecast, float]] = []
         n_folds = 0
         model_id = ""
 
@@ -85,6 +101,7 @@ def walk_forward_evaluate(
                 realized_return = float(np.log(closes[i + h] / closes[i]))
                 forecast = model.predict(sorted_bars, bar.available_at, horizons=[h])[0]
                 oos.append((bar.ts, forecast.p_up, realized_return))
+                oos_forecasts.append((bar.ts, forecast, realized_return))
 
         if not oos:
             raise ValueError(
@@ -104,6 +121,27 @@ def walk_forward_evaluate(
 
         signal_returns = np.where(long_mask, rets, np.where(short_mask, -rets, 0.0))
 
+        # Phase D: score the full predictive distribution (CRPS/pinball/coverage)
+        # against the same realized returns brier/log_loss/ece already use above --
+        # p_up/brier are left completely untouched, this is purely additive.
+        quantiles_by_tau = [
+            {QUANTILE_LEVELS[key]: fc.quantiles[key] for key in QUANTILE_LEVELS}
+            for _t, fc, _r in oos_forecasts
+        ]
+        crps = bt_metrics.mean_crps_from_quantiles(rets, quantiles_by_tau)
+        pinball_by_tau = bt_metrics.pinball_loss_by_level(rets, quantiles_by_tau)
+        pinball_by_quantile = {
+            key: pinball_by_tau[tau]
+            for key, tau in QUANTILE_LEVELS.items()
+            if tau in pinball_by_tau
+        }
+        lower90 = np.array([fc.quantiles[_INTERVAL_90[0]] for _t, fc, _r in oos_forecasts])
+        upper90 = np.array([fc.quantiles[_INTERVAL_90[1]] for _t, fc, _r in oos_forecasts])
+        coverage_90 = bt_metrics.interval_coverage(rets, lower90, upper90)
+        lower50 = np.array([fc.quantiles[_INTERVAL_50[0]] for _t, fc, _r in oos_forecasts])
+        upper50 = np.array([fc.quantiles[_INTERVAL_50[1]] for _t, fc, _r in oos_forecasts])
+        coverage_50 = bt_metrics.interval_coverage(rets, lower50, upper50)
+
         results.append(
             WalkForwardResult(
                 model_id=model_id,
@@ -119,6 +157,11 @@ def walk_forward_evaluate(
                 if signal_returns.size >= 3
                 else float("nan"),
                 oos_predictions=oos,
+                oos_forecasts=oos_forecasts,
+                crps=crps,
+                pinball_by_quantile=pinball_by_quantile,
+                coverage_90=coverage_90,
+                coverage_50=coverage_50,
             )
         )
     return results

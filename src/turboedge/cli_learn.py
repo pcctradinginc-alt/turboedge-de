@@ -43,6 +43,11 @@ from turboedge.learning.ledger import ForwardLedger
 from turboedge.learning.posterior import StrategyPosterior
 from turboedge.learning.registry import ModelRegistry
 from turboedge.learning.trials import backfill_w9_trials
+from turboedge.models.baselines import (
+    RegimeConditionalEmpiricalModel,
+    RegularizedLinearLocationModel,
+    RobustLocationScaleModel,
+)
 from turboedge.models.directional import (
     LogisticDirectionModel,
     NullModel,
@@ -79,6 +84,13 @@ _DEFAULT_MODEL_FACTORIES: dict[str, Any] = {
     "tsmom_forecast_v1": TsmomForecastModel,
     "logistic_direction_v1": LogisticDirectionModel,
     "null_v1": NullModel,
+    # Phase D pre-registered baselines (docs/measured_results.md), measured
+    # against the null model before any new challenger -- never part of the
+    # live scan ensemble (models.forecast.build_default_models), only this
+    # measurement/persistence path.
+    "regime_conditional_empirical_v1": RegimeConditionalEmpiricalModel,
+    "regularized_linear_location_v1": RegularizedLinearLocationModel,
+    "robust_location_scale_t_v1": RobustLocationScaleModel,
 }
 
 
@@ -619,6 +631,8 @@ def backtest_cmd(
     table.add_column("Brier", justify="right")
     table.add_column("Brier(null)", justify="right")
     table.add_column("Hit rate", justify="right")
+    table.add_column("CRPS", justify="right")
+    table.add_column("Cov90", justify="right")
 
     with Store(app_ctx.db_path) as store:
         store.init_schema()
@@ -686,6 +700,10 @@ def backtest_cmd(
                         config_hash=hash_value,
                         git_commit=commit,
                         params={},
+                        crps=r.crps,
+                        pinball_loss=r.pinball_by_quantile,
+                        coverage_90=r.coverage_90,
+                        coverage_50=r.coverage_50,
                     )
                     for r in results
                 ]
@@ -698,6 +716,8 @@ def backtest_cmd(
                         f"{r.brier:.4f}",
                         f"{null_brier.get(r.horizon_days, float('nan')):.4f}",
                         f"{r.hit_rate:.3f}",
+                        f"{r.crps:.5f}",
+                        f"{r.coverage_90:.3f}",
                     )
 
     if redact_console_enabled():

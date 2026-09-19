@@ -164,26 +164,30 @@ def build_ko_calibration_dataset(
             f"{underlying_id!r} (got {n}: {_MIN_HISTORY_BARS} history warmup + "
             f"{max_h} horizon + 1)"
         )
-    closes = np.array([b.close for b in sorted_bars], dtype=np.float64)
-    sigma_series = _daily_sigma_series(closes)
 
     observations: list[KoCalibrationObservation] = []
     for t0 in range(_MIN_HISTORY_BARS, n - max_h, step_days):
         bar_t0 = sorted_bars[t0]
         prediction_time = bar_t0.available_at
         spot0 = bar_t0.close
-        daily_sigma = float(sigma_series[t0])
-        if not np.isfinite(daily_sigma) or daily_sigma <= 0.0:
-            continue
 
-        # No-look-ahead: only bars whose information was actually available
-        # at prediction_time (rule 5). Chronological order + available_at
-        # monotonic with ts in every adapter this codebase ships, but this
-        # filters explicitly rather than assuming it.
+        # No-look-ahead (rule 5): only bars whose information was actually
+        # available at prediction_time feed *anything* computed below --
+        # not just simulate_paths' bootstrap sample, but sigma and the
+        # regime bucket too. ``ts``-chronological order is not a
+        # substitute for this: a bar with an earlier ``ts`` can still carry
+        # a later ``available_at`` (e.g. a delayed/revised data point), and
+        # must not leak into a prediction made before it was published.
         history = [b for b in sorted_bars[: t0 + 1] if b.available_at <= prediction_time]
         if len(history) < 2:
             continue
-        regime = _regime_bucket(sigma_series[:t0], daily_sigma)
+
+        hist_closes = np.array([b.close for b in history], dtype=np.float64)
+        hist_sigma_series = _daily_sigma_series(hist_closes)
+        daily_sigma = float(hist_sigma_series[-1])
+        if not np.isfinite(daily_sigma) or daily_sigma <= 0.0:
+            continue
+        regime = _regime_bucket(hist_sigma_series[:-1], daily_sigma)
 
         try:
             path_set = simulate_paths(

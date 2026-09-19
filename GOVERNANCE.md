@@ -324,3 +324,12 @@ next quarter without a documented regime-change justification.
   6 pre-registered challenger families) recorded; 0 promotions; existing
   versioned values (budget, ladder thresholds, ruin metric, sizing caps)
   unchanged.
+- **2026-09-19:** Bookkeeping fix, not a policy change: the six §11.1 W9
+  trials had never actually been written to `research_trials` (only to
+  `state/registry/failed_hypotheses.json`), so `count_research_trials_in_
+  quarter("2026Q3")` was reading 0 instead of 6, undercounting the §1.2
+  quarterly budget. Backfilled under their original trial_ids
+  (`learning/trials.py::backfill_w9_trials`, `turboedge research
+  backfill-trials`); `research_trials` now correctly reads 6/6 for 2026Q3.
+  Budget (6/quarter), ladder thresholds, ruin metric and sizing caps are
+  unchanged.

@@ -213,6 +213,114 @@ most for gating.
 (upper-bound-ish) estimate of true knock-out risk at small-to-moderate
 barrier distances, not a calibrated probability.**
 
+### 3.1 Out-of-sample calibrator promotion attempt (Workstream W10, 2026-09-19)
+
+**Question:** the W5 finding above (P(KO) over-predicted by 40–135% at
+k=1.5–2σ) was measured with code that is no longer in this repository. Can a
+*calibrator* — fit walk-forward, out-of-sample, on a freshly rebuilt
+empirical dataset — improve on raw P(KO) without eroding the conservative
+safety margin that makes the ACTIONABLE gate harder to clear, not easier?
+Implemented in `simulation/ko_calibration.py` (dataset) and
+`backtest/ko_calibration.py` (walk-forward fit/evaluate/promote), run via
+`turboedge research ko-calibration`. `ranking/gates.py` and
+`pipeline/scan.py` were **not modified** — gates still consume raw P(KO)
+regardless of this section's outcome, and the scan pipeline's population of
+the new (additive, currently empty) `p_ko_raw`/`p_ko_calibrated`/
+`ko_calibrator_version` columns on `candidate_sets` is deliberately left for
+a later change.
+
+**Dataset.** All 4 currently `enabled: true` underlyings in
+`configs/universe.yaml` (DAX, NDX, EURUSD, XAU), `yfinance` daily bars
+(~2010–2026, `configs/simulation.yaml`'s `n_paths=2000`,
+`method=vol_scaled_bootstrap`, `block_size=5`, `lookback_days=750`,
+`seed=20260101`), every 5th business day as an "as of" bar (a documented,
+applied-before-any-result-is-seen stride — see
+`simulation/ko_calibration.py`'s docstring), horizons `(3, 5, 7, 10, 14)`,
+both directions, standardized barrier distances
+`k ∈ {0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0, 4.0}` (same
+`pct = k·σ·√horizon` convention as `features/product.py::distance_to_barrier`).
+Sigma and the volatility regime bucket are computed only from bars with
+`available_at <= prediction_time`; realized KO is read from the real
+subsequent bars' high/low (never close).
+
+| underlying | "as of" bars | raw observations (× 5h × 2dir × 8σ) |
+|---|---:|---:|
+| DAX | 811 | 64,880 |
+| NDX | 812 | 64,960 |
+| EURUSD | 786 | 62,880 |
+| XAU | 666 | 53,280 |
+| **total** | **3,075** | **246,000** |
+
+**Walk-forward evaluation.** `PurgedWalkForwardSplit` (embargo = horizon),
+run independently per `(underlying, horizon)` — never pooling two
+underlyings' bar-index axes into one purge/embargo computation. Within each
+fold, isotonic/Platt calibrators are fit per `(direction, regime_bucket)`
+stratum on that fold's training observations only and applied to its test
+observations — every number below is genuinely out-of-sample both in time
+and in calibrator fit. This yields **150,000 out-of-sample predictions per
+method** (raw, identity, isotonic, Platt) pooled across all 4 underlyings,
+all 5 horizons, both directions, all 8 σ-buckets.
+
+**Results, out-of-sample, pooled overall:**
+
+| method | n | Brier | Cox intercept | Cox slope | ECE | mean signed error | absolute calib. error |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| raw | 150,000 | 0.1053 | −0.299 | 0.840 | 0.0160 | −0.0131 | 0.2347 |
+| identity | 150,000 | 0.1053 | −0.299 | 0.840 | 0.0160 | −0.0131 | 0.2347 |
+| isotonic | 150,000 | 0.1051 | −0.472 | 0.584 | 0.0130 | +0.0080 | 0.2004 |
+| platt | 150,000 | 0.1062 | +0.384 | 1.204 | 0.0349 | +0.0074 | 0.2247 |
+
+(identity is numerically raw with a `[1e-6, 1-1e-6]` clip; walk-forward
+evaluated only as the floor every real candidate must beat, never itself
+eligible for promotion.)
+
+**Breakdown at the trading-relevant σ-buckets (where the ACTIONABLE gate's
+`min_distance_to_barrier_sigma` actually bites):**
+
+| method | σ | n | Brier | Cox intercept | Cox slope | ECE | mean signed error | abs. calib. error |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| raw | 1.5 | 18,750 | 0.1168 | −1.483 | 0.226 | 0.0231 | **−0.0205** | 0.4058 |
+| isotonic | 1.5 | 18,750 | 0.1165 | −1.677 | 0.085 | 0.0219 | **+0.0121** | 0.3838 |
+| platt | 1.5 | 18,750 | 0.1161 | −0.641 | 0.579 | 0.0268 | **+0.0250** | 0.3814 |
+| raw | 2.0 | 18,750 | 0.0581 | −1.895 | 0.308 | 0.0042 | **−0.0042** | 0.4676 |
+| isotonic | 2.0 | 18,750 | 0.0582 | −2.401 | 0.093 | 0.0193 | **+0.0114** | 0.4197 |
+| platt | 2.0 | 18,750 | 0.0579 | −1.331 | 0.539 | 0.0093 | **−0.0093** | 0.4789 |
+
+Two things line up with the original W5 finding: raw's mean signed error is
+negative at both buckets (realized KO rate below simulated P(KO) — the same
+conservative, over-predicting direction as the 2026-09-12 study), and raw's
+Cox slope is far below 1 (0.23 at σ=1.5, 0.31 at σ=2.0) — a new, more
+granular confirmation that raw P(KO) is not just biased but too *extreme*
+relative to the true probability at these distances, consistent with W5's
+aggregate `|diff|` finding.
+
+**Promotion decision: NO PROMOTION.** Reasoning (the rule in
+`backtest/ko_calibration.py::_decide_promotion`, applied exactly as
+implemented, no threshold loosened to force a result):
+
+- **Platt** fails the basic bar before the tail-risk check even applies:
+  its pooled Brier (0.1062) is *worse* than raw's (0.1053) — a calibrator
+  that degrades discrimination while narrowing ECE is not a genuine
+  improvement.
+- **Isotonic** does improve pooled Brier/ECE/absolute-calibration-error
+  over raw, but at both trading-relevant σ-buckets its mean signed error
+  flips sign — from raw's −0.0205/−0.0042 (conservative: realized KO rate
+  below predicted) to +0.0121/+0.0114 (predicted P(KO) now *below* the
+  realized rate, the unsafe direction for the ACTIONABLE gate) — crossing
+  the safety tolerance (§ below). The exact same reversal shows up for
+  Platt at σ=1.5 (+0.0250).
+- No candidate clears the promotion rule (improve OOS calibration over raw
+  **without** materially worsening the conservative tail-risk bias at
+  σ∈{1.5, 2.0}). `ranking/gates.py` keeps consuming raw P(KO), exactly as
+  it did before this session and as W5 recommended.
+
+This is a **negative result, reported as such** (CLAUDE.md rule 26): a
+calibrator that is measurably better in aggregate is still the wrong choice
+here, because it buys that improvement by eroding the specific safety
+margin (over- rather than under-predicting KO risk close to the barrier)
+that the rest of the system relies on. No threshold, gate or significance
+level was loosened to manufacture a different outcome.
+
 ---
 
 ## 4. Product data coverage

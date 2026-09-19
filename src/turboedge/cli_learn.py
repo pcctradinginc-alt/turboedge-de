@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import math
 import re
+from dataclasses import asdict
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Annotated, Any
@@ -970,18 +971,18 @@ def research_ko_calibration_cmd(
             "promotion_reason": result.promotion_reason,
             "methods": {
                 method: {
-                    "overall": method_result.overall.__dict__,
-                    "by_horizon": {str(k): v.__dict__ for k, v in method_result.by_horizon.items()},
+                    "overall": asdict(method_result.overall),
+                    "by_horizon": {str(k): asdict(v) for k, v in method_result.by_horizon.items()},
                     "by_direction": {
-                        str(k): v.__dict__ for k, v in method_result.by_direction.items()
+                        str(k): asdict(v) for k, v in method_result.by_direction.items()
                     },
                     "by_sigma_bucket": {
-                        str(k): v.__dict__ for k, v in method_result.by_sigma_bucket.items()
+                        str(k): asdict(v) for k, v in method_result.by_sigma_bucket.items()
                     },
                     "by_underlying": {
-                        str(k): v.__dict__ for k, v in method_result.by_underlying.items()
+                        str(k): asdict(v) for k, v in method_result.by_underlying.items()
                     },
-                    "by_regime": {str(k): v.__dict__ for k, v in method_result.by_regime.items()},
+                    "by_regime": {str(k): asdict(v) for k, v in method_result.by_regime.items()},
                 }
                 for method, method_result in method_results.items()
             },

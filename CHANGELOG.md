@@ -369,6 +369,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `monthly`) call these exact command names and are no longer blocked on
   this wiring.
 
+- **`research_trials` backfill for the six 2026Q3 W9 trials**
+  (`learning/trials.py::backfill_w9_trials`, `turboedge research
+  backfill-trials [--dry-run]`). Measured: `research_trials` held 0 rows
+  although GOVERNANCE.md §11.1 documents six consumed 2026Q3 trials
+  (`W9-2026Q3-001`..`-006`, only ever recorded in
+  `state/registry/failed_hypotheses.json`, in its own format, with
+  `quarter=null`) — `new_trial_id` is the table's only writer and nothing
+  called it for these six, so the quarterly adaptation budget counter
+  (GOVERNANCE.md §1.2) undercounted the spent budget. Idempotent
+  (`trial_id` primary key, already-present rows skipped) and safe against
+  an empty CI database. Verified live: a fresh state dir goes from
+  `count_research_trials_in_quarter("2026Q3") == 0` to `== 6` after one
+  run, `== 6` again (0 inserted) after a second run, and `new_trial_id`
+  then raises `TrialBudgetExceeded` as GOVERNANCE.md §1.2 requires.
+
+- **W10: out-of-sample calibration of the path-simulation P(KO)**
+  (`simulation/ko_calibration.py`, `backtest/ko_calibration.py`, `turboedge
+  research ko-calibration [--underlying ...] [--json-out PATH]`). Rebuilds
+  the empirical dataset the original W5 study (`docs/measured_results.md`
+  §3) used, since that study's code no longer exists in this repository,
+  and walk-forward fits/evaluates identity/isotonic/Platt calibrators
+  (`models/calibration.py`, reused) against raw P(KO), keeping `p_ko_raw`
+  strictly separate from `p_ko_calibrated` (never multiplying P(KO) by an
+  estimated factor). Adds `backtest/metrics.py::calibration_intercept`/
+  `calibration_slope` (Cox calibration), `mean_signed_error` and
+  `absolute_calibration_error` (unweighted-bin variant of the existing
+  `expected_calibration_error`). Adds additive-only persistence: three new
+  optional `CandidateEvaluation`/`candidate_sets` columns (`p_ko_raw`,
+  `p_ko_calibrated`, `ko_calibrator_version` — schema and persistence only,
+  population from the scan pipeline is a later change) plus two new tables
+  (`ko_calibration_results`, `ko_calibration_promotion`). Measured
+  2026-09-19 against DAX/NDX/EURUSD/XAU (all 4 `enabled: true` underlyings,
+  `configs/universe.yaml`), 246,000 raw observations, 150,000 walk-forward
+  out-of-sample predictions per candidate: **no calibrator promoted** —
+  isotonic improves pooled Brier/ECE/absolute-calibration-error but flips
+  the mean signed error from conservative (raw: −0.0205 at σ=1.5, −0.0042
+  at σ=2.0, matching W5's over-prediction finding) to under-predicting
+  (+0.0121/+0.0114) at the two barrier distances the ACTIONABLE gate
+  actually uses; Platt fails outright on pooled Brier alone. `ranking/gates.py`
+  and `pipeline/scan.py` are unmodified — gates keep consuming raw P(KO).
+  Full breakdown: `docs/measured_results.md` §3.1.
+
 ### Planned
 
 - Further data sources (Eurex, Euwax, Cboe, FRED, CFTC) — no current plan.

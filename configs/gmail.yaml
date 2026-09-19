@@ -33,6 +33,23 @@ send_on: ["ACTIONABLE"]
 
 subject_prefix: "[TurboEdge-DE]"
 
-# Single end-of-day summary instead of per-scan emails. Not implemented in
-# this milestone; reserved for Phase 5+.
-daily_digest: false
+# Daily research protocol switch (Konzept 1.2 Abschnitt 16). Independent of
+# `send_on` above and NOT an alternative reading of it: `send_on` gates the
+# per-scan report mail (zero or more per day, one per `turboedge scan`/
+# `scan-all` run that actually lands a candidate in a named category --
+# with the default `send_on: ["ACTIONABLE"]`, effectively never today, see
+# docs/measured_results.md); this switch, when true, additionally guarantees
+# exactly ONE mail per UTC calendar day regardless of `send_on` or how many
+# scans ran that day, deduplicated by date via the same
+# NotificationDeduplicator -- "FORSCHUNGSPROTOKOLL - KEINE
+# HANDELSEMPFEHLUNG": status/signal/best-candidate LCB(EV)/P(KO)/barrier
+# distance/the deciding gate reason/data quality, per underlying, even
+# (especially) on a day with no VORSCHLAG. This does NOT add WATCH to
+# `send_on` -- that would be the per-candidate NO-TRADE spam Master Spec
+# §34 forbids (>14000 WATCH candidates/day); this is the one, bounded
+# summary that replaces the need for it. See
+# `pipeline.scan._maybe_send_daily_research_protocol`. Requires
+# `enabled: true` and `--email` like every other notification in this file;
+# real sending still requires GMAIL_USER/GMAIL_APP_PASSWORD/
+# TURBOEDGE_EMAIL_TO as noted above.
+daily_digest: true

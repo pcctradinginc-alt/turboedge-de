@@ -42,6 +42,39 @@ from turboedge.provenance import new_run_id
 from turboedge.storage.duckdb import Store
 from turboedge.storage.schemas import Category, Direction, ProductSnapshot, UnderlyingBar
 
+# --------------------------------------------------------------------------
+# helpers: pin the enabled universe for the daily research protocol tests
+# below, so they don't need NDX/EURUSD/XAU (all non-EUR, needing FX
+# resolution) to also scan cleanly just to exercise the "last enabled
+# underlying" trigger (`_maybe_send_daily_research_protocol`).
+# --------------------------------------------------------------------------
+
+
+def _cfg_with_enabled_underlyings(
+    cfg: TurboEdgeConfig, underlying_ids: set[str]
+) -> TurboEdgeConfig:
+    """The real repo config, but with only ``underlying_ids`` enabled in
+    ``universe.yaml`` (order still follows the file, e.g. DAX before
+    ESTX50) -- everything else about the config (gmail, risk, ranking, ...)
+    stays exactly as shipped."""
+    entries = [
+        u.model_copy(update={"enabled": u.id in underlying_ids}) for u in cfg.universe.underlyings
+    ]
+    return cfg.model_copy(
+        update={"universe": cfg.universe.model_copy(update={"underlyings": entries})}
+    )
+
+
+def _retarget_underlying(product: ProductSnapshot, underlying_id: str) -> ProductSnapshot:
+    """A copy of ``product`` re-tagged onto a different (EUR, so FX-free)
+    underlying -- lets the multi-underlying digest test reuse the DAX
+    product/bar fixtures for a second underlying (ESTX50) instead of
+    duplicating the whole synthetic-product builder."""
+    return product.model_copy(
+        update={"underlying_id": underlying_id, "underlying_raw": underlying_id}
+    )
+
+
 _EVAL_TIME = datetime(2025, 10, 8, 9, 0, tzinfo=UTC)  # Wed, after the last synthetic bar
 
 
@@ -914,6 +947,266 @@ def test_email_not_sent_when_only_reject_and_send_on_is_actionable(
     assert result.counts[Category.WATCH] == 0
     assert result.notification is None
     assert notifier.send_calls == 0
+
+
+# --------------------------------------------------------------------------
+# (i.2) daily research protocol digest (Konzept 1.2 Abschnitt 16): exactly
+# one mail per UTC calendar day, even (especially) on a day with no
+# VORSCHLAG -- see `_maybe_send_daily_research_protocol`.
+# --------------------------------------------------------------------------
+
+
+def test_daily_research_protocol_sent_on_all_reject_day_despite_send_on_actionable(
+    cfg: TurboEdgeConfig,
+    store: Store,
+    tmp_path: Path,
+    dax_bars: list[UnderlyingBar],
+    dax_product_factory: Callable[..., ProductSnapshot],
+    make_product_adapter: Callable[..., Any],
+    make_price_adapter: Callable[..., Any],
+    make_estr_adapter: Callable[..., Any],
+    make_notifier: Callable[..., Any],
+) -> None:
+    """The exact scenario from the AUSGANGSLAGE: an all-REJECT scan, the
+    unmodified repo config (``send_on: ["ACTIONABLE"]``, so the per-scan
+    report mail correctly stays silent -- see
+    ``test_email_not_sent_when_only_reject_and_send_on_is_actionable``
+    above), and ``daily_digest: true`` by default. The daily research
+    protocol must still send -- it does not consult ``send_on`` at all --
+    and its body must name the actual gate reason that rejected the
+    candidate (the "ABLEHNENDE BEDINGUNG")."""
+    solo_dax_cfg = _cfg_with_enabled_underlyings(cfg, {"DAX"})
+    assert solo_dax_cfg.universe.enabled_ids() == ["DAX"]
+    price_adapter = make_price_adapter(bars_by_underlying={"DAX": dax_bars})
+    notifier = make_notifier()
+    stale_quote_time = _EVAL_TIME - timedelta(hours=6)
+    adapter = make_product_adapter(
+        "source_a",
+        products=[_good_long(dax_product_factory, quote_timestamp=stale_quote_time)],
+    )
+
+    result = run_scan(
+        **_base_kwargs(
+            cfg=solo_dax_cfg,
+            store=store,
+            tmp_path=tmp_path,
+            product_adapters=[adapter],
+            price_adapter=price_adapter,
+            estr_adapter=make_estr_adapter(),
+            notifier=notifier,
+        ),
+        options=ScanOptions(underlying_id="DAX", email=True),
+    )
+
+    # the per-scan report mail stays silent (send_on == ["ACTIONABLE"]) ...
+    assert result.counts[Category.REJECT] >= 1
+    assert result.notification is None
+    # ... but the daily research protocol sends anyway.
+    assert result.daily_research_protocol_notification is not None
+    assert result.daily_research_protocol_notification.sent is True
+    assert notifier.send_calls == 1
+    body = notifier.sent_specs[0].body_text
+    assert "FORSCHUNGSPROTOKOLL - KEINE HANDELSEMPFEHLUNG" in body
+    assert "DAX" in body
+    assert "KEIN TRADE" in body
+    # the decisive gate reason (Master Spec: a stale quote at decision time)
+    assert "quote_age_at_decision" in body
+    assert "Ablehnende Bedingung: quote_age_at_decision" in body
+
+
+def test_daily_research_protocol_exactly_one_mail_for_two_scans_same_day(
+    cfg: TurboEdgeConfig,
+    store: Store,
+    tmp_path: Path,
+    dax_bars: list[UnderlyingBar],
+    dax_product_factory: Callable[..., ProductSnapshot],
+    make_product_adapter: Callable[..., Any],
+    make_price_adapter: Callable[..., Any],
+    make_estr_adapter: Callable[..., Any],
+    make_notifier: Callable[..., Any],
+) -> None:
+    """Two ``scan-all``-equivalent runs on the same UTC calendar day (the
+    production schedule runs up to 5x/weekday) must produce exactly ONE
+    daily research protocol mail, deduplicated via the existing
+    `NotificationDeduplicator` keyed only by the date."""
+    solo_dax_cfg = _cfg_with_enabled_underlyings(cfg, {"DAX"})
+    price_adapter = make_price_adapter(bars_by_underlying={"DAX": dax_bars})
+    notifier = make_notifier()
+
+    def run_once() -> Any:
+        adapter = make_product_adapter("source_a", products=[_good_long(dax_product_factory)])
+        return run_scan(
+            **_base_kwargs(
+                cfg=solo_dax_cfg,
+                store=store,
+                tmp_path=tmp_path,
+                product_adapters=[adapter],
+                price_adapter=price_adapter,
+                estr_adapter=make_estr_adapter(),
+                notifier=notifier,
+                run_id=new_run_id(),
+            ),
+            options=ScanOptions(underlying_id="DAX", email=True),
+        )
+
+    result_1 = run_once()
+    result_2 = run_once()
+
+    assert result_1.daily_research_protocol_notification is not None
+    assert result_1.daily_research_protocol_notification.sent is True
+    assert result_2.daily_research_protocol_notification is not None
+    assert result_2.daily_research_protocol_notification.sent is False
+    assert result_2.daily_research_protocol_notification.message == "skipped_duplicate"
+    assert notifier.send_calls == 1
+
+
+def test_daily_research_protocol_dry_run_without_credentials(
+    cfg: TurboEdgeConfig,
+    store: Store,
+    tmp_path: Path,
+    dax_bars: list[UnderlyingBar],
+    dax_product_factory: Callable[..., ProductSnapshot],
+    make_product_adapter: Callable[..., Any],
+    make_price_adapter: Callable[..., Any],
+    make_estr_adapter: Callable[..., Any],
+    make_notifier: Callable[..., Any],
+) -> None:
+    """No GMAIL_USER/GMAIL_APP_PASSWORD/TURBOEDGE_EMAIL_TO (``dry_run=True``
+    -- no ``.credentials``) must never touch real SMTP, yet still exercise
+    and report the full digest build/dedup path."""
+    solo_dax_cfg = _cfg_with_enabled_underlyings(cfg, {"DAX"})
+    price_adapter = make_price_adapter(bars_by_underlying={"DAX": dax_bars})
+    notifier = make_notifier(dry_run=True)
+    adapter = make_product_adapter("source_a", products=[_good_long(dax_product_factory)])
+
+    result = run_scan(
+        **_base_kwargs(
+            cfg=solo_dax_cfg,
+            store=store,
+            tmp_path=tmp_path,
+            product_adapters=[adapter],
+            price_adapter=price_adapter,
+            estr_adapter=make_estr_adapter(),
+            notifier=notifier,
+        ),
+        options=ScanOptions(underlying_id="DAX", email=True),
+    )
+
+    assert notifier.send_calls == 1  # attempted (dry-run), never real SMTP
+    assert result.daily_research_protocol_notification is not None
+    assert result.daily_research_protocol_notification.dry_run is True
+    assert result.daily_research_protocol_notification.sent is False
+
+
+def test_daily_research_protocol_disabled_by_config_switch(
+    cfg: TurboEdgeConfig,
+    store: Store,
+    tmp_path: Path,
+    dax_bars: list[UnderlyingBar],
+    dax_product_factory: Callable[..., ProductSnapshot],
+    make_product_adapter: Callable[..., Any],
+    make_price_adapter: Callable[..., Any],
+    make_estr_adapter: Callable[..., Any],
+    make_notifier: Callable[..., Any],
+) -> None:
+    """``gmail.yaml``'s ``daily_digest`` switch (default ``true``) actually
+    gates this feature -- turning it off must suppress the digest entirely,
+    independent of ``send_on``."""
+    solo_dax_cfg = _cfg_with_enabled_underlyings(cfg, {"DAX"})
+    off_cfg = solo_dax_cfg.model_copy(
+        update={"gmail": solo_dax_cfg.gmail.model_copy(update={"daily_digest": False})}
+    )
+    price_adapter = make_price_adapter(bars_by_underlying={"DAX": dax_bars})
+    notifier = make_notifier()
+    adapter = make_product_adapter("source_a", products=[_good_long(dax_product_factory)])
+
+    result = run_scan(
+        **_base_kwargs(
+            cfg=off_cfg,
+            store=store,
+            tmp_path=tmp_path,
+            product_adapters=[adapter],
+            price_adapter=price_adapter,
+            estr_adapter=make_estr_adapter(),
+            notifier=notifier,
+        ),
+        options=ScanOptions(underlying_id="DAX", email=True),
+    )
+
+    assert result.daily_research_protocol_notification is None
+    assert notifier.send_calls == 0
+
+
+def test_daily_research_protocol_covers_every_underlying_scanned_that_day(
+    cfg: TurboEdgeConfig,
+    store: Store,
+    tmp_path: Path,
+    dax_bars: list[UnderlyingBar],
+    dax_product_factory: Callable[..., ProductSnapshot],
+    bars_factory: Callable[..., list[UnderlyingBar]],
+    make_product_adapter: Callable[..., Any],
+    make_price_adapter: Callable[..., Any],
+    make_estr_adapter: Callable[..., Any],
+    make_notifier: Callable[..., Any],
+) -> None:
+    """A two-underlying batch (DAX, then ESTX50 -- both EUR, so no FX
+    resolution needed) mirrors what ``scan-all`` actually does: it must
+    accumulate both underlyings' entries into ONE digest, sent only once
+    the last configured underlying (ESTX50, per ``universe.yaml``'s file
+    order) has reported in."""
+    batch_cfg = _cfg_with_enabled_underlyings(cfg, {"DAX", "ESTX50"})
+    assert batch_cfg.universe.enabled_ids() == ["DAX", "ESTX50"]
+    estx50_bars = bars_factory("ESTX50", count=200)
+    price_adapter = make_price_adapter(bars_by_underlying={"DAX": dax_bars, "ESTX50": estx50_bars})
+    notifier = make_notifier()
+
+    dax_adapter = make_product_adapter("source_a", products=[_good_long(dax_product_factory)])
+    dax_result = run_scan(
+        **_base_kwargs(
+            cfg=batch_cfg,
+            store=store,
+            tmp_path=tmp_path,
+            product_adapters=[dax_adapter],
+            price_adapter=price_adapter,
+            estr_adapter=make_estr_adapter(),
+            notifier=notifier,
+            run_id=new_run_id(),
+        ),
+        options=ScanOptions(underlying_id="DAX", email=True),
+    )
+    # DAX is not the batch's last configured underlying -- must wait.
+    assert dax_result.daily_research_protocol_notification is None
+    assert notifier.send_calls == 0
+
+    estx50_product = _retarget_underlying(_good_long(dax_product_factory), "ESTX50")
+    estx50_adapter = make_product_adapter("source_a", products=[estx50_product])
+    estx50_result = run_scan(
+        **_base_kwargs(
+            cfg=batch_cfg,
+            store=store,
+            tmp_path=tmp_path,
+            product_adapters=[estx50_adapter],
+            price_adapter=price_adapter,
+            estr_adapter=make_estr_adapter(),
+            notifier=notifier,
+            run_id=new_run_id(),
+        ),
+        options=ScanOptions(underlying_id="ESTX50", email=True),
+    )
+
+    assert estx50_result.daily_research_protocol_notification is not None
+    assert estx50_result.daily_research_protocol_notification.sent is True
+    assert notifier.send_calls == 1
+    body = notifier.sent_specs[0].body_text
+    assert "DAX -- Status:" in body
+    assert "ESTX50 -- Status:" in body
+    assert "Trial-ID: TR-ROUTINE-SCAN" in body
+    assert "Bester Kandidat: LCB(EV)" in body
+    assert "P(KO):" in body
+    assert "Barriereabstand:" in body
+    assert "Gate-Gruende (Anzahl):" in body
+    assert "Datenqualitaet: Quellen" in body
+    assert "gemessenen" in body  # _NO_MODEL_BEATS_NULL_DISCLOSURE
 
 
 # --------------------------------------------------------------------------

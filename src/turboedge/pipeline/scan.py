@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import hashlib
 import statistics
+import weakref
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -72,9 +73,12 @@ from turboedge.notifications.gmail import (
     SendResult,
 )
 from turboedge.notifications.templates import (
+    DailyResearchProtocolEntry,
+    NoActionableDigestContext,
     ScanReportContext,
     ScanReportRow,
     TradeProposalContext,
+    render_no_actionable_digest,
     render_scan_report,
     render_trade_proposal,
 )
@@ -159,6 +163,24 @@ _NO_MODEL_BEATS_NULL_DISCLOSURE = (
     "nicht durch einen erwiesenen Prognosevorteil gedeckt."
 )
 
+# In-process accumulator for the daily research protocol digest (Konzept 1.2
+# Abschnitt 16, see `_maybe_send_daily_research_protocol` below): keyed by
+# the `Store` instance (weakly -- entries for a closed/garbage-collected
+# store are dropped automatically, so this never leaks across an unrelated
+# test's or CLI invocation's own store) and then by UTC calendar date
+# (`date.isoformat()`), holding one `DailyResearchProtocolEntry` per
+# underlying scanned so far today *in this process*. Deliberately
+# in-memory, not persisted: `signals`/`source_health` have no store reader
+# (only `append_signal`/`append_source_health`), so cross-process
+# aggregation is not possible without a schema/reader change out of this
+# task's scope -- and not needed, since `scan-all` always re-scans every
+# enabled underlying from scratch on each of its (up to 5/weekday)
+# invocations, so a single process's own accumulation is already complete
+# whenever every enabled underlying succeeds within it.
+_DAILY_PROTOCOL_ENTRIES: weakref.WeakKeyDictionary[
+    Store, dict[str, list[DailyResearchProtocolEntry]]
+] = weakref.WeakKeyDictionary()
+
 
 class PriceSource(Protocol):
     """Structural contract for the underlying-price dependency (YFinancePriceAdapter-compatible)."""
@@ -215,6 +237,12 @@ class ScanResult:
     forecasts_written: int = 0
     actionable_notifications: list[SendResult] = field(default_factory=list)
     new_cluster_positions: list[OpenClusterPosition] = field(default_factory=list)
+    # Set only on the run that actually sent (or attempted and failed to
+    # send) the once-per-UTC-day research protocol digest -- see
+    # `_maybe_send_daily_research_protocol`. `None` on every other run that
+    # day, including the ones that merely contributed their underlying's
+    # entry to it.
+    daily_research_protocol_notification: SendResult | None = None
 
 
 # --------------------------------------------------------------------------
@@ -251,7 +279,7 @@ def _log_scan_diagnostics(
     candidates: Sequence[CandidateEvaluation],
     evaluation_time: datetime,
     fetch_duration_s: float,
-) -> None:
+) -> dict[str, int]:
     """Aggregated, redaction-safe diagnostics for comparing environments
     (e.g. local vs. CI) that a `TURBOEDGE_PUBLIC_LOGS=1` run still shows in
     full: per-issuer quote-age distribution at TWO distinct freshness
@@ -276,6 +304,11 @@ def _log_scan_diagnostics(
     (`reports/summary.json`). This makes the actual cause (stale quotes?
     which reject reason? how old, from which source, measured which way?)
     measurable from the log alone, without re-running locally or guessing.
+
+    Returns the same ``reject_reason_counts`` mapping it logs, so the daily
+    research protocol digest's "ABLEHNENDE BEDINGUNG" counters
+    (`_build_daily_protocol_entry`) reuse this one computation instead of
+    re-deriving it.
     """
     ages_by_issuer: dict[str, list[float]] = {}
     source_ages_by_issuer: dict[str, list[float]] = {}
@@ -302,6 +335,7 @@ def _log_scan_diagnostics(
         if c.category == Category.REJECT:
             reject_reason_counts.update(c.reasons)
 
+    counts = dict(reject_reason_counts.most_common())
     logger.info(
         "scan_diagnostics",
         underlying_id=underlying_id,
@@ -310,8 +344,9 @@ def _log_scan_diagnostics(
         fetch_duration_s=round(fetch_duration_s, 1),
         quote_age_stats_by_issuer=quote_age_stats_by_issuer,
         source_quote_age_stats_by_issuer=source_quote_age_stats_by_issuer,
-        reject_reason_counts=dict(reject_reason_counts.most_common()),
+        reject_reason_counts=counts,
     )
+    return counts
 
 
 def _candidate_id(isin: str, underlying_id: str, direction: Direction, horizon_days: int) -> str:
@@ -1207,6 +1242,203 @@ def _maybe_send_email(
         return SendResult(sent=False, dry_run=False, recipients=recipients, message=f"error: {exc}")
 
     dedup.mark_sent(n_hash, None, "SCAN_REPORT", subject, sent_at=clock())
+    return result
+
+
+# --------------------------------------------------------------------------
+# Daily research protocol digest (Konzept 1.2 Abschnitt 16) -- exactly one
+# mail per UTC calendar day, unconditionally (unlike `_maybe_send_email`
+# above and `_maybe_send_trade_proposals` below, both targeted per-event
+# alerts gated on a candidate actually landing in a specific category).
+# --------------------------------------------------------------------------
+
+_DECISIVE_REASON_SKIP: frozenset[str] = frozenset(
+    {"counter_baseline_signal", "p_ko_conservative_see_docs"}
+)
+
+
+def _decisive_reason(reasons: Sequence[str]) -> str | None:
+    """The first genuine gate reason in a candidate's ``reasons`` list.
+
+    Skips diagnostic annotations that are not gate outcomes:
+    ``counter_baseline_signal`` (pre-/post-EV, see `_process_products` /
+    `_run_ev_pipeline`'s ``carried_over``) and the EV pipeline's own
+    ``ev_horizon=...``/``p_ko_conservative_see_docs`` appended *after*
+    ``evaluate_gates`` runs. Ordering of these relative to the real gate
+    reasons differs pre- vs. post-EV (post-EV prepends
+    ``counter_baseline_signal``), so this filters by content rather than
+    trusting ``reasons[0]``. Returns ``None`` for an empty/all-diagnostic
+    list (e.g. ``ACTIONABLE``'s own ``["all_gates_passed"]`` is returned
+    verbatim -- that reason IS the gate outcome for that category).
+    """
+    for reason in reasons:
+        if reason in _DECISIVE_REASON_SKIP or reason.startswith("ev_horizon="):
+            continue
+        return reason
+    return None
+
+
+def _source_health_summary(health_records: Sequence[SourceHealthRecord]) -> str:
+    """``"source=STATUS, source=STATUS, ..."`` -- redaction-safe (no
+    ISIN/WKN/price), matching `_log_scan_diagnostics`'s own convention."""
+    if not health_records:
+        return "n/a"
+    return ", ".join(f"{r.source}={r.status.value}" for r in health_records)
+
+
+def _quote_age_summary(products: Sequence[ProductSnapshot], evaluation_time: datetime) -> str:
+    """Decision-time quote-age summary across every fetched product for one
+    underlying (not per-issuer like `_log_scan_diagnostics`'s own log line --
+    this is a single one-line digest entry, not a diagnostic log payload)."""
+    ages = [
+        quote_age_seconds(p.quote_timestamp, evaluation_time)
+        for p in products
+        if p.quote_timestamp is not None
+    ]
+    if not ages:
+        return "n/a"
+    stats = _quote_age_stats(ages)
+    return f"median {stats['median_s']}s, max {stats['max_s']}s (n={stats['n']})"
+
+
+def _build_daily_protocol_entry(
+    *,
+    underlying_id: str,
+    signal: SignalSnapshot | None,
+    candidates: Sequence[CandidateEvaluation],
+    evaluations_by_isin: Mapping[str, ProductHorizonEvaluation],
+    reject_reason_counts: Mapping[str, int],
+    products: Sequence[ProductSnapshot],
+    health_records: Sequence[SourceHealthRecord],
+    evaluation_time: datetime,
+) -> DailyResearchProtocolEntry:
+    """Build one underlying's block of the daily research protocol digest
+    from data this very scan call already computed in memory -- never a
+    second store query, so it works identically regardless of whether the
+    EV pipeline ran (``run_ev=False`` leaves every EV-only field ``None``,
+    i.e. "n/a" in the rendered mail -- CLAUDE.md rule 29, never guessed).
+
+    "Best" candidate = lowest category rank (ACTIONABLE < WATCH < REJECT <
+    DATA_QUALITY, `_CATEGORY_RANK`), highest ``lcb_ev`` as tiebreaker --
+    computed directly rather than trusting ``candidates[0]``, because the
+    EV pipeline updates categories in place without re-sorting the list
+    (`_run_ev_pipeline`'s ``EvPipelineResult.candidates`` preserves the
+    pre-EV order).
+    """
+    best: CandidateEvaluation | None = None
+    if candidates:
+        best = min(
+            candidates,
+            key=lambda c: (
+                _CATEGORY_RANK[c.category],
+                -(c.lcb_ev if c.lcb_ev is not None else float("-inf")),
+            ),
+        )
+
+    if best is None or best.category == Category.DATA_QUALITY:
+        status = "DATENQUALITAET"
+    elif best.category == Category.ACTIONABLE:
+        status = "VORSCHLAG"
+    else:
+        status = "KEIN TRADE"
+
+    best_ev = evaluations_by_isin.get(best.isin) if best is not None else None
+    median_product_ev: float | None = None
+    if evaluations_by_isin:
+        median_product_ev = statistics.median(
+            ev.mean_net_return for ev in evaluations_by_isin.values()
+        )
+
+    return DailyResearchProtocolEntry(
+        underlying_id=underlying_id,
+        status=status,
+        direction=(
+            signal.direction_hint.value
+            if signal is not None and signal.direction_hint is not None
+            else None
+        ),
+        signal_score=signal.score if signal is not None else None,
+        best_lcb_ev=best.lcb_ev if best is not None else None,
+        median_product_ev=median_product_ev,
+        best_p_ko=best_ev.p_ko if best_ev is not None else None,
+        best_distance_to_barrier_pct=(best.distance_to_barrier_pct if best is not None else None),
+        decisive_reason=_decisive_reason(best.reasons) if best is not None else None,
+        reject_reason_counts=dict(reject_reason_counts),
+        source_health_summary=_source_health_summary(health_records),
+        quote_age_summary=_quote_age_summary(products, evaluation_time),
+    )
+
+
+def _maybe_send_daily_research_protocol(
+    *,
+    cfg: TurboEdgeConfig,
+    store: Store,
+    options: ScanOptions,
+    notifier: GmailNotifier | None,
+    underlying_id: str,
+    entry: DailyResearchProtocolEntry,
+    clock: Callable[[], datetime],
+    warnings: list[str],
+) -> SendResult | None:
+    """Accumulate this underlying's entry for today's research protocol
+    digest and, once the last of ``cfg.universe.enabled_ids()`` has reported
+    in for the UTC calendar day, send exactly one digest mail covering every
+    underlying scanned so far today in this process (see
+    `_DAILY_PROTOCOL_ENTRIES`'s module-level docstring for why in-process
+    accumulation is both sufficient and necessary here).
+
+    Deduplicated via the existing `NotificationDeduplicator`, hashed only on
+    the UTC date -- so a later `scan-all` invocation the same day (the
+    production schedule runs it up to 5x/weekday, see
+    ``.github/workflows/pipeline.yml``) is a guaranteed no-op, and if the
+    last-enabled underlying fails this invocation, the next invocation that
+    succeeds through it (same day or, at worst, silently deferred past a
+    day boundary) sends instead -- never two mails for one day.
+
+    Gated on ``options.email``/``notifier`` like `_maybe_send_email` above,
+    plus ``cfg.gmail.daily_digest`` (see configs/gmail.yaml) -- the
+    dedicated on-by-default switch for this digest, independent of
+    ``send_on`` (which this digest deliberately never consults: it must go
+    out on an all-REJECT/all-DATA_QUALITY day too).
+    """
+    if not options.email or notifier is None or not cfg.gmail.daily_digest:
+        return None
+
+    today = clock().date()
+    per_day = _DAILY_PROTOCOL_ENTRIES.setdefault(store, {})
+    todays_entries = per_day.setdefault(today.isoformat(), [])
+    # Replace rather than duplicate if this underlying already contributed
+    # an entry today (e.g. a retried `scan-all` within the same process).
+    todays_entries[:] = [e for e in todays_entries if e.underlying_id != underlying_id]
+    todays_entries.append(entry)
+
+    expected = cfg.universe.enabled_ids()
+    if not expected or underlying_id != expected[-1]:
+        return None  # not the batch's last underlying yet -- wait for it
+
+    n_hash = notification_hash(None, "DAILY_RESEARCH_PROTOCOL", {"date": today.isoformat()})
+    dedup = NotificationDeduplicator(store)
+    if not dedup.should_send(n_hash):
+        return SendResult(sent=False, dry_run=False, recipients=[], message="skipped_duplicate")
+
+    context = NoActionableDigestContext(
+        run_date=today,
+        trial_id=_ROUTINE_TRIAL_ID,
+        entries=sorted(todays_entries, key=lambda e: e.underlying_id),
+        no_model_beats_null_disclosure=_NO_MODEL_BEATS_NULL_DISCLOSURE,
+    )
+    subject, body = render_no_actionable_digest(context)
+
+    recipients = notifier.credentials.recipients if notifier.credentials is not None else []
+    spec = EmailMessageSpec(subject=subject, body_text=body, to=recipients)
+    try:
+        result = notifier.send(spec)
+    except NotificationError as exc:
+        logger.error("daily_research_protocol_send_failed", error=str(exc))
+        _add_warning(warnings, f"daily_research_protocol_send_failed:{exc}")
+        return SendResult(sent=False, dry_run=False, recipients=recipients, message=f"error: {exc}")
+
+    dedup.mark_sent(n_hash, None, "DAILY_RESEARCH_PROTOCOL", subject, sent_at=clock())
     return result
 
 
@@ -2107,6 +2339,7 @@ def _run_scan_body(
     forecasts_written = 0
     actionable_notifications: list[SendResult] = []
     new_cluster_positions: list[OpenClusterPosition] = list(cluster_open_positions)
+    evaluations_by_isin: dict[str, ProductHorizonEvaluation] = {}
     if run_ev and usable_bars:
         models = list(forecast_models) if forecast_models is not None else default_forecast_models()
         effective_cluster_id = cluster_id if cluster_id is not None else f"single_{underlying_id}"
@@ -2131,6 +2364,7 @@ def _run_scan_body(
             warnings=warnings,
         )
         candidates = ev_result.candidates
+        evaluations_by_isin = ev_result.evaluations_by_isin
         if ev_result.forecast_records:
             forecasts_written = store.append_forecasts(ev_result.forecast_records)
         if ev_result.ledger_entries:
@@ -2153,7 +2387,7 @@ def _run_scan_body(
     for candidate in candidates:
         counts[candidate.category] += 1
 
-    _log_scan_diagnostics(
+    reject_reason_counts = _log_scan_diagnostics(
         underlying_id=underlying_id,
         products=products,
         candidates=candidates,
@@ -2178,6 +2412,27 @@ def _run_scan_body(
         send_on=cfg.gmail.send_on,
     )
 
+    daily_protocol_entry = _build_daily_protocol_entry(
+        underlying_id=underlying_id,
+        signal=signal,
+        candidates=candidates,
+        evaluations_by_isin=evaluations_by_isin,
+        reject_reason_counts=reject_reason_counts,
+        products=products,
+        health_records=health_records,
+        evaluation_time=evaluation_time,
+    )
+    daily_research_protocol_notification = _maybe_send_daily_research_protocol(
+        cfg=cfg,
+        store=store,
+        options=options,
+        notifier=notifier,
+        underlying_id=underlying_id,
+        entry=daily_protocol_entry,
+        clock=clock,
+        warnings=warnings,
+    )
+
     return ScanResult(
         run_id=run_id,
         signal=signal,
@@ -2190,6 +2445,7 @@ def _run_scan_body(
         forecasts_written=forecasts_written,
         actionable_notifications=actionable_notifications,
         new_cluster_positions=new_cluster_positions,
+        daily_research_protocol_notification=daily_research_protocol_notification,
     )
 
 

@@ -1,11 +1,11 @@
 """Jinja2 plaintext email templates for scan reports, test emails, trade
-proposals (Master Spec §34), position updates and the optional no-actionable
-digest."""
+proposals (Master Spec §34), position updates and the daily research
+protocol digest."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 
 from jinja2 import DictLoader, Environment, StrictUndefined
 
@@ -396,52 +396,93 @@ def render_position_update(context: PositionUpdateContext) -> tuple[str, str]:
 
 
 # --------------------------------------------------------------------------
-# No-actionable digest (opt-in only -- Contract v3 Abschnitt C)
+# Daily research protocol digest (Konzept 1.2 Abschnitt 16) -- exactly ONE
+# mail per UTC calendar day, sent even (especially) on a day with no
+# VORSCHLAG at all. This is deliberately distinct from Master Spec §34's
+# "kein taeglicher NO-TRADE-Spam": that rule forbids a mail per WATCH
+# candidate (there are >14000/day) or per scan run (up to 5/weekday); it
+# does not forbid a single, once-a-day summary of what the research system
+# concluded and why. See `pipeline.scan._maybe_send_daily_research_protocol`
+# for the dedup/accumulation mechanics (one hash keyed only by the date, via
+# the existing `NotificationDeduplicator`).
 # --------------------------------------------------------------------------
 
 
 @dataclass
+class DailyResearchProtocolEntry:
+    """One underlying's block in the daily research protocol digest.
+
+    Built from whatever this scan already computed in memory for the
+    underlying's best-ranked candidate -- never a second store query (see
+    `pipeline.scan._build_daily_protocol_entry`). Every EV-pipeline-only
+    field (``best_lcb_ev``, ``median_product_ev``, ``best_p_ko``) is
+    ``None`` when the EV pipeline did not run this call (``run_ev=False``)
+    or no candidate was evaluated -- rendered as "n/a", never guessed
+    (CLAUDE.md rule 29).
+    """
+
+    underlying_id: str
+    status: str  # "VORSCHLAG" | "KEIN TRADE" | "DATENQUALITAET"
+    direction: str | None
+    signal_score: float | None
+    best_lcb_ev: float | None
+    median_product_ev: float | None
+    best_p_ko: float | None
+    best_distance_to_barrier_pct: float | None
+    decisive_reason: str | None
+    reject_reason_counts: dict[str, int] = field(default_factory=dict)
+    source_health_summary: str = "n/a"
+    quote_age_summary: str = "n/a"
+
+
+@dataclass
 class NoActionableDigestContext:
-    """Only rendered when the operator has explicitly opted into a periodic
-    "nothing to trade" summary -- never sent by default (Contract v3: "Kein
-    täglicher 'kein Trade'-Spam")."""
+    """Context for :func:`render_no_actionable_digest` -- the daily research
+    protocol digest, one per UTC calendar day regardless of how many scans
+    ran that day (unlike every other template in this module, which is a
+    targeted per-event alert)."""
 
-    period_label: str
-    underlyings_scanned: list[str]
-    watch_counts: dict[str, int]
-    top_reasons: list[str]
+    run_date: date
+    trial_id: str
+    entries: list[DailyResearchProtocolEntry]
+    no_model_beats_null_disclosure: str
 
 
-_NO_ACTIONABLE_DIGEST_SUBJECT = "TurboEdge Digest — {{ period_label }} — no ACTIONABLE"
+_NO_ACTIONABLE_DIGEST_SUBJECT = "TurboEdge Forschungsprotokoll — {{ run_date.isoformat() }}"
 
-_NO_ACTIONABLE_DIGEST_BODY = """TurboEdge-DE Digest ({{ period_label }})
+_NO_ACTIONABLE_DIGEST_BODY = """FORSCHUNGSPROTOKOLL - KEINE HANDELSEMPFEHLUNG
 
-No ACTIONABLE candidates this period.
+Datum: {{ run_date.isoformat() }}
+Trial-ID: {{ trial_id }}
 
-Underlyings scanned: {{ underlyings_scanned | join(", ") }}
+{% for e in entries %}{{ e.underlying_id }} -- Status: {{ e.status }}
+  Richtung: {{ e.direction or "n/a" }}    Signalstaerke s: {{ e.signal_score | num }}
+  Bester Kandidat: LCB(EV) {{ e.best_lcb_ev | pct }}
+  Median-Produkt-EV: {{ e.median_product_ev | pct }}
+  P(KO): {{ e.best_p_ko | pct }}
+  Barriereabstand: {{ e.best_distance_to_barrier_pct | pct }}
+  Ablehnende Bedingung: {{ e.decisive_reason or "n/a" }}
+  Gate-Gruende (Anzahl):
+{% if e.reject_reason_counts %}{% for reason, count in e.reject_reason_counts.items() %}\
+    {{ reason }}: {{ count }}
+{% endfor %}{% else %}    keine
+{% endif %}  Datenqualitaet: Quellen [{{ e.source_health_summary }}]
+  Kursalter: {{ e.quote_age_summary }}
 
-WATCH counts:
-{% for underlying, count in watch_counts.items() %}  {{ underlying }}: {{ count }}
-{% endfor %}
-Most common reasons candidates did not reach ACTIONABLE:
-{% for reason in top_reasons %}  - {{ reason }}
-{% endfor %}
-This is expected and correct whenever no forecast model has a demonstrated
-out-of-sample edge (see W4 measurement) -- the system is designed to say
-"no trade" often (Master Spec).
+{% endfor %}{{ no_model_beats_null_disclosure }}
 
 Research system — manual execution only."""
 
 
 def render_no_actionable_digest(context: NoActionableDigestContext) -> tuple[str, str]:
-    """Render the opt-in periodic "no ACTIONABLE" digest."""
+    """Render the daily research protocol digest (subject, body)."""
     subject_tmpl = _env.from_string(_NO_ACTIONABLE_DIGEST_SUBJECT)
     body_tmpl = _env.from_string(_NO_ACTIONABLE_DIGEST_BODY)
     ctx = {
-        "period_label": context.period_label,
-        "underlyings_scanned": context.underlyings_scanned,
-        "watch_counts": context.watch_counts,
-        "top_reasons": context.top_reasons,
+        "run_date": context.run_date,
+        "trial_id": context.trial_id,
+        "entries": context.entries,
+        "no_model_beats_null_disclosure": context.no_model_beats_null_disclosure,
     }
     subject = subject_tmpl.render(**ctx)
     body = body_tmpl.render(**ctx)
@@ -449,6 +490,7 @@ def render_no_actionable_digest(context: NoActionableDigestContext) -> tuple[str
 
 
 __all__ = [
+    "DailyResearchProtocolEntry",
     "NoActionableDigestContext",
     "PositionUpdateContext",
     "ScanReportContext",

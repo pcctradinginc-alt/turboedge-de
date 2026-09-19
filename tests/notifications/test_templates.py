@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from turboedge.notifications.templates import (
+    DailyResearchProtocolEntry,
+    NoActionableDigestContext,
     ScanReportContext,
     ScanReportRow,
+    render_no_actionable_digest,
     render_scan_report,
     render_test_email,
 )
@@ -290,6 +293,139 @@ class TestScanReportRow:
 
         assert row.wkn is None
         assert row.leverage is None
+
+
+class TestRenderNoActionableDigest:
+    """Test render_no_actionable_digest() -- the daily research protocol
+    digest (Konzept 1.2 Abschnitt 16)."""
+
+    def _entry(self, **overrides: object) -> DailyResearchProtocolEntry:
+        kwargs: dict[str, object] = dict(
+            underlying_id="DAX",
+            status="KEIN TRADE",
+            direction="long",
+            signal_score=0.83,
+            best_lcb_ev=-0.012,
+            median_product_ev=-0.02,
+            best_p_ko=0.31,
+            best_distance_to_barrier_pct=0.18,
+            decisive_reason="lcb_ev_not_positive",
+            reject_reason_counts={"lcb_ev_not_positive": 5, "spread_too_high": 2},
+            source_health_summary="bnp=PASS, citi=PASS",
+            quote_age_summary="median 12.3s, max 45.0s (n=7)",
+        )
+        kwargs.update(overrides)
+        return DailyResearchProtocolEntry(**kwargs)  # type: ignore[arg-type]
+
+    def test_header_date_and_trial_id(self) -> None:
+        ctx = NoActionableDigestContext(
+            run_date=date(2026, 9, 19),
+            trial_id="TR-ROUTINE-SCAN",
+            entries=[self._entry()],
+            no_model_beats_null_disclosure="DISCLOSURE TEXT.",
+        )
+        subject, body = render_no_actionable_digest(ctx)
+
+        assert "2026-09-19" in subject
+        assert body.startswith("FORSCHUNGSPROTOKOLL - KEINE HANDELSEMPFEHLUNG")
+        assert "Datum: 2026-09-19" in body
+        assert "Trial-ID: TR-ROUTINE-SCAN" in body
+
+    def test_required_fields_present_per_underlying(self) -> None:
+        ctx = NoActionableDigestContext(
+            run_date=date(2026, 9, 19),
+            trial_id="TR-ROUTINE-SCAN",
+            entries=[self._entry()],
+            no_model_beats_null_disclosure="DISCLOSURE TEXT.",
+        )
+        _, body = render_no_actionable_digest(ctx)
+
+        assert "DAX -- Status: KEIN TRADE" in body
+        assert "Richtung: long" in body
+        assert "Signalstaerke s: 0.83" in body
+        assert "LCB(EV) -1.20%" in body
+        assert "Median-Produkt-EV: -2.00%" in body
+        assert "P(KO): 31.00%" in body
+        assert "Barriereabstand: 18.00%" in body
+        # the ABLEHNENDE BEDINGUNG: the deciding gate reason, plus counts
+        # per reason (`reject_reason_counts`, from `scan_diagnostics`).
+        assert "Ablehnende Bedingung: lcb_ev_not_positive" in body
+        assert "lcb_ev_not_positive: 5" in body
+        assert "spread_too_high: 2" in body
+        # data quality: source health + quote age.
+        assert "Datenqualitaet: Quellen [bnp=PASS, citi=PASS]" in body
+        assert "Kursalter: median 12.3s, max 45.0s (n=7)" in body
+        assert "DISCLOSURE TEXT." in body
+        assert body.endswith("Research system — manual execution only.")
+
+    def test_multiple_underlyings_each_get_own_block(self) -> None:
+        ctx = NoActionableDigestContext(
+            run_date=date(2026, 9, 19),
+            trial_id="TR-ROUTINE-SCAN",
+            entries=[
+                self._entry(underlying_id="DAX"),
+                self._entry(underlying_id="XAU", status="DATENQUALITAET"),
+            ],
+            no_model_beats_null_disclosure="DISCLOSURE TEXT.",
+        )
+        _, body = render_no_actionable_digest(ctx)
+
+        assert "DAX -- Status: KEIN TRADE" in body
+        assert "XAU -- Status: DATENQUALITAET" in body
+
+    def test_vorschlag_status_rendered(self) -> None:
+        ctx = NoActionableDigestContext(
+            run_date=date(2026, 9, 19),
+            trial_id="TR-ROUTINE-SCAN",
+            entries=[self._entry(status="VORSCHLAG", decisive_reason="all_gates_passed")],
+            no_model_beats_null_disclosure="DISCLOSURE TEXT.",
+        )
+        _, body = render_no_actionable_digest(ctx)
+
+        assert "DAX -- Status: VORSCHLAG" in body
+
+    def test_none_fields_render_as_na(self) -> None:
+        ctx = NoActionableDigestContext(
+            run_date=date(2026, 9, 19),
+            trial_id="TR-ROUTINE-SCAN",
+            entries=[
+                self._entry(
+                    status="DATENQUALITAET",
+                    direction=None,
+                    signal_score=None,
+                    best_lcb_ev=None,
+                    median_product_ev=None,
+                    best_p_ko=None,
+                    best_distance_to_barrier_pct=None,
+                    decisive_reason=None,
+                    reject_reason_counts={},
+                    source_health_summary="n/a",
+                    quote_age_summary="n/a",
+                )
+            ],
+            no_model_beats_null_disclosure="DISCLOSURE TEXT.",
+        )
+        _, body = render_no_actionable_digest(ctx)
+
+        assert "Richtung: n/a" in body
+        assert "Ablehnende Bedingung: n/a" in body
+        assert "keine" in body  # no reject_reason_counts at all
+        assert body.count("n/a") >= 5
+
+    def test_no_underlyings_still_renders_header_and_disclosure(self) -> None:
+        """A digest with zero entries (e.g. every underlying failed before
+        contributing one) must still be a well-formed, sendable mail -- the
+        whole point is that the user always gets exactly one mail/day."""
+        ctx = NoActionableDigestContext(
+            run_date=date(2026, 9, 19),
+            trial_id="TR-ROUTINE-SCAN",
+            entries=[],
+            no_model_beats_null_disclosure="DISCLOSURE TEXT.",
+        )
+        _, body = render_no_actionable_digest(ctx)
+
+        assert "FORSCHUNGSPROTOKOLL - KEINE HANDELSEMPFEHLUNG" in body
+        assert "DISCLOSURE TEXT." in body
 
 
 class TestScanReportContext:

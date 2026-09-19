@@ -34,6 +34,8 @@ from turboedge.storage.schemas import (
     ExitReason,
     ForecastRecord,
     Instrument,
+    KoCalibrationPromotionRecord,
+    KoCalibrationResultRecord,
     LedgerEntry,
     LedgerEntryStatus,
     LedgerLabel,
@@ -212,6 +214,9 @@ _DDL_STATEMENTS: tuple[str, ...] = (
         financing_spread_source VARCHAR,
         premium_over_fair DOUBLE,
         premium_uncertainty_term DOUBLE,
+        p_ko_raw DOUBLE,
+        p_ko_calibrated DOUBLE,
+        ko_calibrator_version VARCHAR,
         PRIMARY KEY (run_id, candidate_id)
     )
     """,
@@ -462,6 +467,37 @@ _DDL_STATEMENTS: tuple[str, ...] = (
         params VARCHAR NOT NULL
     )
     """,
+    # -- W10: KO-probability calibration (docs/measured_results.md §3, ---------
+    # backtest/ko_calibration.py). Additive only.
+    """
+    CREATE TABLE IF NOT EXISTS ko_calibration_results (
+        run_id VARCHAR NOT NULL,
+        method VARCHAR NOT NULL,
+        breakdown_dim VARCHAR NOT NULL,
+        breakdown_value VARCHAR NOT NULL,
+        n INTEGER NOT NULL,
+        brier DOUBLE NOT NULL,
+        calibration_intercept DOUBLE,
+        calibration_slope DOUBLE,
+        ece DOUBLE NOT NULL,
+        mean_signed_error DOUBLE NOT NULL,
+        absolute_calibration_error DOUBLE NOT NULL,
+        evaluated_at TIMESTAMPTZ NOT NULL,
+        config_hash VARCHAR NOT NULL,
+        git_commit VARCHAR,
+        PRIMARY KEY (run_id, method, breakdown_dim, breakdown_value)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS ko_calibration_promotion (
+        run_id VARCHAR PRIMARY KEY,
+        promoted_method VARCHAR,
+        reason VARCHAR NOT NULL,
+        evaluated_at TIMESTAMPTZ NOT NULL,
+        config_hash VARCHAR NOT NULL,
+        git_commit VARCHAR
+    )
+    """,
 )
 
 _ALL_TABLES: tuple[str, ...] = (
@@ -485,6 +521,8 @@ _ALL_TABLES: tuple[str, ...] = (
     "forecasts",
     "position_evaluations",
     "walkforward_results",
+    "ko_calibration_results",
+    "ko_calibration_promotion",
 )
 
 # Append-only log of every additive column migration `Store.init_schema()`
@@ -1733,6 +1771,94 @@ class Store:
                 latest[key] = r
         return sorted(latest.values(), key=lambda r: (r.model_id, r.horizon_days))
 
+    # -- KO-probability calibration (W10) --------------------------------------
+
+    def append_ko_calibration_results(self, records: Sequence[KoCalibrationResultRecord]) -> int:
+        """Append breakdown rows from one ``backtest.ko_calibration.run_ko_calibration``
+        run. Not deduplicated (like ``append_walkforward_results``): a re-run
+        is a new measurement, kept in full history."""
+        if not records:
+            return 0
+        rows = [_ko_calibration_result_row(r) for r in records]
+        self._conn.executemany(
+            f"INSERT INTO ko_calibration_results ({', '.join(_KO_CALIBRATION_RESULT_COLUMNS)}) "
+            f"VALUES ({', '.join(['?'] * len(_KO_CALIBRATION_RESULT_COLUMNS))})",
+            rows,
+        )
+        return len(rows)
+
+    def list_ko_calibration_results(
+        self, *, run_id: str | None = None, method: str | None = None
+    ) -> list[KoCalibrationResultRecord]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if run_id is not None:
+            clauses.append("run_id = ?")
+            params.append(run_id)
+        if method is not None:
+            clauses.append("method = ?")
+            params.append(method)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self._conn.execute(
+            f"SELECT {', '.join(_KO_CALIBRATION_RESULT_COLUMNS)} FROM ko_calibration_results "
+            f"{where} ORDER BY evaluated_at ASC, method ASC, "
+            "breakdown_dim ASC, breakdown_value ASC",
+            params,
+        ).fetchall()
+        return [_row_to_ko_calibration_result(row) for row in rows]
+
+    def insert_ko_calibration_promotion(self, record: KoCalibrationPromotionRecord) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO ko_calibration_promotion (
+                run_id, promoted_method, reason, evaluated_at, config_hash, git_commit
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            [
+                record.run_id,
+                record.promoted_method,
+                record.reason,
+                _to_utc(record.evaluated_at),
+                record.config_hash,
+                record.git_commit,
+            ],
+        )
+
+    def get_ko_calibration_promotion(self, run_id: str) -> KoCalibrationPromotionRecord | None:
+        row = self._conn.execute(
+            "SELECT run_id, promoted_method, reason, evaluated_at, config_hash, git_commit "
+            "FROM ko_calibration_promotion WHERE run_id = ?",
+            [run_id],
+        ).fetchone()
+        if row is None:
+            return None
+        return KoCalibrationPromotionRecord(
+            run_id=row[0],
+            promoted_method=row[1],
+            reason=row[2],
+            evaluated_at=_from_db_dt(row[3]),
+            config_hash=row[4],
+            git_commit=row[5],
+        )
+
+    def latest_ko_calibration_promotion(self) -> KoCalibrationPromotionRecord | None:
+        """Most recently evaluated promotion decision across all runs, or
+        ``None`` if ``run_ko_calibration`` has never been persisted."""
+        row = self._conn.execute(
+            "SELECT run_id, promoted_method, reason, evaluated_at, config_hash, git_commit "
+            "FROM ko_calibration_promotion ORDER BY evaluated_at DESC LIMIT 1"
+        ).fetchone()
+        if row is None:
+            return None
+        return KoCalibrationPromotionRecord(
+            run_id=row[0],
+            promoted_method=row[1],
+            reason=row[2],
+            evaluated_at=_from_db_dt(row[3]),
+            config_hash=row[4],
+            git_commit=row[5],
+        )
+
 
 # --------------------------------------------------------------------------
 # row (de)serialization helpers
@@ -1944,6 +2070,9 @@ _CANDIDATE_COLUMNS: tuple[str, ...] = (
     "financing_spread_source",
     "premium_over_fair",
     "premium_uncertainty_term",
+    "p_ko_raw",
+    "p_ko_calibrated",
+    "ko_calibrator_version",
 )
 
 
@@ -1976,6 +2105,9 @@ def _candidate_row(c: CandidateEvaluation) -> tuple[Any, ...]:
         c.financing_spread_source,
         c.premium_over_fair,
         c.premium_uncertainty_term,
+        c.p_ko_raw,
+        c.p_ko_calibrated,
+        c.ko_calibrator_version,
     )
 
 
@@ -2009,6 +2141,9 @@ def _row_to_candidate(row: tuple[Any, ...]) -> CandidateEvaluation:
         financing_spread_source=row[24],
         premium_over_fair=row[25],
         premium_uncertainty_term=row[26],
+        p_ko_raw=row[27],
+        p_ko_calibrated=row[28],
+        ko_calibrator_version=row[29],
     )
 
 
@@ -2514,6 +2649,62 @@ def _row_to_walkforward(row: tuple[Any, ...]) -> WalkforwardResultRecord:
         config_hash=row[15],
         git_commit=row[16],
         params=json.loads(row[17]),
+    )
+
+
+_KO_CALIBRATION_RESULT_COLUMNS: tuple[str, ...] = (
+    "run_id",
+    "method",
+    "breakdown_dim",
+    "breakdown_value",
+    "n",
+    "brier",
+    "calibration_intercept",
+    "calibration_slope",
+    "ece",
+    "mean_signed_error",
+    "absolute_calibration_error",
+    "evaluated_at",
+    "config_hash",
+    "git_commit",
+)
+
+
+def _ko_calibration_result_row(r: KoCalibrationResultRecord) -> tuple[Any, ...]:
+    return (
+        r.run_id,
+        r.method,
+        r.breakdown_dim,
+        r.breakdown_value,
+        r.n,
+        r.brier,
+        r.calibration_intercept,
+        r.calibration_slope,
+        r.ece,
+        r.mean_signed_error,
+        r.absolute_calibration_error,
+        _to_utc(r.evaluated_at),
+        r.config_hash,
+        r.git_commit,
+    )
+
+
+def _row_to_ko_calibration_result(row: tuple[Any, ...]) -> KoCalibrationResultRecord:
+    return KoCalibrationResultRecord(
+        run_id=row[0],
+        method=row[1],
+        breakdown_dim=row[2],
+        breakdown_value=row[3],
+        n=row[4],
+        brier=row[5],
+        calibration_intercept=row[6],
+        calibration_slope=row[7],
+        ece=row[8],
+        mean_signed_error=row[9],
+        absolute_calibration_error=row[10],
+        evaluated_at=_from_db_dt(row[11]),
+        config_hash=row[12],
+        git_commit=row[13],
     )
 
 

@@ -368,6 +368,23 @@ class CandidateEvaluation(BaseModel):
     # ranking, NOT a return forecast. `None` for a product with no ask
     # (leverage cannot be computed).
     cost_rank_score: float | None = None
+    # KO-calibration additions (Workstream W10, docs/measured_results.md §3 /
+    # backtest/ko_calibration.py): the *raw* path-simulation P(KO)
+    # (simulation/paths.py + simulation/barrier.py, uncalibrated) and, once
+    # the scan pipeline is wired to populate it (not this change -- schema
+    # and persistence only), the corresponding out-of-sample-calibrated
+    # value plus which calibrator version produced it (e.g.
+    # "ko_calibrator_isotonic_v1", or "raw" if no calibrator has been
+    # promoted yet -- backtest/ko_calibration.py's promotion rule).
+    # ranking/gates.py deliberately keeps gating on the conservative raw
+    # P(KO) until a calibrator is promoted (docs/measured_results.md §3);
+    # both values are additive, `None` until populated, and both are kept
+    # permanently once set (never overwritten by a later recalibration --
+    # a new `ko_calibrator_version` gets its own value, the old one is not
+    # silently replaced in already-persisted rows).
+    p_ko_raw: float | None = None
+    p_ko_calibrated: float | None = None
+    ko_calibrator_version: str | None = None
 
 
 # Master data & operational models (not in the spec excerpt, needed by the
@@ -768,3 +785,57 @@ class WalkforwardResultRecord(BaseModel):
     config_hash: str
     git_commit: str | None = None
     params: dict[str, Any] = Field(default_factory=dict)
+
+
+# -- W10: KO-probability calibration (docs/measured_results.md §3, --------------
+# backtest/ko_calibration.py). Additive only, mirrors WalkforwardResultRecord's
+# own persistence pattern.
+
+
+class KoCalibrationResultRecord(BaseModel):
+    """One breakdown row of a ``backtest.ko_calibration.run_ko_calibration``
+    out-of-sample evaluation, persisted to ``ko_calibration_results``.
+
+    ``method`` is ``"raw"`` (uncalibrated ``p_ko_raw``, evaluated the same
+    walk-forward way as every candidate, for an apples-to-apples baseline)
+    or one of the candidate calibrator methods (``"identity"``,
+    ``"isotonic"``, ``"platt"``). ``breakdown_dim``/``breakdown_value``
+    identify which slice this row summarizes: ``("overall", "overall")``,
+    ``("horizon", "10")``, ``("direction", "long")``,
+    ``("sigma_bucket", "1.5")``, ``("underlying", "DAX")`` or
+    ``("regime", "high_vol")``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    method: str
+    breakdown_dim: str
+    breakdown_value: str
+    n: int = Field(ge=0)
+    brier: float
+    calibration_intercept: float | None = None
+    calibration_slope: float | None = None
+    ece: float
+    mean_signed_error: float
+    absolute_calibration_error: float
+    evaluated_at: TzAwareDatetime
+    config_hash: str
+    git_commit: str | None = None
+
+
+class KoCalibrationPromotionRecord(BaseModel):
+    """One row of ``ko_calibration_promotion``: the promotion decision for
+    one ``run_ko_calibration`` run (docs/measured_results.md §3 promotion
+    rule -- improves OOS calibration over raw P(KO) without materially
+    worsening the conservative tail-risk bias at the 1.5-2 sigma barrier
+    distances that matter for gating)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    promoted_method: str | None = None
+    reason: str
+    evaluated_at: TzAwareDatetime
+    config_hash: str
+    git_commit: str | None = None

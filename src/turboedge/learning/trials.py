@@ -113,6 +113,89 @@ def new_trial_id(
     return trial_id
 
 
+# -- W9 2026Q3 ledger backfill (GOVERNANCE.md §11.1) -------------------------
+#
+# Measured 2026-09-19: `research_trials` held 0 rows although GOVERNANCE.md
+# §11.1 documents six consumed 2026Q3 trials (`W9-2026Q3-001` .. `-006`,
+# `state/registry/failed_hypotheses.json`). `new_trial_id` is the only
+# writer of `research_trials` and nothing ever called it for these six --
+# they were recorded straight into the failed-hypotheses graveyard by a
+# different code path (`turboedge.learning.failed_hypotheses`), in its own
+# format, with `quarter=null`. Effect: `count_research_trials_in_quarter`
+# undercounts the spent 2026Q3 budget (GOVERNANCE.md §1.2) and any N_effective
+# derived from `research_trials` for multiple-testing deflation would be too
+# small. This backfill adds the missing rows under their *original*
+# trial_ids (never rewritten to the `TR-YYYYQn-<hex>` format `new_trial_id`
+# mints for new trials -- these six already have a documented, citable id).
+_W9_BACKFILL_QUARTER = "2026Q3"
+# GOVERNANCE.md §11.1: "W9 (2026-09-13)".
+_W9_BACKFILL_CREATED_AT = datetime(2026, 9, 13, tzinfo=UTC)
+_W9_BACKFILL_TRIALS: tuple[tuple[str, str], ...] = (
+    ("W9-2026Q3-001", "voltarget_tsmom"),
+    ("W9-2026Q3-002", "lowvol_regime_trend"),
+    ("W9-2026Q3-003", "reversal_short_horizon"),
+    ("W9-2026Q3-004", "vix_term_structure"),
+    ("W9-2026Q3-005", "cross_asset_leadlag"),
+    ("W9-2026Q3-006", "seasonality_turn_of_month"),
+)
+
+
+def _w9_backfill_description(feature: str) -> str:
+    return (
+        f"GOVERNANCE.md §11.1 W9 (2026-09-13) pre-registered challenger signal "
+        f"family {feature!r}, one of the six 2026Q3 trials consumed against the "
+        "quarterly adaptation budget (§1.2). Measured dormant (ladder rule not "
+        "cleared, §11.3); full per-cell numbers in "
+        "state/registry/failed_hypotheses.json and SIGNAL_REGISTRY.md §3.2."
+    )
+
+
+def backfill_w9_trials(store: Store, *, dry_run: bool = False) -> list[str]:
+    """Idempotently backfill the six GOVERNANCE.md §11.1 W9 2026Q3 trials
+    into ``research_trials``.
+
+    For each of the six documented ``trial_id``s, inserts a
+    :class:`~turboedge.storage.schemas.ResearchTrial` row (``quarter =
+    "2026Q3"``, ``status = DORMANT``, ``kind = "feature"``, ``created_at =
+    2026-09-13`` -- the W9 measurement date) *unless a row with that
+    trial_id already exists* (``trial_id`` is ``research_trials``'s primary
+    key), in which case that trial_id is silently skipped rather than
+    raising or duplicating -- safe to call repeatedly (running it twice adds
+    nothing the second time), and safe against a CI run starting from a
+    fresh, empty database.
+
+    Original trial_ids (``W9-2026Q3-001`` .. ``-006``) are preserved exactly
+    as documented in GOVERNANCE.md §11.1 -- never rewritten into the
+    ``new_trial_id``-minted ``TR-YYYYQn-<hex>`` format, which is reserved for
+    trials created going forward.
+
+    Args:
+        store: Open ``Store`` the backfill is persisted through.
+        dry_run: If ``True``, computes and returns which trial_ids are still
+            missing (would be inserted) without writing anything.
+
+    Returns:
+        The trial_ids that were inserted (or, under ``dry_run``, would be).
+    """
+    result: list[str] = []
+    for trial_id, feature in _W9_BACKFILL_TRIALS:
+        if store.get_research_trial(trial_id) is not None:
+            continue
+        if not dry_run:
+            store.insert_research_trial(
+                ResearchTrial(
+                    trial_id=trial_id,
+                    kind="feature",
+                    description=_w9_backfill_description(feature),
+                    created_at=_W9_BACKFILL_CREATED_AT,
+                    quarter=_W9_BACKFILL_QUARTER,
+                    status=TrialStatus.DORMANT,
+                )
+            )
+        result.append(trial_id)
+    return result
+
+
 def effective_number_of_trials(store: Store, quarter: str | None = None) -> int:
     """Count of research trials issued so far, optionally scoped to one
     quarter (``"2026Q3"``).
@@ -130,6 +213,7 @@ def effective_number_of_trials(store: Store, quarter: str | None = None) -> int:
 __all__ = [
     "TrialBudgetExceeded",
     "TrialsConfig",
+    "backfill_w9_trials",
     "effective_number_of_trials",
     "new_trial_id",
 ]

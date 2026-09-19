@@ -40,6 +40,7 @@ from turboedge.learning.labeler import label_due_entries
 from turboedge.learning.ledger import ForwardLedger
 from turboedge.learning.posterior import StrategyPosterior
 from turboedge.learning.registry import ModelRegistry
+from turboedge.learning.trials import backfill_w9_trials
 from turboedge.models.directional import (
     LogisticDirectionModel,
     NullModel,
@@ -697,6 +698,35 @@ def backtest_cmd(
     _write_summary("backtest", {"rows_written": rows_written}, underlyings=ids)
 
 
+# --------------------------------------------------------------------------
+# research backfill-trials
+# --------------------------------------------------------------------------
+
+
+def research_backfill_trials_cmd(
+    ctx: typer.Context,
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Report which trial_ids would be inserted, without writing"
+    ),
+) -> None:
+    """Backfill the six GOVERNANCE.md §11.1 W9 2026Q3 trials into
+    ``research_trials`` (idempotent; a second run adds nothing)."""
+    app_ctx = ctx.obj
+    with Store(app_ctx.db_path) as store:
+        store.init_schema()
+        before = store.count_research_trials_in_quarter("2026Q3")
+        inserted = backfill_w9_trials(store, dry_run=dry_run)
+        after = before if dry_run else store.count_research_trials_in_quarter("2026Q3")
+
+    counts: dict[str, Any] = {"trials_before": before}
+    counts["trials_would_insert" if dry_run else "trials_inserted"] = len(inserted)
+    counts["trials_after"] = after
+    _print_counts("research backfill-trials", counts)
+    if inserted:
+        console.print(f"  {'would insert' if dry_run else 'inserted'}: {', '.join(inserted)}")
+    _write_summary("research_backfill_trials", counts, dry_run=dry_run, trial_ids=inserted)
+
+
 def register_learn_commands(app: typer.Typer, position_app: typer.Typer) -> None:
     """Wire every Contract v3 integration-wave command into the main CLI.
     Called once from ``cli.py``::
@@ -717,6 +747,7 @@ def register_learn_commands(app: typer.Typer, position_app: typer.Typer) -> None
 
     research_app = typer.Typer(help="Research governance")
     research_app.command("tournament")(research_tournament_cmd)
+    research_app.command("backfill-trials")(research_backfill_trials_cmd)
     app.add_typer(research_app, name="research")
 
 

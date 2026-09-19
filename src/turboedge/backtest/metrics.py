@@ -7,9 +7,16 @@ from __future__ import annotations
 
 import numpy as np
 import numpy.typing as npt
+from sklearn.linear_model import LogisticRegression  # type: ignore[import-untyped]
 
 _DEFAULT_ECE_BINS = 10
 _LOG_LOSS_EPS = 1e-12
+# Regularization strength for the calibration-intercept/slope logistic fit
+# (Cox calibration, Steyerberg et al.): large C approximates the classical
+# unregularized MLE while still converging cleanly on small/separable
+# samples (some (horizon, direction, sigma_bucket) cells have very few or
+# even zero realized positives -- see calibration_slope_intercept).
+_COX_CALIBRATION_C = 1e4
 
 
 def _as_prob_and_label(
@@ -73,6 +80,81 @@ def expected_calibration_error(
     curve = reliability_curve(p, y, n_bins=n_bins)
     total = p_arr.size
     return float(sum(count * abs(mean_p - mean_y) for mean_p, mean_y, count in curve) / total)
+
+
+def calibration_slope_intercept(
+    p: npt.NDArray[np.float64], y: npt.NDArray[np.float64]
+) -> tuple[float, float]:
+    """Cox calibration intercept and slope (Steyerberg et al.): fit
+    ``y ~ intercept + slope * logit(p)`` by logistic regression.
+
+    Perfect calibration is ``intercept == 0.0`` and ``slope == 1.0``;
+    ``slope < 1`` means predictions are too extreme (overconfident away
+    from the base rate), ``slope > 1`` too conservative (underconfident);
+    ``intercept != 0`` means the predictions are systematically offset
+    from the true base rate even where their relative ordering is fine.
+
+    ``p`` is clipped to ``[eps, 1-eps]`` before taking ``logit`` (a
+    predicted probability of exactly 0 or 1 has no finite logit). Returns
+    ``(nan, nan)`` when ``y`` has only one class -- the slope/intercept are
+    then not identifiable (this is common for far-out-of-the-money barrier
+    buckets where realized knock-outs never or always occur in a fold).
+    """
+    p_arr, y_arr = _as_prob_and_label(p, y)
+    if np.unique(y_arr).size < 2:
+        return float("nan"), float("nan")
+    eps = 1e-6
+    clipped = np.clip(p_arr, eps, 1.0 - eps)
+    logit_p = np.log(clipped / (1.0 - clipped)).reshape(-1, 1)
+    model = LogisticRegression(max_iter=1000, C=_COX_CALIBRATION_C)
+    model.fit(logit_p, y_arr)
+    slope = float(model.coef_[0][0])
+    intercept = float(model.intercept_[0])
+    return intercept, slope
+
+
+def calibration_intercept(p: npt.NDArray[np.float64], y: npt.NDArray[np.float64]) -> float:
+    """Cox calibration intercept; see :func:`calibration_slope_intercept`."""
+    return calibration_slope_intercept(p, y)[0]
+
+
+def calibration_slope(p: npt.NDArray[np.float64], y: npt.NDArray[np.float64]) -> float:
+    """Cox calibration slope; see :func:`calibration_slope_intercept`."""
+    return calibration_slope_intercept(p, y)[1]
+
+
+def mean_signed_error(p: npt.NDArray[np.float64], y: npt.NDArray[np.float64]) -> float:
+    """Mean ``(y - p)``: the signed bias of predictions against outcomes.
+
+    Positive means predictions understate the realized frequency (e.g. a
+    P(KO) too low -- an unsafe direction for a risk gate); negative means
+    predictions overstate it (e.g. a P(KO) too high -- the conservative
+    direction documented for the raw path-simulation P(KO) in
+    ``docs/measured_results.md`` §3). Unlike :func:`brier_score`, sign is
+    preserved rather than squared away, so this is the metric to check when
+    asking "which direction is the bias in", not "how large is the error".
+    """
+    p_arr, y_arr = _as_prob_and_label(p, y)
+    return float(np.mean(y_arr - p_arr))
+
+
+def absolute_calibration_error(
+    p: npt.NDArray[np.float64], y: npt.NDArray[np.float64], n_bins: int = _DEFAULT_ECE_BINS
+) -> float:
+    """Unweighted mean ``|mean_predicted - mean_observed|`` over non-empty
+    equal-width bins.
+
+    Contrast with :func:`expected_calibration_error`, which weights each
+    bin's contribution by its observation count: a bin with few
+    observations counts the same here as a densely populated one, so a
+    sparsely populated but badly miscalibrated region (e.g. a large,
+    rarely-touched barrier-distance bucket) is not diluted away by a much
+    larger, well-calibrated bin the way it would be in ECE.
+    """
+    curve = reliability_curve(p, y, n_bins=n_bins)
+    if not curve:
+        raise ValueError("no non-empty bins")
+    return float(np.mean([abs(mean_p - mean_y) for mean_p, mean_y, _count in curve]))
 
 
 def sharpe(returns: npt.NDArray[np.float64], periods_per_year: float = 252.0) -> float:

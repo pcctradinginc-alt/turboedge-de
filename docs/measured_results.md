@@ -350,29 +350,53 @@ on the same products (DAX: `source_quote_stale` 9,900 and
 `quote_age_at_decision` 9,900 of 10,022). This is correct behavior — the
 quotes genuinely are hours old — not a regression.
 
-### Learning loop: first run on real data
+### Learning loop on real data
 
 The evening chain (label → learn → position reevaluate) first processed
-real data on 2026-09-17 (run 35287791715):
+real data on 2026-09-17, and scaled up sharply on the second night as the
+forward ledger matured:
 
-- `label`: labeled = 221, ko = 1, ambiguous = 0, missing_data = 0
-- `learn`: posteriors_updated = 4, models_reweighted = 0, drift_events = 3
-- `position reevaluate`: mails_sent = 0
+| | 2026-09-17 (run 35287791715) | 2026-09-18 (run 35406176313) |
+|---|---|---|
+| labeled entries | 221 | 2,854 |
+| of which knocked out | 1 | 29 |
+| ambiguous / missing_data | 0 / 0 | 0 / 0 |
+| posteriors_updated | 4 | 20 |
+| models_reweighted | **0** | **0** |
+| drift_events | 3 | 19 |
+| position reevaluate: mails_sent | 0 | 0 |
 
-`models_reweighted = 0` is consistent with sections 1–2: there is no model
-with a measured advantage to re-weight toward. `drift_events = 3` are
-Page-Hinkley detections, which reduce weights but never delete a model
-(rule 32).
+`models_reweighted = 0` on both nights is consistent with sections 1–2:
+there is no model with a measured advantage to re-weight toward. The drift
+events are Page-Hinkley detections, which reduce weights but never delete a
+model (rule 32). Knock-outs run at roughly 1% of labeled entries (29 of
+2,854), which is a realized-outcome observation, not a validated model.
 
 ### Open risk: state growth is not yet bounded
 
-The encrypted state artifact grew monotonically from 43.6 MB (2026-09-14)
-to 168.8 MB (2026-09-18); the database reached 241.2 MB. `db compact` on
-2026-09-17 removed **0 of 517,548 rows**. That is correct, not a defect:
-with `keep_days: 5` and the first data written 2026-09-13, every row was
-still inside the retention window, so nothing was eligible for thinning
-(the 241.2 → 229.7 MB reduction that run came purely from the file
-rewrite). Thinning first becomes eligible from 2026-09-18.
+The encrypted state artifact grew from 43.6 MB (2026-09-14) to 176.5 MB
+(2026-09-19), though not monotonically — recent runs fluctuate between
+162.0 and 176.5 MB, since each run's artifact reflects that run's own pack.
+The database itself does grow steadily: 241.2 MB on 2026-09-17, 277.6 MB on
+2026-09-18.
+
+`db compact` has so far removed **0 rows on every run** — 0 of 517,548 on
+2026-09-17, 0 of 625,263 on 2026-09-18 — and both are correct rather than
+defects, for two different reasons:
+
+- On 2026-09-17 nothing had aged out at all: with `keep_days: 5` and the
+  first data written 2026-09-13, every row was still inside the window.
+- On 2026-09-18 the window had moved past 2026-09-13, but that day carried
+  exactly one scheduled run (34775837861, 18:50 UTC). Thinning reduces aged
+  rows to one per (ISIN, UTC calendar day), and with a single scan every
+  ISIN already had exactly one row for that day, so there was nothing to
+  reduce. An earlier version of this section predicted thinning would bite
+  from 2026-09-18; that prediction was wrong for this reason.
+
+The first day carrying multiple scans (2026-09-14, five runs) leaves the
+window on the night of 2026-09-19, which is the first run where thinning
+can actually remove anything. The file-size drops those runs did show
+(241.2 → 229.7 MB, 277.6 → 275.0 MB) came purely from the file rewrite.
 
 Projected effect, measured against the local database (69,428 rows):
 reducing aged rows to one per (ISIN, UTC calendar day) leaves 26,499 rows,

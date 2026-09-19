@@ -31,6 +31,7 @@ from turboedge.state.archive import (
     unpack_state,
     unpack_state_subset,
 )
+from turboedge.state.backend import StateBackend, StateBackendError, backend_from_env
 from turboedge.state.crypto import StateCryptoError
 from turboedge.state.retention import (
     DEFAULT_HARD_DELETE_AFTER_DAYS,
@@ -327,6 +328,131 @@ def state_restore_snapshots(
     )
 
 
+backend_app = typer.Typer(
+    help=(
+        "Durable, versioned remote/local backend for encrypted state archives "
+        "(Phase H -- see docs/durable_state.md). Opt-in via TURBOEDGE_STATE_BACKEND; "
+        "a fallback layer UNDER the GitHub Actions artifact, not a replacement for it."
+    )
+)
+
+
+def _require_backend() -> StateBackend:
+    try:
+        backend = backend_from_env()
+    except StateBackendError as exc:
+        err_console.print(f"[red]Durable state backend misconfigured: {exc}[/red]")
+        raise typer.Exit(code=2) from exc
+    if backend is None:
+        err_console.print(
+            "[yellow]TURBOEDGE_STATE_BACKEND is not set -- no durable remote/local backend "
+            "configured. See docs/durable_state.md.[/yellow]"
+        )
+        raise typer.Exit(code=2)
+    return backend
+
+
+@backend_app.command("put")
+def backend_put(
+    key: str = typer.Option(..., "--key", help="Logical key to version this archive under"),
+    in_path: str = typer.Option(
+        ..., "--in", help="Local path of the (already-encrypted) archive to upload"
+    ),
+) -> None:
+    """Upload --in as a brand-new, immutable version of --key.
+
+    Never overwrites a previous version. Exit codes: 0 ok, 2 backend not
+    configured/misconfigured, missing --in file, or any upload/verification
+    failure (checksum mismatch, unreachable backend, ...).
+    """
+    backend = _require_backend()
+    src = Path(in_path)
+    if not src.is_file():
+        err_console.print(f"[red]No such file: {src}[/red]")
+        raise typer.Exit(code=2)
+
+    try:
+        version_id = backend.put(src, key)
+    except StateBackendError as exc:
+        err_console.print(f"[red]Backend put failed: {exc}[/red]")
+        raise typer.Exit(code=2) from exc
+
+    logger.info("state_backend_put", key=key, version_id=version_id, in_path=str(src))
+    console.print(f"[green]Uploaded {src} as key={key!r} version={version_id}[/green]")
+
+
+@backend_app.command("get")
+def backend_get(
+    key: str = typer.Option(..., "--key", help="Logical key to fetch"),
+    out: str = typer.Option(..., "--out", help="Local path to write the downloaded archive to"),
+    version: str | None = typer.Option(
+        None, "--version", help="Specific version_id to fetch (default: the latest)"
+    ),
+) -> None:
+    """Download a version of --key (the latest, unless --version is given)
+    to --out, verifying its checksum before writing.
+
+    Exit codes: 0 ok, 2 backend not configured/misconfigured, key/version
+    not found, unreachable backend, or a checksum mismatch. Never writes a
+    partial/corrupted file on failure.
+    """
+    backend = _require_backend()
+    out_path = Path(out)
+
+    try:
+        fetched_version = backend.get(key, out_path, version=version)
+    except StateBackendError as exc:
+        err_console.print(f"[red]Backend get failed: {exc}[/red]")
+        raise typer.Exit(code=2) from exc
+
+    logger.info("state_backend_get", key=key, version_id=fetched_version, out_path=str(out_path))
+    console.print(f"[green]Downloaded key={key!r} version={fetched_version} -> {out_path}[/green]")
+
+
+@backend_app.command("list-versions")
+def backend_list_versions(
+    key: str = typer.Option(..., "--key", help="Logical key to list versions of"),
+) -> None:
+    """List every version of --key, oldest first.
+
+    Exit codes: 0 ok (including zero versions found), 2 backend not
+    configured/misconfigured or unreachable.
+    """
+    backend = _require_backend()
+    try:
+        versions = backend.list_versions(key)
+    except StateBackendError as exc:
+        err_console.print(f"[red]Backend list-versions failed: {exc}[/red]")
+        raise typer.Exit(code=2) from exc
+
+    table = Table(title=f"backend versions for key={key!r}")
+    table.add_column("version_id")
+    table.add_column("created_at (UTC)")
+    table.add_column("size (bytes)", justify="right")
+    table.add_column("sha256")
+    for v in versions:
+        table.add_row(v.version_id, v.created_at.isoformat(), str(v.size), v.sha256)
+    console.print(table)
+    if not versions:
+        console.print(f"[yellow]No versions found for key={key!r}.[/yellow]")
+
+
+@backend_app.command("health")
+def backend_health() -> None:
+    """Check whether the configured durable backend is reachable right now.
+
+    Exit codes: 0 reachable, 1 configured but unreachable, 2 not
+    configured/misconfigured.
+    """
+    backend = _require_backend()
+    result = backend.health()
+    if result.reachable:
+        console.print(f"[green]Backend reachable: {result.reason}[/green]")
+        raise typer.Exit(code=0)
+    err_console.print(f"[red]Backend unreachable: {result.reason}[/red]")
+    raise typer.Exit(code=1)
+
+
 def db_compact(
     ctx: typer.Context,
     keep_days: int = typer.Option(
@@ -395,12 +521,13 @@ def db_compact(
 
 
 def register_state_commands(app: typer.Typer, db_app: typer.Typer) -> None:
-    """Wire ``state pack``/``state unpack`` and ``db compact`` into the main
-    CLI. Called once from ``cli.py``::
+    """Wire ``state pack``/``state unpack``/``state backend *`` and
+    ``db compact`` into the main CLI. Called once from ``cli.py``::
 
         from turboedge.cli_state import register_state_commands
         register_state_commands(app, db_app)
     """
+    state_app.add_typer(backend_app, name="backend")
     app.add_typer(state_app, name="state")
     db_app.command("compact")(db_compact)
 

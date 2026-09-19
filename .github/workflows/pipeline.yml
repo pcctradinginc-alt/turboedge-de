@@ -64,6 +64,16 @@ name: Pipeline
 # its mode -- see the comments on the composite actions themselves for why
 # the restore step never silently starts from an empty state, and for the
 # `--limit 50` search-depth choice.
+#
+# Phase H, "dauerhafte Lernhistorie": every artifact shape above is still
+# bounded (14 or 90 days) by GitHub's own retention limits. An OPTIONAL
+# durable state backend (`turboedge.state.backend`, TURBOEDGE_STATE_BACKEND
+# below) sits underneath all of it as a fallback, not a replacement: the
+# `eod` job additionally pushes its packed archive there (bounded growth --
+# once/day, not the scan job's 5x/day), and `turboedge-state`'s restore
+# tries it if -- and only if -- no usable GitHub artifact was found in the
+# last 50 successful runs. Unset TURBOEDGE_STATE_BACKEND and every job
+# behaves exactly as before this existed. See docs/durable_state.md.
 
 on:
   schedule:
@@ -105,6 +115,26 @@ concurrency:
 
 env:
   TURBOEDGE_PUBLIC_LOGS: "1"
+  # Phase H, "dauerhafte Lernhistorie": optional durable state backend
+  # (turboedge.state.backend) underneath the GitHub Actions artifact above
+  # -- see docs/durable_state.md. Entirely opt-in: when the
+  # TURBOEDGE_STATE_BACKEND secret does not exist, GitHub Actions resolves
+  # it to an empty string, `turboedge state backend *` fails fast without
+  # any network call, and every job behaves exactly as it did before this
+  # feature existed. Set at workflow level (not per-job) so the restore
+  # composite action's case-B fallback (every mode) and the eod job's
+  # durable push both see the same configuration without threading six
+  # separate inputs through two composite actions. Never printed/logged by
+  # anything in this repo -- job env values do not appear in `::error::`/
+  # `::warning::`/console output unless a step explicitly echoes them, and
+  # nothing here does.
+  TURBOEDGE_STATE_BACKEND: ${{ secrets.TURBOEDGE_STATE_BACKEND }}
+  TURBOEDGE_STATE_S3_BUCKET: ${{ secrets.TURBOEDGE_STATE_S3_BUCKET }}
+  TURBOEDGE_STATE_S3_ACCESS_KEY_ID: ${{ secrets.TURBOEDGE_STATE_S3_ACCESS_KEY_ID }}
+  TURBOEDGE_STATE_S3_SECRET_ACCESS_KEY: ${{ secrets.TURBOEDGE_STATE_S3_SECRET_ACCESS_KEY }}
+  TURBOEDGE_STATE_S3_ENDPOINT_URL: ${{ secrets.TURBOEDGE_STATE_S3_ENDPOINT_URL }}
+  TURBOEDGE_STATE_S3_REGION: ${{ secrets.TURBOEDGE_STATE_S3_REGION }}
+  TURBOEDGE_STATE_S3_PREFIX: ${{ secrets.TURBOEDGE_STATE_S3_PREFIX }}
 
 jobs:
   # ---------------------------------------------------------------------
@@ -315,11 +345,19 @@ jobs:
           mode: eod
           state_note: ${{ steps.state.outputs.state_note }}
 
+      # push_to_backend: "true" only here (not scan/weekly/monthly) -- eod
+      # is the once-a-day checkpoint AFTER label -> learn -> reevaluate ->
+      # compact, i.e. the most meaningfully-updated state of the day, and
+      # once/day keeps a user's optional remote bucket growing at a bounded
+      # rate rather than 5x/day. Entirely a no-op if TURBOEDGE_STATE_BACKEND
+      # is unset -- see turboedge-state-pack/action.yml and
+      # docs/durable_state.md.
       - name: Pack and upload state
         if: success()
         uses: ./.github/actions/turboedge-state-pack
         with:
           state_key: ${{ secrets.TURBOEDGE_STATE_KEY }}
+          push_to_backend: "true"
 
   # ---------------------------------------------------------------------
   # weekly -- Saturday: research tournament + keepalive (re-enable every

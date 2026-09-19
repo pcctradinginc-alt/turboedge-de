@@ -198,6 +198,10 @@ turboedge state pack --out state.tar.enc [--include-snapshots]
 turboedge state pack-snapshots --run-id ID [--run-id ID ...] --out PATH    # incremental per-scan Parquet snapshot artifact
 turboedge state unpack --in state.tar.enc [--allow-missing]
 turboedge state restore-snapshots --in state-full.tar.enc                  # additive merge of state/snapshots/ only (manual/ad hoc use)
+turboedge state backend put --key KEY --in PATH                            # optional durable backend (Phase H) -- see docs/durable_state.md
+turboedge state backend get --key KEY --out PATH [--version V]
+turboedge state backend list-versions --key KEY
+turboedge state backend health
 ```
 
 ---
@@ -220,8 +224,12 @@ packed back into an **encrypted** GitHub Actions artifact at the start and
 end of every job — not the previous 7-day GitHub Actions cache. A genuine
 first run starts fresh (logged); if prior successful runs exist but none
 of the last 50 carry a usable artifact, the run fails loudly instead of
-silently discarding history. `workflow_dispatch` with
-`allow_fresh_state: true` forces a deliberate reset.
+silently discarding history — unless an optional durable backend (Phase H,
+`TURBOEDGE_STATE_BACKEND`, see `docs/durable_state.md`) is configured and
+has a usable version, in which case that is restored instead and the run
+proceeds normally; only when *neither* the artifact *nor* the backend has
+anything does it fail loudly. `workflow_dispatch` with
+`allow_fresh_state: true` forces a deliberate reset regardless.
 
 Three artifact shapes keep this bounded rather than growing forever (see
 `state/archive.py`'s module docstring, "Parquet archiving", for the full
@@ -253,6 +261,14 @@ fixed below):
   of `state/snapshots/` from a manual `--include-snapshots` export) still
   exists as a manual recovery tool, but nothing in `pipeline.yml` calls it
   automatically anymore.
+
+**Durable state backend (Phase H, optional):** all three artifact shapes
+above are still bounded by GitHub's own retention limits. An optional
+backend underneath them (`turboedge.state.backend`, S3-compatible or
+local, `TURBOEDGE_STATE_BACKEND`) is versioned forever with no retention
+limit of its own — the `eod` job pushes to it once a day, and every job's
+restore falls back to it before aborting. Unset by default; see
+`docs/durable_state.md` for setup and `turboedge state backend --help`.
 
 Two other workflows: **`tests.yml`** (every push/PR: ruff, mypy, pytest,
 live tests excluded by default) and **`source-health.yml`** (cron Mon–Fri
@@ -297,6 +313,14 @@ Set it locally and as a GitHub Actions secret alongside the Gmail ones
 above. **Losing this key makes the encrypted state archive permanently
 unrecoverable** — a wrong key on unpack fails loudly (exit 2) rather than
 silently producing garbage.
+
+**Durable state backend (optional, Phase H):** `TURBOEDGE_STATE_BACKEND`
+and, for the S3-compatible backend, `TURBOEDGE_STATE_S3_BUCKET` /
+`TURBOEDGE_STATE_S3_ACCESS_KEY_ID` / `TURBOEDGE_STATE_S3_SECRET_ACCESS_KEY`
+/ `TURBOEDGE_STATE_S3_ENDPOINT_URL` / `TURBOEDGE_STATE_S3_REGION` /
+`TURBOEDGE_STATE_S3_PREFIX` — see `docs/durable_state.md` for the full
+setup guide (which provider, IAM scoping, verification steps). Entirely
+optional; every job behaves exactly as before if these are left unset.
 
 ---
 
@@ -343,7 +367,12 @@ just wrote as its own small, 90-day-retention artifact — see "Pipeline
 modes and schedule" above. **Encrypted archive:** `turboedge state
 pack`/`unpack` (lean by default, `--include-snapshots` for a manual/ad hoc
 full export) and `turboedge state pack-snapshots` (the incremental
-artifact `pipeline.yml`'s scan job actually uses).
+artifact `pipeline.yml`'s scan job actually uses). **Durable backend
+(optional, Phase H):** `turboedge state backend put/get/list-versions`
+version the already-encrypted output of `state pack` on a pluggable
+backend (S3-compatible or local, `TURBOEDGE_STATE_BACKEND`) with no
+retention limit — a fallback underneath the 14/90-day GitHub Actions
+artifacts above, not a replacement for them; see `docs/durable_state.md`.
 
 ---
 
@@ -407,7 +436,12 @@ chflags -R nohidden /Users/cc/Desktop/TURBO\ EDGE/turboedge-de/.venv
   `state/snapshots/` (the Parquet reproducibility archive) is unaffected
   either way — it is archived separately and incrementally by every scan
   run (`turboedge-snapshots-<run_id>`, 90-day retention); see "Pipeline
-  modes and schedule" above.
+  modes and schedule" above. **Mitigated, opt-in:** an optional durable
+  backend (`turboedge state backend put/get/list-versions/health`,
+  `TURBOEDGE_STATE_BACKEND`) sits underneath the 14-day artifact as a
+  fallback with no retention limit of its own — see
+  `docs/durable_state.md`. Still bounded when unconfigured (the default);
+  this is a real gap only until a backend is set up.
 - **2010–2026 sample is a near-uninterrupted bull market** — every
   Sharpe/PSR/DSR-style statistic in this codebase is inflated by secular
   drift and shared identically by the null model itself (see

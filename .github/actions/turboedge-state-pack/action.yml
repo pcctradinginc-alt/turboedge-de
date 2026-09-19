@@ -49,6 +49,30 @@ inputs:
     description: "Local filename for the packed archive before upload."
     required: false
     default: "state.tar.enc"
+  push_to_backend:
+    description: >-
+      "true" to also push this archive to the optional durable state
+      backend (`turboedge state backend put`, Phase H -- see
+      docs/durable_state.md) after packing/uploading the GitHub Actions
+      artifact above. The backend is entirely opt-in: if
+      TURBOEDGE_STATE_BACKEND is unset (the default -- nothing configured),
+      this step is skipped with a note rather than failing. If a backend
+      IS configured and the push fails (bad credentials, unreachable
+      endpoint, checksum verification failure, ...), this step -- and
+      therefore the calling job -- fails loudly instead of silently
+      continuing, so a broken durable backend is never silently ignored.
+      The GitHub Actions artifact above is uploaded either way, unaffected
+      by this step's outcome.
+    required: false
+    default: "false"
+  backend_key:
+    description: >-
+      Logical key this archive is versioned under in the durable backend
+      (turboedge.state.backend). Distinct backend_key values keep distinct
+      archive streams (e.g. the routine lean archive vs. a longer-cadence
+      backup) as separate, independently-listable version histories.
+    required: false
+    default: "lean"
 
 runs:
   using: composite
@@ -73,3 +97,31 @@ runs:
         name: ${{ inputs.artifact_name }}
         path: ${{ inputs.out_file }}
         retention-days: ${{ inputs.retention_days }}
+
+    # ------------------------------------------------------------------
+    # Optional durable push (Phase H, "dauerhafte Lernhistorie"): the
+    # GitHub Actions artifact above is bounded by `retention_days` (14 or
+    # 90) -- this pushes the SAME already-encrypted bytes to a
+    # user-configured backend (turboedge.state.backend) with no expiry of
+    # its own, so years of forward-ledger/posterior/model-registry/trial
+    # history survive well past any GitHub artifact retention window. Never
+    # replaces the artifact upload above; TURBOEDGE_STATE_BACKEND/
+    # TURBOEDGE_STATE_S3_* come from job-level env (pipeline.yml), sourced
+    # from repo secrets -- never logged, never written to the repo. See
+    # docs/durable_state.md.
+    # ------------------------------------------------------------------
+    - name: Push to durable state backend (optional)
+      if: inputs.push_to_backend == 'true'
+      shell: bash
+      env:
+        OUT_FILE: ${{ inputs.out_file }}
+        BACKEND_KEY: ${{ inputs.backend_key }}
+      run: |
+        set -euo pipefail
+        if [[ -z "${TURBOEDGE_STATE_BACKEND:-}" ]]; then
+          echo "TURBOEDGE_STATE_BACKEND is not set -- no durable backend configured, skipping " \
+               "the durable push (the GitHub Actions artifact above still covers the normal " \
+               "retention window; see docs/durable_state.md to opt in)."
+          exit 0
+        fi
+        uv run turboedge --state-dir ./state state backend put --key "${BACKEND_KEY}" --in "${OUT_FILE}"

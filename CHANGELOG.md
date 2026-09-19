@@ -411,6 +411,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `pipeline/scan.py` are unmodified — gates keep consuming raw P(KO).
   Full breakdown: `docs/measured_results.md` §3.1.
 
+- **Phase H: durable, pluggable state backend** (`state/backend.py`,
+  `state/backend_s3.py`, `cli_state.py`'s `state backend` command group).
+  The entire learning state (DuckDB with `forward_ledger`,
+  `strategy_posteriors`, `model_registry`, `research_trials`, plus
+  `registry/`/`ledger/`/`trials/`) previously lived exclusively in a
+  14-day GitHub Actions artifact (`turboedge-state-enc`) — measured risk,
+  not hypothetical: on 2026-09-14 only one of three scheduled scans fired,
+  37 minutes late, and public repos auto-disable scheduled workflows after
+  60 days idle. Adds an OPTIONAL durable layer underneath that mechanism
+  (never a replacement for it): a `StateBackend` protocol
+  (`put`/`get`/`list_versions`/`health`), a `LocalStateBackend` (versioned,
+  atomic temp-file+`os.replace`, checksum-verified), and one S3-compatible
+  remote backend (`S3CompatibleStateBackend`, works with AWS S3 and any
+  S3-compatible provider — Cloudflare R2, Backblaze B2, Wasabi, MinIO, ... —
+  via `endpoint_url`, so no vendor lock-in for years of history; optional
+  `boto3` dependency, `uv sync --extra state-remote`). Every version is
+  append-only (a new `put` never overwrites/deletes a previous one),
+  checksummed on both `put` and `get` (S3-side via `Content-MD5`, which
+  makes the server itself reject a truncated/corrupted upload; local-side
+  via a re-verified temp-file copy before the atomic rename), and a
+  failure — unreachable backend, wrong credentials, checksum mismatch —
+  always raises `StateBackendError` rather than silently falling back to
+  an empty/fresh state. Credentials come exclusively from
+  `TURBOEDGE_STATE_S3_*` environment variables, never the repo or logs.
+  `.github/actions/turboedge-state/action.yml`'s existing three-case
+  restore logic (A: genuine first run, empty state OK; B: prior runs exist
+  but no usable artifact in the last 50, abort unless
+  `allow_fresh_state`; C: usable artifact found, restore normally) is
+  preserved exactly — the backend is consulted only as a fallback inside
+  case B, before the loud abort, making that case narrower, never wider.
+  `.github/actions/turboedge-state-pack/action.yml` gains an opt-in
+  `push_to_backend` input; `pipeline.yml`'s `eod` job (once/day, after
+  label→learn→reevaluate→compact) is the only caller that sets it, keeping
+  a configured bucket's growth bounded rather than uploading the ~168 MB
+  archive 5x/day. Unset `TURBOEDGE_STATE_BACKEND` (the default) and every
+  job behaves byte-for-byte as before this existed. See
+  `docs/durable_state.md` for the full setup guide.
+
 ### Planned
 
 - Further data sources (Eurex, Euwax, Cboe, FRED, CFTC) — no current plan.

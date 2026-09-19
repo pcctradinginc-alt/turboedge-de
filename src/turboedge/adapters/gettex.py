@@ -212,7 +212,13 @@ from turboedge.adapters.base import (
 )
 from turboedge.config import SourceConfig
 from turboedge.pricing.intrinsic import implied_underlying
-from turboedge.storage.schemas import Direction, HealthStatus, ProductSnapshot, ProductType
+from turboedge.storage.schemas import (
+    Direction,
+    FieldReliability,
+    HealthStatus,
+    ProductSnapshot,
+    ProductType,
+)
 from turboedge.universe.underlying_map import get_underlying_meta, resolve_underlying_id
 
 logger = structlog.get_logger(__name__)
@@ -940,6 +946,28 @@ def _headers(user_agent: str) -> dict[str, str]:
     return {"User-Agent": user_agent, "Accept": "application/json"}
 
 
+def _ratio_reliability_for_outcome(outcome: str) -> FieldReliability:
+    """Map :meth:`GettexAdapter._derive_ratio`'s outcome string to the
+    field-level reliability tier a resulting product should carry (Phase B,
+    "Produktstammdaten haerten").
+
+    Only ``"ok"`` -- a ratio that was both derived AND independently
+    verified against the leverage-implied reference spot (module docstring
+    steps 1-4) -- earns ``DERIVED_VERIFIED``; every other outcome
+    (``"ratio_rejected"``, ``"verification_failed"``, ``"quanto_ambiguous"``)
+    maps to ``UNVERIFIED``, the honest default (CLAUDE.md rule 29).
+
+    In :meth:`fetch_products` today, a non-``"ok"`` outcome never reaches a
+    ``ProductSnapshot`` at all (``ratio`` is a required, pricing-critical
+    field on that model -- there is nothing to attach an ``UNVERIFIED``
+    ratio *to*), so every snapshot this adapter actually emits currently
+    gets ``DERIVED_VERIFIED``. This function is exercised directly by
+    contract tests so the mapping's "otherwise UNVERIFIED" half stays
+    correct and testable independent of that (today-incidental) fact.
+    """
+    return FieldReliability.DERIVED_VERIFIED if outcome == "ok" else FieldReliability.UNVERIFIED
+
+
 # -- adapter -----------------------------------------------------------------
 
 
@@ -1401,6 +1429,17 @@ class GettexAdapter:
                         product_age_days=None,
                         underlying_price_ref=row.underlying_price_ref,
                         underlying_price_ref_timestamp=row.underlying_price_ref_timestamp,
+                        # ratio: derived-and-verified (see
+                        # `_ratio_reliability_for_outcome`; `outcome == "ok"`
+                        # is guaranteed here). barrier/financing_level: gettex
+                        # reports `koLevelRefCurAbsolute`/
+                        # `financingLevelRefCurAbsolute` directly as raw feed
+                        # fields (no derivation, unlike ratio) -- SOURCE_REPORTED,
+                        # same tier BNP/Citi use for their own directly-reported
+                        # master data.
+                        ratio_reliability=_ratio_reliability_for_outcome(outcome),
+                        barrier_reliability=FieldReliability.SOURCE_REPORTED,
+                        financing_level_reliability=FieldReliability.SOURCE_REPORTED,
                         raw_hash=_raw_hash(row.raw),
                         observation_time=observation_time,
                         available_at=now,

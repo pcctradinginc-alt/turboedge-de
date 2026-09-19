@@ -24,7 +24,13 @@ from turboedge.config import TurboEdgeConfig
 from turboedge.pipeline.scan import ScanOptions, run_scan
 from turboedge.provenance import new_run_id
 from turboedge.storage.duckdb import Store
-from turboedge.storage.schemas import Category, Direction, LedgerEntryStatus, ProductSnapshot
+from turboedge.storage.schemas import (
+    Category,
+    Direction,
+    FieldReliability,
+    LedgerEntryStatus,
+    ProductSnapshot,
+)
 
 _EVAL_TIME = datetime(2026, 6, 15, 9, 0, tzinfo=UTC)
 
@@ -237,6 +243,59 @@ def test_run_scan_with_rng_writes_forecasts_and_ledger_and_can_reach_actionable(
         # Even if this seed does not clear every gate, the reasons must show
         # exactly which EV gate stopped it (never a silent WATCH).
         assert any(r.startswith("ev_horizon=") for r in candidate.reasons)
+
+
+def test_ratio_unverified_prevents_actionable_end_to_end(
+    cfg: TurboEdgeConfig,
+    store: Store,
+    tmp_path: Path,
+    make_product_adapter: Callable[..., Any],
+    make_price_adapter: Callable[..., Any],
+    make_estr_adapter: Callable[..., Any],
+    make_notifier: Callable[..., Any],
+    dax_product_factory: Callable[..., ProductSnapshot],
+    strong_uptrend_bars: Any,
+) -> None:
+    """Phase B ("Produktstammdaten haerten"): the exact same near-zero-cost,
+    strong-uptrend setup that reaches ACTIONABLE in
+    ``test_run_scan_with_rng_writes_forecasts_and_ledger_and_can_reach_actionable``
+    must never do so once the candidate's Bezugsverhaeltnis is UNVERIFIED --
+    it still runs the full EV pipeline and lands in the ledger/shadow sample,
+    just never as ACTIONABLE.
+    """
+    product = _cheap_favorable_long(dax_product_factory).model_copy(
+        update={"ratio_reliability": FieldReliability.UNVERIFIED}
+    )
+    assert product.ratio_reliability == FieldReliability.UNVERIFIED
+    adapter = make_product_adapter("source_a", products=[product])
+    price_adapter = make_price_adapter(bars_by_underlying={"DAX": strong_uptrend_bars})
+    notifier = make_notifier()
+
+    result = run_scan(
+        **_base_kwargs(
+            cfg=cfg,
+            store=store,
+            tmp_path=tmp_path,
+            product_adapters=[adapter],
+            price_adapter=price_adapter,
+            estr_adapter=make_estr_adapter(),
+            notifier=notifier,
+            rng=np.random.default_rng(1234),  # same seed as the sibling ACTIONABLE-reaching test
+        ),
+        options=ScanOptions(underlying_id="DAX", email=True),
+    )
+
+    assert result.forecasts_written > 0
+    candidate = next(c for c in result.candidates if c.isin == "DE000FAVLNG1")
+    assert candidate.category != Category.ACTIONABLE
+    if candidate.category == Category.WATCH:
+        assert "ratio_unverified" in candidate.reasons
+
+    # Still fully present in the forward ledger (Master Spec Sec25/46: never
+    # dropped or hidden just because it can't be ACTIONABLE) -- we need it
+    # to measure future improvements to master-data verification.
+    ledger_rows = store.list_ledger_entries()
+    assert any(entry.selected_isin == "DE000FAVLNG1" for entry, _label in ledger_rows)
 
 
 def test_run_scan_with_rng_and_too_little_history_degrades_gracefully(

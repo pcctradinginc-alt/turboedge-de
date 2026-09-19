@@ -45,6 +45,7 @@ from turboedge.adapters.gettex import (
     _leverage_scaled_ratio_snap_tolerance,
     _leverage_scaled_verification_tolerance,
     _normalize_issuer,
+    _ratio_reliability_for_outcome,
     _register,
     _robust_fx_median,
     _robust_reference_spot,
@@ -53,7 +54,13 @@ from turboedge.adapters.gettex import (
 )
 from turboedge.adapters.registry import PRODUCT_ADAPTER_FACTORIES, ProductSourceAdapter
 from turboedge.config import SourceConfig
-from turboedge.storage.schemas import Direction, HealthStatus, ProductSnapshot, ProductType
+from turboedge.storage.schemas import (
+    Direction,
+    FieldReliability,
+    HealthStatus,
+    ProductSnapshot,
+    ProductType,
+)
 
 FIXTURES_DIR = Path(__file__).resolve().parent.parent / "fixtures" / "gettex"
 PRODUCTS_URL = f"{_GETTEX_DEFAULT_BASE_URL}{_GETTEX_PRODUCTS_PATH}"
@@ -377,6 +384,13 @@ def test_fetch_products_derives_ratio_for_at_least_20_long_and_short() -> None:
     assert len(snapshots) >= 20
     assert all(isinstance(s, ProductSnapshot) for s in snapshots)
     assert all(s.ratio == pytest.approx(0.01) for s in snapshots)
+    # Phase B: every snapshot this call emits passed derive-then-verify
+    # (outcome == "ok"), so ratio_reliability is always DERIVED_VERIFIED;
+    # barrier/financing_level are raw gettex feed fields (no derivation),
+    # so SOURCE_REPORTED.
+    assert all(s.ratio_reliability == FieldReliability.DERIVED_VERIFIED for s in snapshots)
+    assert all(s.barrier_reliability == FieldReliability.SOURCE_REPORTED for s in snapshots)
+    assert all(s.financing_level_reliability == FieldReliability.SOURCE_REPORTED for s in snapshots)
     assert all(s.currency == "EUR" for s in snapshots)
     assert all(s.underlying_currency == "EUR" for s in snapshots)
     assert all(s.quanto is None for s in snapshots)  # EUR underlying -> not applicable
@@ -461,6 +475,32 @@ def test_verification_fails_and_drops_manipulated_row() -> None:
         "verification" in errors_for_row[0].error.lower()
         or "quanto" in errors_for_row[0].error.lower()
     )
+    # Phase B: a row that fails verification never reaches a ProductSnapshot
+    # at all (`ratio` is a required, pricing-critical field -- there is
+    # nothing to attach an UNVERIFIED ratio to), which is exactly what
+    # `test_ratio_reliability_for_outcome_maps_every_non_ok_outcome_to_unverified`
+    # below verifies directly at the mapping-function level.
+
+
+# ===========================================================================
+# Phase B ("Produktstammdaten haerten"): ratio_reliability mapping
+# ===========================================================================
+
+
+def test_ratio_reliability_for_outcome_ok_is_derived_verified() -> None:
+    assert _ratio_reliability_for_outcome("ok") == FieldReliability.DERIVED_VERIFIED
+
+
+@pytest.mark.parametrize("outcome", ["ratio_rejected", "verification_failed", "quanto_ambiguous"])
+def test_ratio_reliability_for_outcome_maps_every_non_ok_outcome_to_unverified(
+    outcome: str,
+) -> None:
+    # Mirrors _derive_ratio's actual outcome strings -- see fetch_products'
+    # outcome handling. Every one of these currently means the row never
+    # reaches a ProductSnapshot at all (see the manipulated-row test above),
+    # but the mapping itself must stay correct and testable independent of
+    # that fact.
+    assert _ratio_reliability_for_outcome(outcome) == FieldReliability.UNVERIFIED
 
 
 # ===========================================================================

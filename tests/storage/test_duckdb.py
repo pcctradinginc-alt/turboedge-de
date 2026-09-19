@@ -13,6 +13,7 @@ from turboedge.storage.schemas import (
     Category,
     CostDecomposition,
     Direction,
+    FieldReliability,
     HealthStatus,
     ManualPosition,
     NotificationRecord,
@@ -101,6 +102,45 @@ def test_append_and_upsert_product_snapshots(store: Store, make_product_snapshot
     assert row is not None
     first_seen, last_seen = row
     assert first_seen <= last_seen
+
+
+def test_product_snapshot_field_reliability_roundtrips(
+    store: Store,
+    make_product_snapshot,  # type: ignore[no-untyped-def]
+) -> None:
+    """Phase B: `ratio_reliability`/`barrier_reliability`/
+    `financing_level_reliability` survive an append + read-back exactly,
+    including the honest UNVERIFIED default when a caller never sets them."""
+    default_snap = make_product_snapshot(isin="DE000FLDRL01")
+    assert default_snap.ratio_reliability == FieldReliability.UNVERIFIED
+    assert default_snap.barrier_reliability == FieldReliability.UNVERIFIED
+    assert default_snap.financing_level_reliability == FieldReliability.UNVERIFIED
+
+    explicit_snap = make_product_snapshot(
+        isin="DE000FLDRL02",
+        ratio_reliability=FieldReliability.SOURCE_REPORTED,
+        barrier_reliability=FieldReliability.DERIVED_VERIFIED,
+        financing_level_reliability=FieldReliability.CROSS_SOURCE_VERIFIED,
+    )
+    store.append_product_snapshots([default_snap, explicit_snap])
+
+    roundtripped_default = store.latest_product_snapshot_at_or_before(
+        "DE000FLDRL01", default_snap.observation_time
+    )
+    assert roundtripped_default is not None
+    assert roundtripped_default.ratio_reliability == FieldReliability.UNVERIFIED
+    assert roundtripped_default.barrier_reliability == FieldReliability.UNVERIFIED
+    assert roundtripped_default.financing_level_reliability == FieldReliability.UNVERIFIED
+
+    roundtripped_explicit = store.latest_product_snapshot_at_or_before(
+        "DE000FLDRL02", explicit_snap.observation_time
+    )
+    assert roundtripped_explicit is not None
+    assert roundtripped_explicit.ratio_reliability == FieldReliability.SOURCE_REPORTED
+    assert roundtripped_explicit.barrier_reliability == FieldReliability.DERIVED_VERIFIED
+    assert roundtripped_explicit.financing_level_reliability == (
+        FieldReliability.CROSS_SOURCE_VERIFIED
+    )
 
 
 def test_append_product_snapshots_empty_list_is_noop(store: Store) -> None:
@@ -497,24 +537,48 @@ def test_init_schema_adds_missing_column_to_old_product_snapshots_table(
     with Store(db_path) as store:
         store.init_schema()
 
-        # the missing column now exists, and the pre-existing row has NULL
-        # for it (never guessed/backfilled) rather than the insert failing
+        # the missing columns now exist, and the pre-existing row has NULL
+        # for them (never guessed/backfilled) rather than the insert failing
         # or the column being silently skipped
         row = store._conn.execute(
-            "SELECT isin, underlying_price_ref_timestamp FROM product_snapshots "
+            "SELECT isin, underlying_price_ref_timestamp, ratio_reliability, "
+            "barrier_reliability, financing_level_reliability FROM product_snapshots "
             "WHERE isin = 'DE000OLD0001'"
         ).fetchone()
         assert row is not None
         assert row[0] == "DE000OLD0001"
         assert row[1] is None
+        assert row[2] is None
+        assert row[3] is None
+        assert row[4] is None
 
-        # a fresh, fully-populated snapshot (with the new field set) can now
+        # reading that pre-migration row back through the model coalesces
+        # the NULL reliability columns to the honest UNVERIFIED default
+        # (`_from_db_field_reliability`), same as `ProductSnapshot` itself
+        # does when a field was never populated (CLAUDE.md rule 29).
+        old_snapshot = store.latest_product_snapshot_at_or_before(
+            "DE000OLD0001", datetime(2026, 9, 2, tzinfo=UTC)
+        )
+        assert old_snapshot is not None
+        assert old_snapshot.ratio_reliability == FieldReliability.UNVERIFIED
+        assert old_snapshot.barrier_reliability == FieldReliability.UNVERIFIED
+        assert old_snapshot.financing_level_reliability == FieldReliability.UNVERIFIED
+
+        # a fresh, fully-populated snapshot (with the new fields set) can now
         # be appended without error
-        new_snapshot = make_product_snapshot(isin="DE000NEW0001")
+        new_snapshot = make_product_snapshot(
+            isin="DE000NEW0001", ratio_reliability=FieldReliability.SOURCE_REPORTED
+        )
         assert new_snapshot.underlying_price_ref_timestamp is not None
         n = store.append_product_snapshots([new_snapshot])
         assert n == 1
         assert store.table_counts()["product_snapshots"] == 2
+
+        roundtripped = store.latest_product_snapshot_at_or_before(
+            "DE000NEW0001", new_snapshot.observation_time
+        )
+        assert roundtripped is not None
+        assert roundtripped.ratio_reliability == FieldReliability.SOURCE_REPORTED
 
         # the migration was logged
         migrations = store.list_schema_migrations()
@@ -522,7 +586,7 @@ def test_init_schema_adds_missing_column_to_old_product_snapshots_table(
             migrations[-1][1],
             migrations[-1][2],
             migrations[-1][3],
-        ) == ("product_snapshots", "financing_rate", "add_column")
+        ) == ("product_snapshots", "financing_level_reliability", "add_column")
         migrations_after_first_call = len(migrations)
 
         # a second init_schema() call is a no-op: the column already exists,

@@ -32,6 +32,7 @@ from turboedge.storage.schemas import (
     Direction,
     DriftEvent,
     ExitReason,
+    FieldReliability,
     ForecastRecord,
     Instrument,
     KoCalibrationPromotionRecord,
@@ -135,6 +136,15 @@ _DDL_STATEMENTS: tuple[str, ...] = (
         underlying_price_ref DOUBLE,
         underlying_price_ref_timestamp TIMESTAMPTZ,
         financing_rate DOUBLE,
+        -- Phase B: nullable (not NOT NULL) even though ProductSnapshot
+        -- always sets a value (default UNVERIFIED) -- additive
+        -- ALTER TABLE ... ADD COLUMN migration (_migrate_table_columns)
+        -- must not fail against a table that already has rows, and a
+        -- pre-migration row legitimately has no known reliability anyway
+        -- (see _row_to_product_snapshot's NULL -> UNVERIFIED coalesce).
+        ratio_reliability VARCHAR,
+        barrier_reliability VARCHAR,
+        financing_level_reliability VARCHAR,
         raw_hash VARCHAR NOT NULL,
         observation_time TIMESTAMPTZ NOT NULL,
         available_at TIMESTAMPTZ NOT NULL,
@@ -1910,6 +1920,9 @@ _PRODUCT_SNAPSHOT_COLUMNS: tuple[str, ...] = (
     "underlying_price_ref",
     "underlying_price_ref_timestamp",
     "financing_rate",
+    "ratio_reliability",
+    "barrier_reliability",
+    "financing_level_reliability",
     "raw_hash",
     "observation_time",
     "available_at",
@@ -1955,6 +1968,9 @@ def _product_snapshot_row(s: ProductSnapshot) -> tuple[Any, ...]:
         s.underlying_price_ref,
         _opt_to_utc(s.underlying_price_ref_timestamp),
         s.financing_rate,
+        s.ratio_reliability.value,
+        s.barrier_reliability.value,
+        s.financing_level_reliability.value,
         s.raw_hash,
         _to_utc(s.observation_time),
         _to_utc(s.available_at),
@@ -1966,6 +1982,14 @@ def _product_snapshot_row(s: ProductSnapshot) -> tuple[Any, ...]:
         s.is_stale,
         s.quality_score,
     )
+
+
+def _from_db_field_reliability(value: Any) -> FieldReliability:
+    """NULL (a pre-Phase-B row, migrated in via an additive nullable ALTER
+    TABLE -- see the DDL comment above) coalesces to UNVERIFIED, the same
+    honest default ``ProductSnapshot`` itself uses when a value was never
+    computed (CLAUDE.md rule 29) -- never guessed as anything stronger."""
+    return FieldReliability.UNVERIFIED if value is None else FieldReliability(value)
 
 
 def _row_to_product_snapshot(row: tuple[Any, ...]) -> ProductSnapshot:
@@ -2000,16 +2024,19 @@ def _row_to_product_snapshot(row: tuple[Any, ...]) -> ProductSnapshot:
         underlying_price_ref=row[27],
         underlying_price_ref_timestamp=_from_db_opt_dt(row[28]),
         financing_rate=row[29],
-        raw_hash=row[30],
-        observation_time=_from_db_dt(row[31]),
-        available_at=_from_db_dt(row[32]),
-        retrieved_at=_from_db_dt(row[33]),
-        source_timestamp=_from_db_opt_dt(row[34]),
-        source=row[35],
-        schema_version=row[36],
-        parser_version=row[37],
-        is_stale=row[38],
-        quality_score=row[39],
+        ratio_reliability=_from_db_field_reliability(row[30]),
+        barrier_reliability=_from_db_field_reliability(row[31]),
+        financing_level_reliability=_from_db_field_reliability(row[32]),
+        raw_hash=row[33],
+        observation_time=_from_db_dt(row[34]),
+        available_at=_from_db_dt(row[35]),
+        retrieved_at=_from_db_dt(row[36]),
+        source_timestamp=_from_db_opt_dt(row[37]),
+        source=row[38],
+        schema_version=row[39],
+        parser_version=row[40],
+        is_stale=row[41],
+        quality_score=row[42],
     )
 
 

@@ -464,6 +464,7 @@ def _gate_only_candidate(
         cluster_risk_pass=None,
         has_ask=has_ask,
         no_live_quote=no_live_quote,
+        ratio_reliability=product.ratio_reliability,
     )
     category, gate_reasons = evaluate_gates(gate_input, thresholds)
     return CandidateEvaluation(
@@ -1097,6 +1098,7 @@ def _process_products(
             lcb_ev=None,
             p_ko=None,
             cluster_risk_pass=None,
+            ratio_reliability=p.product.ratio_reliability,
         )
         category, gate_reasons = evaluate_gates(gate_input, thresholds)
         reasons = list(gate_reasons)
@@ -2133,6 +2135,7 @@ def _run_ev_pipeline(
             lcb_ev=adjusted_lcb,
             p_ko=ev.p_ko,
             cluster_risk_pass=cluster_pass,
+            ratio_reliability=p.product.ratio_reliability,
         )
         category, gate_reasons = evaluate_gates(gate_input, thresholds)
         # Non-gate diagnostic annotations from the pre-EV pass

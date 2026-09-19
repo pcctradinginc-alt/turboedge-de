@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
 from turboedge.pricing.integrity import IntegrityReport
 from turboedge.ranking.gates import GateInput, GateThresholds, evaluate_gates
-from turboedge.storage.schemas import Category
+from turboedge.storage.schemas import Category, FieldReliability
 
 _THRESHOLDS = GateThresholds(
     max_spread_pct=0.03,
@@ -207,6 +208,69 @@ def test_never_actionable_without_lcb_ev_even_with_everything_else_present() -> 
     assert category == Category.WATCH
 
 
+# ===========================================================================
+# Phase B ("Produktstammdaten haerten"): ratio_reliability gate
+# ===========================================================================
+
+
+def test_actionable_when_ratio_reliability_not_populated_backward_compatible() -> None:
+    # `ratio_reliability` defaults to `None` on `GateInput` -- a caller that
+    # never heard of this dimension (every pre-existing test/caller) is
+    # unaffected, same convention as `has_ask`/`no_live_quote` above.
+    category, _reasons = evaluate_gates(
+        _base_input(lcb_ev=1.5, p_ko=0.1, cluster_risk_pass=True), _THRESHOLDS
+    )
+    assert category == Category.ACTIONABLE
+
+
+def test_ratio_unverified_prevents_actionable_but_allows_watch() -> None:
+    # Kernsatz: a product whose Bezugsverhaeltnis is not reliably verified
+    # must never become ACTIONABLE -- but it is not REJECTed or dropped
+    # either; it still reaches WATCH (stays in the ledger/shadow sample).
+    category, reasons = evaluate_gates(
+        _base_input(
+            lcb_ev=1.5,
+            p_ko=0.1,
+            cluster_risk_pass=True,
+            ratio_reliability=FieldReliability.UNVERIFIED,
+        ),
+        _THRESHOLDS,
+    )
+    assert category == Category.WATCH
+    assert "ratio_unverified" in reasons
+
+
+def test_ratio_unverified_never_actionable_even_with_every_other_precondition_met() -> None:
+    category, _reasons = evaluate_gates(
+        _base_input(
+            lcb_ev=1.5,
+            p_ko=0.1,
+            cluster_risk_pass=True,
+            ratio_reliability=FieldReliability.UNVERIFIED,
+        ),
+        _THRESHOLDS,
+    )
+    assert category != Category.ACTIONABLE
+
+
+@pytest.mark.parametrize(
+    "reliability",
+    [
+        FieldReliability.SOURCE_REPORTED,
+        FieldReliability.CROSS_SOURCE_VERIFIED,
+        FieldReliability.DERIVED_VERIFIED,
+    ],
+)
+def test_every_non_unverified_ratio_reliability_level_allows_actionable(
+    reliability: FieldReliability,
+) -> None:
+    category, _reasons = evaluate_gates(
+        _base_input(lcb_ev=1.5, p_ko=0.1, cluster_risk_pass=True, ratio_reliability=reliability),
+        _THRESHOLDS,
+    )
+    assert category == Category.ACTIONABLE
+
+
 @given(
     lcb_ev=st.one_of(st.none(), st.floats(min_value=-10.0, max_value=10.0, allow_nan=False)),
     p_ko=st.one_of(st.none(), st.floats(min_value=0.0, max_value=1.0)),
@@ -220,3 +284,26 @@ def test_property_never_actionable_when_lcb_ev_is_none(
     )
     if lcb_ev is None:
         assert category != Category.ACTIONABLE
+
+
+@given(
+    lcb_ev=st.one_of(st.none(), st.floats(min_value=0.01, max_value=10.0, allow_nan=False)),
+    p_ko=st.one_of(st.none(), st.floats(min_value=0.0, max_value=1.0)),
+    cluster_risk_pass=st.one_of(st.none(), st.booleans()),
+)
+def test_property_never_actionable_when_ratio_unverified(
+    lcb_ev: float | None, p_ko: float | None, cluster_risk_pass: bool | None
+) -> None:
+    """Phase B: no combination of otherwise-passing EV/KO/cluster inputs can
+    make an UNVERIFIED-ratio candidate ACTIONABLE -- this gate only ever
+    makes ACTIONABLE harder to reach, never easier."""
+    category, _reasons = evaluate_gates(
+        _base_input(
+            lcb_ev=lcb_ev,
+            p_ko=p_ko,
+            cluster_risk_pass=cluster_risk_pass,
+            ratio_reliability=FieldReliability.UNVERIFIED,
+        ),
+        _THRESHOLDS,
+    )
+    assert category != Category.ACTIONABLE

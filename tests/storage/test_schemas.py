@@ -12,6 +12,7 @@ from turboedge.storage.schemas import (
     Category,
     CostDecomposition,
     Direction,
+    FieldReliability,
     ManualPosition,
     ProductSnapshot,
     ProductType,
@@ -22,6 +23,46 @@ from turboedge.storage.schemas import (
 def test_valid_product_snapshot_roundtrips(make_product_snapshot) -> None:  # type: ignore[no-untyped-def]
     snapshot = make_product_snapshot()
     dumped = snapshot.model_dump(mode="json")
+    restored = ProductSnapshot.model_validate(dumped)
+    assert restored == snapshot
+
+
+def test_product_snapshot_field_reliability_defaults_to_unverified(
+    make_product_snapshot,  # type: ignore[no-untyped-def]
+) -> None:
+    """Phase B ("Produktstammdaten haerten"): a source that never sets these
+    fields (e.g. adapters/csv_import.py) honestly reports UNVERIFIED rather
+    than silently inheriting a stronger level it never earned (CLAUDE.md
+    rule 29)."""
+    snapshot = make_product_snapshot()
+    assert snapshot.ratio_reliability == FieldReliability.UNVERIFIED
+    assert snapshot.barrier_reliability == FieldReliability.UNVERIFIED
+    assert snapshot.financing_level_reliability == FieldReliability.UNVERIFIED
+
+
+@pytest.mark.parametrize(
+    "level",
+    [
+        FieldReliability.SOURCE_REPORTED,
+        FieldReliability.CROSS_SOURCE_VERIFIED,
+        FieldReliability.DERIVED_VERIFIED,
+        FieldReliability.UNVERIFIED,
+    ],
+)
+def test_product_snapshot_field_reliability_every_level_assignable_and_roundtrips(
+    make_product_snapshot,  # type: ignore[no-untyped-def]
+    level: FieldReliability,
+) -> None:
+    snapshot = make_product_snapshot(
+        ratio_reliability=level,
+        barrier_reliability=level,
+        financing_level_reliability=level,
+    )
+    assert snapshot.ratio_reliability == level
+    assert snapshot.barrier_reliability == level
+    assert snapshot.financing_level_reliability == level
+    dumped = snapshot.model_dump(mode="json")
+    assert dumped["ratio_reliability"] == level.value
     restored = ProductSnapshot.model_validate(dumped)
     assert restored == snapshot
 

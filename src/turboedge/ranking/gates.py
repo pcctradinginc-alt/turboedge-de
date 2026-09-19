@@ -3,11 +3,13 @@
 Formula reference: Master Spec §19 ("Candidate Gates").
 
 ACTIONABLE is technically reachable: it is assigned when ``lcb_ev > 0``,
-``p_ko`` is not None, and ``cluster_risk_pass`` is True. In practice, no
-ACTIONABLE candidate is produced today because no forecast model has a
-measured out-of-sample advantage over the null model (see
-docs/measured_results.md). Thresholds are not lowered to manufacture
-suggestions.
+``p_ko`` is not None, ``cluster_risk_pass`` is True, and the product's
+Bezugsverhaeltnis (``ratio_reliability``) is not ``UNVERIFIED`` (Phase B,
+CLAUDE.md rule 29 -- see ``GateInput.ratio_reliability`` and
+``evaluate_gates``'s docstring). In practice, no ACTIONABLE candidate is
+produced today because no forecast model has a measured out-of-sample
+advantage over the null model (see docs/measured_results.md). Thresholds
+are not lowered to manufacture suggestions.
 """
 
 from __future__ import annotations
@@ -15,7 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from turboedge.pricing.integrity import IntegrityReport
-from turboedge.storage.schemas import Category
+from turboedge.storage.schemas import Category, FieldReliability
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +108,18 @@ class GateInput:
     # field defaults to `None` for backward compatibility with every
     # pre-existing caller/test that never heard of source-side freshness.
     source_quote_age_s: float | None = None
+    # Phase B ("Produktstammdaten haerten"): field-level reliability of this
+    # candidate's Bezugsverhaeltnis (`ProductSnapshot.ratio_reliability`).
+    # `None` is deliberately NOT treated as `UNVERIFIED` -- it means "this
+    # call site never populated the field" (every pre-existing test/caller
+    # that never heard of this dimension, same backward-compatibility
+    # convention as `has_ask`/`no_live_quote` above), not "known and
+    # unreliable". Every real pipeline candidate (`pipeline/scan.py`) always
+    # passes the product's own `ratio_reliability`, which itself defaults to
+    # `UNVERIFIED` on `ProductSnapshot` when unknown -- so in production this
+    # is effectively always populated; `None` only ever occurs in synthetic
+    # test input.
+    ratio_reliability: FieldReliability | None = None
 
 
 def evaluate_gates(inp: GateInput, th: GateThresholds) -> tuple[Category, list[str]]:
@@ -132,10 +146,17 @@ def evaluate_gates(inp: GateInput, th: GateThresholds) -> tuple[Category, list[s
        than being pre-empted by the DATA_QUALITY branch above.
     3. ``ACTIONABLE`` only if every other gate passed *and* ``lcb_ev is not
        None and lcb_ev > 0 and p_ko is not None and cluster_risk_pass is
-       True``. In practice, no ACTIONABLE candidate is produced today
-       because no forecast model has measured out-of-sample edge (see
-       docs/measured_results.md), so every surviving candidate falls through
-       to ``WATCH``.
+       True and ratio_reliability != UNVERIFIED``. The last condition is
+       Phase B ("Produktstammdaten haerten", CLAUDE.md rule 29): a product
+       whose Bezugsverhaeltnis was never reported by the source, or was
+       derived without surviving independent verification, must never
+       become ACTIONABLE no matter how good its EV/KO/cluster numbers look
+       -- it can still be WATCH (this gate never removes a candidate from
+       the ledger or the shadow sample, it only ever makes ACTIONABLE
+       *harder* to reach, never easier). In practice, no ACTIONABLE
+       candidate is produced today because no forecast model has measured
+       out-of-sample edge (see docs/measured_results.md), so every
+       surviving candidate falls through to ``WATCH`` regardless.
     4. ``WATCH`` otherwise, with a reason naming which ACTIONABLE
        precondition is still missing.
     """
@@ -179,11 +200,13 @@ def evaluate_gates(inp: GateInput, th: GateThresholds) -> tuple[Category, list[s
     if reject_reasons:
         return Category.REJECT, reject_reasons
 
+    ratio_verified = inp.ratio_reliability != FieldReliability.UNVERIFIED
     actionable = (
         inp.lcb_ev is not None
         and inp.lcb_ev > 0
         and inp.p_ko is not None
         and inp.cluster_risk_pass is True
+        and ratio_verified
     )
     if actionable:
         return Category.ACTIONABLE, ["all_gates_passed"]
@@ -197,6 +220,8 @@ def evaluate_gates(inp: GateInput, th: GateThresholds) -> tuple[Category, list[s
         watch_reasons.append("p_ko_not_evaluated")
     if inp.cluster_risk_pass is not True:
         watch_reasons.append("cluster_risk_not_confirmed")
+    if not ratio_verified:
+        watch_reasons.append("ratio_unverified")
     if not watch_reasons:
         watch_reasons.append("watch_default")
     return Category.WATCH, watch_reasons

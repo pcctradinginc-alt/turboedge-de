@@ -93,6 +93,52 @@ class HealthStatus(StrEnum):
     FAIL = "FAIL"
 
 
+class FieldReliability(StrEnum):
+    """Per-*field* verification tier for one pricing-critical value on a
+    :class:`ProductSnapshot` (ratio/barrier/financing level).
+
+    Distinct from :class:`Provenance` (per-*record* lineage -- where and
+    when the whole snapshot came from): this is about how much this one
+    number has actually been checked, independent of the record's own
+    freshness/source metadata. Phase B ("Produktstammdaten haerten"):
+    ``adapters/gettex.py`` already computes this distinction internally when
+    deriving ``ratio`` (``ratio_rejected``/``verification_failed``/
+    ``quanto_ambiguous`` vs. a passing derivation) and previously discarded
+    it once the value reached a :class:`ProductSnapshot` -- this enum is
+    what lets that information survive onto the record instead.
+
+    Four levels, ordered roughly by how much independent confirmation a
+    value has:
+
+    - ``SOURCE_REPORTED``: the issuer states the value directly as part of
+      its own product master data (e.g. BNP's/Citi's own ``ratio``/
+      ``strikeAbsolute``/``knockOutAbsolute`` fields) -- not derived or
+      cross-checked by this codebase, but coming straight from the entity
+      that structured the product.
+    - ``CROSS_SOURCE_VERIFIED``: confirmed by agreement across two or more
+      independent sources. Not yet produced by any adapter as of Phase B --
+      reserved for a future cross-issuer master-data reconciliation step
+      (e.g. BNP and gettex agreeing on the same ISIN's barrier).
+    - ``DERIVED_VERIFIED``: not reported directly by the source, but derived
+      from other fields *and* independently verified against an unrelated
+      quantity before being accepted -- gettex's ratio derivation today
+      (leverage-implied reference spot, then the algebraic-inverse
+      implied-spot check; see ``adapters/gettex.py`` module docstring).
+    - ``UNVERIFIED``: none of the above. The honest default (CLAUDE.md rule
+      29: never silently impute/guess a pricing-critical field's
+      reliability) -- a value can still be present and used for pricing
+      while ``UNVERIFIED``; this field only records how much trust it has
+      earned, it is not a presence/absence flag and does not by itself make
+      a product unusable (``ranking/gates.py`` is what decides that, and
+      only for ``ACTIONABLE``, not for ``WATCH``).
+    """
+
+    SOURCE_REPORTED = "source_reported"
+    CROSS_SOURCE_VERIFIED = "cross_source_verified"
+    DERIVED_VERIFIED = "derived_verified"
+    UNVERIFIED = "unverified"
+
+
 class PositionStatus(StrEnum):
     OPEN = "open"
     CLOSED = "closed"
@@ -226,6 +272,16 @@ class ProductSnapshot(Provenance):
     # `financing_rate - ref_rate`. Additive, optional: `None` for sources
     # that do not expose this field (e.g. BNP, gettex) -- never guessed.
     financing_rate: float | None = None
+    # Phase B ("Produktstammdaten haerten"): field-level reliability for the
+    # three pricing-critical values above, additive and independent of
+    # `Provenance`'s per-record `quality_score`/`is_stale` -- see
+    # `FieldReliability`'s docstring. Defaulting to UNVERIFIED (never
+    # guessed) means any adapter not explicitly updated to populate these
+    # (e.g. `adapters/csv_import.py`) honestly reports "unknown reliability"
+    # rather than silently inheriting a level it never earned.
+    ratio_reliability: FieldReliability = FieldReliability.UNVERIFIED
+    barrier_reliability: FieldReliability = FieldReliability.UNVERIFIED
+    financing_level_reliability: FieldReliability = FieldReliability.UNVERIFIED
     raw_hash: str  # sha256 of the raw source record, for reproducibility
 
 

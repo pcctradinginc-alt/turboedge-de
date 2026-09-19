@@ -40,7 +40,13 @@ from turboedge.adapters.issuer_feeds import (
 )
 from turboedge.adapters.registry import PRODUCT_ADAPTER_FACTORIES, ProductSourceAdapter
 from turboedge.config import SourceConfig
-from turboedge.storage.schemas import Direction, HealthStatus, ProductSnapshot, ProductType
+from turboedge.storage.schemas import (
+    Direction,
+    FieldReliability,
+    HealthStatus,
+    ProductSnapshot,
+    ProductType,
+)
 
 FIXTURES_DIR = Path(__file__).resolve().parent.parent / "fixtures" / "issuer_feeds"
 
@@ -219,6 +225,12 @@ def test_bnp_fetch_products_parses_real_fixture() -> None:
     assert all(len(s.isin) == 12 and s.isin.isalnum() for s in snapshots)
     assert all(s.ratio > 0 for s in snapshots)
     assert all(s.financing_level is not None and s.financing_level > 0 for s in snapshots)
+    # Phase B ("Produktstammdaten haerten"): BNP is the issuer itself, so its
+    # own ratio/barrier/financing_level master data is SOURCE_REPORTED, not
+    # derived or cross-checked by this adapter.
+    assert all(s.ratio_reliability == FieldReliability.SOURCE_REPORTED for s in snapshots)
+    assert all(s.barrier_reliability == FieldReliability.SOURCE_REPORTED for s in snapshots)
+    assert all(s.financing_level_reliability == FieldReliability.SOURCE_REPORTED for s in snapshots)
     directions = {s.direction for s in snapshots}
     assert directions == {Direction.LONG, Direction.SHORT}
     assert not adapter.last_errors
@@ -792,6 +804,12 @@ def test_citi_closing_price_reference_treated_as_no_live_quote() -> None:
     assert all(s.financing_level is not None and s.financing_level > 0 for s in snapshots)
     assert all(s.knockout_barrier is not None and s.knockout_barrier > 0 for s in snapshots)
     assert all(s.ratio > 0 for s in snapshots)
+    # Phase B: master-data reliability is unaffected by quote liveness --
+    # Citi is the issuer itself, so ratio/barrier/financing_level stay
+    # SOURCE_REPORTED even on a closing-price-only (no live quote) row.
+    assert all(s.ratio_reliability == FieldReliability.SOURCE_REPORTED for s in snapshots)
+    assert all(s.barrier_reliability == FieldReliability.SOURCE_REPORTED for s in snapshots)
+    assert all(s.financing_level_reliability == FieldReliability.SOURCE_REPORTED for s in snapshots)
 
 
 @respx.mock

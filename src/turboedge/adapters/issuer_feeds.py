@@ -261,7 +261,7 @@ from turboedge.adapters.base import (
     ProductFetchContext,
 )
 from turboedge.config import SourceConfig
-from turboedge.storage.schemas import Direction, HealthStatus, ProductSnapshot
+from turboedge.storage.schemas import Direction, FieldReliability, HealthStatus, ProductSnapshot
 from turboedge.universe.classify import classify_product_type
 from turboedge.universe.underlying_map import get_underlying_meta, resolve_underlying_id
 
@@ -1039,6 +1039,14 @@ class BnpParibasTurboAdapter:
                 float(underlying_price_ref) if underlying_price_ref is not None else None
             ),
             underlying_price_ref_timestamp=underlying_price_ref_timestamp,
+            # BNP is the issuer itself: `first.ratio`/`first.strikeAbsolute`/
+            # `first.knockOutAbsolute` are its own product master data, not
+            # derived or cross-checked by this adapter -- SOURCE_REPORTED
+            # (Phase B, `FieldReliability`'s docstring), same rationale as
+            # Citi's adapter below.
+            ratio_reliability=FieldReliability.SOURCE_REPORTED,
+            barrier_reliability=FieldReliability.SOURCE_REPORTED,
+            financing_level_reliability=FieldReliability.SOURCE_REPORTED,
             raw_hash=_raw_hash(p),
             observation_time=observation_time,
             available_at=now,
@@ -1516,6 +1524,17 @@ class CitiFirstTurboAdapter:
             underlying_price_ref=None,
             underlying_price_ref_timestamp=None,
             financing_rate=financing_rate,
+            # Citi is the issuer itself: `ratio`/`strike.amount`/
+            # `koBarrier.amount` are its own product master data, not
+            # derived or cross-checked by this adapter -- SOURCE_REPORTED
+            # (Phase B, `FieldReliability`'s docstring) regardless of
+            # whether this particular row has a live quote (that is a
+            # separate, quote-freshness concern -- see
+            # `is_non_live_reference` above -- master data reliability is
+            # unaffected by it).
+            ratio_reliability=FieldReliability.SOURCE_REPORTED,
+            barrier_reliability=FieldReliability.SOURCE_REPORTED,
+            financing_level_reliability=FieldReliability.SOURCE_REPORTED,
             raw_hash=_raw_hash(it),
             observation_time=observation_time,
             available_at=now,

@@ -33,6 +33,7 @@ from turboedge.adapters.registry import (
     build_product_adapters,
     build_reference_healthchecks,
 )
+from turboedge.backtest.ko_calibration import KoCalibrationMetrics, run_ko_calibration
 from turboedge.backtest.walkforward import walk_forward_evaluate
 from turboedge.config import config_hash
 from turboedge.learning.drift import PageHinkley, PageHinkleyConfig, record_drift_event
@@ -57,8 +58,14 @@ from turboedge.reporting.html import save_monthly_report, save_weekly_report, su
 from turboedge.reporting.monthly import build_monthly_report
 from turboedge.reporting.redaction import redact_console_enabled
 from turboedge.reporting.weekly import run_research_tournament
+from turboedge.simulation.ko_calibration import build_ko_calibration_dataset
 from turboedge.storage.duckdb import Store
-from turboedge.storage.schemas import LedgerEntryStatus, WalkforwardResultRecord
+from turboedge.storage.schemas import (
+    KoCalibrationPromotionRecord,
+    KoCalibrationResultRecord,
+    LedgerEntryStatus,
+    WalkforwardResultRecord,
+)
 from turboedge.universe.underlying_map import resolve_underlying_id
 
 logger = structlog.get_logger(__name__)
@@ -727,6 +734,271 @@ def research_backfill_trials_cmd(
     _write_summary("research_backfill_trials", counts, dry_run=dry_run, trial_ids=inserted)
 
 
+# --------------------------------------------------------------------------
+# research ko-calibration
+# --------------------------------------------------------------------------
+
+# ~2010-2026 (matches the W4/W9 walk-forward window documented in
+# docs/measured_results.md §1-2).
+_KO_CALIBRATION_LOOKBACK_DAYS = 4200
+# Every 5th business day is used as an "as of" bar -- see
+# simulation/ko_calibration.py's own docstring on step_days: a documented,
+# applied-before-any-result-is-seen stride, not post-hoc cherry-picking.
+# Measured (~4200 bars, n_paths=2000): ~800 "as of" bars per underlying in a
+# few seconds.
+_KO_CALIBRATION_STEP_DAYS = 5
+# Walk-forward min_train/step, expressed in "as of" bars (t0s); multiplied
+# by the number of (direction, sigma_bucket) observations sharing each t0
+# (2 directions x len(sigma_levels)) to get the actual sample-count
+# min_train/step PurgedWalkForwardSplit expects.
+_KO_CALIBRATION_MIN_TRAIN_T0 = 300
+_KO_CALIBRATION_STEP_T0 = 100
+
+
+def _ko_result_record(
+    run_id: str,
+    method: str,
+    breakdown_dim: str,
+    breakdown_value: str,
+    m: KoCalibrationMetrics,
+    evaluated_at: datetime,
+    config_hash_value: str,
+    commit: str | None,
+) -> KoCalibrationResultRecord:
+    return KoCalibrationResultRecord(
+        run_id=run_id,
+        method=method,
+        breakdown_dim=breakdown_dim,
+        breakdown_value=breakdown_value,
+        n=m.n,
+        brier=m.brier,
+        calibration_intercept=None
+        if math.isnan(m.calibration_intercept)
+        else m.calibration_intercept,
+        calibration_slope=None if math.isnan(m.calibration_slope) else m.calibration_slope,
+        ece=m.ece,
+        mean_signed_error=m.mean_signed_error,
+        absolute_calibration_error=m.absolute_calibration_error,
+        evaluated_at=evaluated_at,
+        config_hash=config_hash_value,
+        git_commit=commit,
+    )
+
+
+def research_ko_calibration_cmd(
+    ctx: typer.Context,
+    underlying: Annotated[
+        list[str] | None,
+        typer.Option("--underlying", help="Restrict to these underlying id(s) (repeatable)"),
+    ] = None,
+    json_out: str = typer.Option(None, "--json-out", help="Write full results JSON to PATH"),
+) -> None:
+    """Out-of-sample calibration of the path-simulation P(KO) (Workstream
+    W10, docs/measured_results.md §3): builds the empirical dataset,
+    walk-forward fits/evaluates every candidate calibrator (identity,
+    isotonic, Platt) against raw P(KO), persists per-breakdown results and
+    the promotion decision, and prints a summary. Measurement only --
+    ranking/gates.py and pipeline/scan.py are not touched by this command,
+    even when a calibrator is promoted."""
+    app_ctx = ctx.obj
+    if underlying:
+        ids: list[str] = []
+        for u in underlying:
+            resolved = resolve_underlying_id(u)
+            if resolved is None:
+                err_console.print(f"[red]Unknown underlying: {u!r}[/red]")
+                raise typer.Exit(code=2)
+            ids.append(resolved)
+    else:
+        ids = app_ctx.cfg.universe.enabled_ids()
+
+    price_adapter = YFinancePriceAdapter()
+    now = datetime.now(UTC)
+    hash_value = config_hash(app_ctx.cfg)
+    commit = git_commit()
+    sim_cfg = app_ctx.cfg.simulation
+    run_id = f"ko-calibration-{now.strftime('%Y%m%dT%H%M%SZ')}"
+
+    all_observations = []
+    obs_per_underlying: dict[str, int] = {}
+    with Store(app_ctx.db_path) as store:
+        store.init_schema()
+        for uid in ids:
+            try:
+                bars = price_adapter.fetch_daily_bars(
+                    uid, lookback_days=_KO_CALIBRATION_LOOKBACK_DAYS
+                )
+                store.append_underlying_bars(bars)
+            except Exception as exc:
+                logger.warning(
+                    "ko_calibration_bars_fetch_failed", underlying_id=uid, error=str(exc)
+                )
+                bars = store.latest_underlying_bars(uid, _KO_CALIBRATION_LOOKBACK_DAYS)
+            rng = np.random.default_rng(sim_cfg.seed)
+            try:
+                obs = build_ko_calibration_dataset(
+                    bars,
+                    uid,
+                    n_paths=sim_cfg.n_paths,
+                    method=sim_cfg.method,
+                    block_size=sim_cfg.block_size,
+                    lookback_days=sim_cfg.lookback_days,
+                    rng=rng,
+                    step_days=_KO_CALIBRATION_STEP_DAYS,
+                )
+            except ValueError as exc:
+                logger.warning("ko_calibration_dataset_failed", underlying_id=uid, error=str(exc))
+                continue
+            obs_per_underlying[uid] = len(obs)
+            all_observations.extend(obs)
+
+        if not all_observations:
+            err_console.print(
+                "[red]research ko-calibration: no usable observations for any underlying[/red]"
+            )
+            raise typer.Exit(code=3)
+
+        n_directions = len({o.direction for o in all_observations})
+        n_sigma = len({o.sigma_k for o in all_observations})
+        obs_per_t0 = max(n_directions * n_sigma, 1)
+        min_train = _KO_CALIBRATION_MIN_TRAIN_T0 * obs_per_t0
+        step = _KO_CALIBRATION_STEP_T0 * obs_per_t0
+
+        try:
+            result = run_ko_calibration(all_observations, min_train=min_train, step=step)
+        except ValueError as exc:
+            err_console.print(f"[red]research ko-calibration: {exc}[/red]")
+            raise typer.Exit(code=3) from exc
+
+        method_results = {"raw": result.raw, **result.candidates}
+        records: list[KoCalibrationResultRecord] = []
+        for method, method_result in method_results.items():
+            records.append(
+                _ko_result_record(
+                    run_id,
+                    method,
+                    "overall",
+                    "overall",
+                    method_result.overall,
+                    now,
+                    hash_value,
+                    commit,
+                )
+            )
+            for h, m in method_result.by_horizon.items():
+                records.append(
+                    _ko_result_record(run_id, method, "horizon", str(h), m, now, hash_value, commit)
+                )
+            for d, m in method_result.by_direction.items():
+                records.append(
+                    _ko_result_record(
+                        run_id, method, "direction", str(d), m, now, hash_value, commit
+                    )
+                )
+            for s, m in method_result.by_sigma_bucket.items():
+                records.append(
+                    _ko_result_record(
+                        run_id, method, "sigma_bucket", str(s), m, now, hash_value, commit
+                    )
+                )
+            for u, m in method_result.by_underlying.items():
+                records.append(
+                    _ko_result_record(
+                        run_id, method, "underlying", str(u), m, now, hash_value, commit
+                    )
+                )
+            for r, m in method_result.by_regime.items():
+                records.append(
+                    _ko_result_record(run_id, method, "regime", str(r), m, now, hash_value, commit)
+                )
+        rows_written = store.append_ko_calibration_results(records)
+        store.insert_ko_calibration_promotion(
+            KoCalibrationPromotionRecord(
+                run_id=run_id,
+                promoted_method=result.promoted_method,
+                reason=result.promotion_reason,
+                evaluated_at=now,
+                config_hash=hash_value,
+                git_commit=commit,
+            )
+        )
+
+    if redact_console_enabled():
+        pass
+    else:
+        table = Table(title="KO calibration (out-of-sample)")
+        table.add_column("Method")
+        table.add_column("n", justify="right")
+        table.add_column("Brier", justify="right")
+        table.add_column("Intercept", justify="right")
+        table.add_column("Slope", justify="right")
+        table.add_column("ECE", justify="right")
+        table.add_column("MeanSignedErr", justify="right")
+        table.add_column("AbsCalErr", justify="right")
+        for method, method_result in method_results.items():
+            m = method_result.overall
+            table.add_row(
+                method,
+                str(m.n),
+                f"{m.brier:.4f}",
+                f"{m.calibration_intercept:.3f}",
+                f"{m.calibration_slope:.3f}",
+                f"{m.ece:.4f}",
+                f"{m.mean_signed_error:+.4f}",
+                f"{m.absolute_calibration_error:.4f}",
+            )
+        console.print(table)
+        console.print(f"Promotion: {result.promoted_method or 'NONE'} -- {result.promotion_reason}")
+
+    counts = {
+        "underlyings": len(obs_per_underlying),
+        "observations": len(all_observations),
+        "ko_calibration_result_rows": rows_written,
+        "promoted": 1 if result.promoted_method else 0,
+    }
+    _print_counts("research ko-calibration", counts)
+
+    if json_out:
+        json_path = Path(json_out)
+        json_path.parent.mkdir(parents=True, exist_ok=True)
+        payload: dict[str, Any] = {
+            "run_id": run_id,
+            "underlyings": ids,
+            "obs_per_underlying": obs_per_underlying,
+            "n_observations": len(all_observations),
+            "promoted_method": result.promoted_method,
+            "promotion_reason": result.promotion_reason,
+            "methods": {
+                method: {
+                    "overall": method_result.overall.__dict__,
+                    "by_horizon": {str(k): v.__dict__ for k, v in method_result.by_horizon.items()},
+                    "by_direction": {
+                        str(k): v.__dict__ for k, v in method_result.by_direction.items()
+                    },
+                    "by_sigma_bucket": {
+                        str(k): v.__dict__ for k, v in method_result.by_sigma_bucket.items()
+                    },
+                    "by_underlying": {
+                        str(k): v.__dict__ for k, v in method_result.by_underlying.items()
+                    },
+                    "by_regime": {str(k): v.__dict__ for k, v in method_result.by_regime.items()},
+                }
+                for method, method_result in method_results.items()
+            },
+        }
+        with json_path.open("w") as f:
+            json.dump(payload, f, indent=2, default=str)
+
+    _write_summary(
+        "research_ko_calibration",
+        counts,
+        run_id=run_id,
+        obs_per_underlying=obs_per_underlying,
+        promoted_method=result.promoted_method,
+        promotion_reason=result.promotion_reason,
+    )
+
+
 def register_learn_commands(app: typer.Typer, position_app: typer.Typer) -> None:
     """Wire every Contract v3 integration-wave command into the main CLI.
     Called once from ``cli.py``::
@@ -748,6 +1020,7 @@ def register_learn_commands(app: typer.Typer, position_app: typer.Typer) -> None
     research_app = typer.Typer(help="Research governance")
     research_app.command("tournament")(research_tournament_cmd)
     research_app.command("backfill-trials")(research_backfill_trials_cmd)
+    research_app.command("ko-calibration")(research_ko_calibration_cmd)
     app.add_typer(research_app, name="research")
 
 

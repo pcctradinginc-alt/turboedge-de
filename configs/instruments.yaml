@@ -1,0 +1,67 @@
+# TurboEdge-DE instrument-class comparison assumptions.
+# Consumed by pricing/instrument_compare.py (Systemkonzept 1.2 §12.1
+# "Instrumentenneutralitaet": the execution layer must compare instrument
+# CLASSES -- Turbo/KO-Zertifikat, Mini-Future, Eurex-Future -- not only
+# turbos against each other).
+#
+# EHRLICHKEITSGEBOT (CLAUDE.md rule 29, and Systemkonzept 1.2 §12.1 itself):
+# this system ingests NO real Eurex quotes -- there is no Eurex adapter in
+# adapters/ (see CLAUDE.md "Data sources": only issuer APIs + gettex + CSV
+# import + yfinance underlying prices + the ECB reference-rate feed).
+# EVERY constant in this file is therefore a MODELING ASSUMPTION, not a
+# measurement -- pricing/instrument_compare.py tags every line that is built
+# from one of these constants as "assumed" (never "measured") in both its
+# return object and every rendered output (CLI table / monthly report).
+# Do not read the absolute future-side cost number as market-verified; it is
+# only as good as the placeholders below, each sourced from general,
+# UNVERIFIED knowledge of typical Eurex/FDAX economics -- update from a real
+# Eurex fee schedule / margin circular before relying on it for anything
+# beyond order-of-magnitude comparison.
+
+# Eurex FDAX (DAX future) exchange + clearing fee, expressed directly as
+# basis points of NOTIONAL rather than "EUR per contract" -- this sidesteps
+# needing a live spot price just to size a fractional-contract fee for an
+# arbitrary notional (Systemkonzept 1.2 §12.1's comparison is "identical
+# EXPOSURE", which for a real DAX future would only be tradable in whole-
+# contract increments; this bps figure is the linear-scaling simplification
+# pricing/instrument_compare.py documents wherever it uses it).
+#
+# Derivation (illustrative, NOT independently verified against a current
+# Eurex fee schedule): general knowledge puts a single Eurex FDAX exchange +
+# clearing fee round-turn at roughly EUR 0.50-1.00 per contract; one FDAX
+# contract is EUR 25 per index point, so at a DAX level of roughly 25,000
+# points that is a contract notional of roughly EUR 625,000 --
+# EUR 0.90 / EUR 625,000 =~ 0.0000144 =~ 0.014 bps. Rounded up (conservative,
+# i.e. this assumption leans toward OVERSTATING the future's cost, never
+# understating it) to 0.02 bps.
+eurex_fee_bps_of_notional: 0.02
+
+# Initial margin Eurex/the clearing broker would require to hold one FDAX
+# contract, expressed as a % of the contract's own notional. Informational
+# only (pricing/instrument_compare.py never adds this into total_cost_eur --
+# posting margin is capital tied up, not a cost in itself, and the whole
+# point of a future's capital efficiency vs. a fully-funded certificate is
+# that this number is normally well below 100%). Rough, unverified
+# placeholder based on typical historical FDAX initial-margin levels
+# (order of magnitude 5-10% of notional); update from Eurex's published
+# margin parameters before relying on it.
+eurex_margin_pct_of_notional: 0.08
+
+# Fallback annualized financing spread (decimal, e.g. 0.035 = 3.5%) used for
+# a Mini-Future when pricing/instrument_compare.py cannot measure a clean
+# realized spread from that specific ISIN's own financing-level history
+# (fewer than 2 clean daily observations in local state -- see
+# pricing/financing.py's financing_spread_history/realized_financing_spread,
+# the exact same measurement path used for Turbos). This is Mini-Futures'
+# OWN fallback, deliberately separate from configs/risk.yaml's
+# default_financing_spread (that one is calibrated -- to the extent a
+# same-shaped fallback constant can be "calibrated" at all -- for
+# turbo_open_end products): Mini-Futures are typically distributed through a
+# narrower issuer set with their own funding economics, and Systemkonzept
+# 1.2 §12.1 explicitly calls for "ein eigener Finanzierungssatz". Rough,
+# unverified placeholder (slightly above risk.yaml's turbo default, on the
+# general expectation that a Mini-Future's external stop-loss-buffer
+# mechanic is somewhat more expensive to run for an issuer than an open-end
+# turbo's simple absorbing barrier) -- prefer the measured per-ISIN spread
+# whenever local state has it; this value is the last resort only.
+mini_future_financing_spread_assumed: 0.035

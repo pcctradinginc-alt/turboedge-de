@@ -21,6 +21,7 @@ from __future__ import annotations
 import statistics
 from collections import Counter, defaultdict
 from datetime import UTC, date, datetime
+from pathlib import Path
 
 import numpy as np
 import numpy.typing as npt
@@ -42,6 +43,13 @@ from turboedge.learning.ledger import ForwardLedger
 from turboedge.learning.posterior import PosteriorConfig, StrategyPosterior
 from turboedge.learning.trials import TrialsConfig, effective_number_of_trials
 from turboedge.models.forecast import HORIZONS
+from turboedge.pricing.instrument_compare import (
+    InputValue,
+    InstrumentComparisonResult,
+    SimulationParams,
+    compare_instruments,
+    load_instruments_config,
+)
 from turboedge.reporting._common import (
     WilsonInterval,
     average_uniqueness_weights,
@@ -58,6 +66,7 @@ from turboedge.reporting._common import (
 from turboedge.storage.duckdb import Store
 from turboedge.storage.schemas import (
     Category,
+    Direction,
     LedgerEntry,
     LedgerEntryStatus,
     LedgerLabel,
@@ -105,6 +114,49 @@ class MonthlyReportConfig(BaseModel):
         ShadowPortfolioKind.LOWEST_LEVERAGE,
         ShadowPortfolioKind.MEDIAN_PRODUCT,
     )
+
+    # -- instrument-class cost comparison (Systemkonzept 1.2 §12.1/§23) ------
+    # ``None`` (the default) skips this block entirely -- every existing
+    # caller/test that builds a plain ``MonthlyReportConfig()`` is therefore
+    # unaffected. Set to an underlying id (e.g. "DAX") to include it.
+    instrument_compare_underlying: str | None = None
+    instrument_compare_notional_eur: float = Field(default=24000.0, gt=0.0)
+    instrument_compare_horizon_days: int = Field(default=15, gt=0)
+    # Direction.value ("long"/"short") rather than the enum itself, so a
+    # plain reporting.yaml "monthly: {...}" dict can set it without this
+    # module requiring an enum-aware YAML loader.
+    instrument_compare_direction: str = "long"
+    # Where to find configs/instruments.yaml -- this report is built from
+    # only a Store (no config_dir threaded through build_monthly_report's
+    # existing signature/callers), so this defaults to the same relative
+    # "configs" path AppContext.config_dir defaults to (cli.py) when the
+    # process's cwd is the project root, as every documented invocation
+    # (README "Development Commands") assumes.
+    instrument_compare_config_dir: str = "configs"
+    # This report is built entirely offline (module docstring: "no network,
+    # no mutation of the store") -- unlike `turboedge compare instruments`
+    # (cli.py), which fetches a live ECB rate, there is no persisted ECB
+    # rate history to read here (adapters/ecb.py's rate is fetched
+    # transiently at scan time and never stored). The reference rate is
+    # therefore ALWAYS `assumed` in this report, from this fallback --
+    # mirrors configs/risk.yaml's reference_rate_fallback default exactly
+    # (duplicated, not imported, to keep this module free of a
+    # turboedge.config dependency it does not otherwise have).
+    instrument_compare_reference_rate_fallback: float = Field(default=0.03, ge=0.0)
+    # Mirrors configs/risk.yaml's default_financing_spread default -- used
+    # only when a representative Turbo ISIN has no measurable financing-
+    # level history (pricing/instrument_compare.py prefers the measured
+    # value whenever local state supports it).
+    instrument_compare_financing_spread_fallback: float = 0.025
+    # Mirrors configs/risk.yaml's financing_adjustment_jump_threshold_pct.
+    instrument_compare_financing_adjustment_jump_threshold_pct: float = Field(default=0.08, gt=0.0)
+    # Mirrors configs/simulation.yaml's defaults (path-simulation params for
+    # the KO-probability estimate).
+    instrument_compare_n_paths: int = Field(default=2000, gt=0)
+    instrument_compare_path_method: str = "vol_scaled_bootstrap"
+    instrument_compare_block_size: int = Field(default=5, gt=0)
+    instrument_compare_lookback_days: int = Field(default=750, gt=0)
+    instrument_compare_seed: int = 20260101
 
 
 class ReturnStats(BaseModel):
@@ -241,6 +293,16 @@ class MonthlyReport(BaseModel):
     trial_budget: TrialBudgetSummary
     drift_events: list[DriftEventSummary]
     shadow_portfolio: list[ShadowPortfolioSummary]
+
+    # Instrument-class cost comparison block (Systemkonzept 1.2 §12.1
+    # "Instrumentenneutralitaet", §23: required on the cost side of this
+    # report). ``None`` when ``cfg.instrument_compare_underlying`` is unset
+    # (the default) or the comparison could not be built at all -- see
+    # ``data_quality_notes`` for the reason in the latter case. When
+    # present, every number inside it is itself already tagged measured/
+    # assumed/missing (``pricing/instrument_compare.py``) -- this field
+    # being non-``None`` does NOT mean every line in it was measured.
+    instrument_comparison: InstrumentComparisonResult | None = None
 
     data_quality_notes: list[str]
     narrative: list[str]
@@ -436,6 +498,84 @@ def _build_groupings(
     return groupings
 
 
+def _build_instrument_comparison(
+    store: Store,
+    cfg: MonthlyReportConfig,
+    as_of: datetime,
+    data_quality_notes: list[str],
+) -> InstrumentComparisonResult | None:
+    """Build the Systemkonzept 1.2 §12.1 instrument-class cost comparison
+    block for this report, or ``None`` when it is disabled
+    (``cfg.instrument_compare_underlying is None``, the default) or cannot
+    be built at all (a ``data_quality_notes`` entry then explains why --
+    this never raises out of ``build_monthly_report``, matching that
+    function's existing "never crashes the report" contract for every other
+    optional block).
+
+    Entirely offline, like the rest of this module: the reference rate is
+    always ``assumed`` here (see ``MonthlyReportConfig``'s own comment on
+    ``instrument_compare_reference_rate_fallback`` for why), never fetched
+    live -- that only happens in ``turboedge compare instruments``
+    (``cli.py``).
+    """
+    if cfg.instrument_compare_underlying is None:
+        return None
+    try:
+        direction = Direction(cfg.instrument_compare_direction)
+    except ValueError as exc:
+        data_quality_notes.append(
+            f"Instrumentenklassenvergleich uebersprungen: ungueltige "
+            f"instrument_compare_direction {cfg.instrument_compare_direction!r} ({exc})."
+        )
+        return None
+
+    instruments_path = Path(cfg.instrument_compare_config_dir) / "instruments.yaml"
+    try:
+        instruments_cfg = load_instruments_config(instruments_path)
+    except (OSError, ValueError) as exc:
+        data_quality_notes.append(
+            f"Instrumentenklassenvergleich uebersprungen: {instruments_path} nicht ladbar ({exc})."
+        )
+        return None
+
+    ref_rate = InputValue.assumed(
+        cfg.instrument_compare_reference_rate_fallback,
+        "Monatsbericht ist offline (kein Netzwerkzugriff, siehe Modul-Docstring); kein "
+        "live ECB-Datenpunkt verfuegbar -- konfigurierter Fallback "
+        "(instrument_compare_reference_rate_fallback) verwendet.",
+    )
+    financing_fallback = InputValue.assumed(
+        cfg.instrument_compare_financing_spread_fallback,
+        "configs/risk.yaml-aequivalenter Fallback (instrument_compare_financing_spread_fallback).",
+    )
+    sim_params = SimulationParams(
+        n_paths=cfg.instrument_compare_n_paths,
+        method=cfg.instrument_compare_path_method,
+        block_size=cfg.instrument_compare_block_size,
+        lookback_days=cfg.instrument_compare_lookback_days,
+        seed=cfg.instrument_compare_seed,
+    )
+    try:
+        return compare_instruments(
+            store,
+            underlying_id=cfg.instrument_compare_underlying,
+            notional_eur=cfg.instrument_compare_notional_eur,
+            horizon_days=cfg.instrument_compare_horizon_days,
+            direction=direction,
+            ref_rate=ref_rate,
+            financing_spread_fallback=financing_fallback,
+            financing_adjustment_jump_threshold_pct=(
+                cfg.instrument_compare_financing_adjustment_jump_threshold_pct
+            ),
+            instruments_cfg=instruments_cfg,
+            sim=sim_params,
+            as_of=as_of,
+        )
+    except ValueError as exc:
+        data_quality_notes.append(f"Instrumentenklassenvergleich fehlgeschlagen: {exc}")
+        return None
+
+
 def build_monthly_report(
     store: Store,
     *,
@@ -614,6 +754,9 @@ def build_monthly_report(
         for kind in cfg.shadow_portfolio_kinds
     ]
 
+    # -- instrument-class cost comparison (Systemkonzept 1.2 §12.1/§23) -----
+    instrument_comparison = _build_instrument_comparison(store, cfg, as_of, data_quality_notes)
+
     status_only = len(labeled_matured) == 0
 
     narrative: list[str] = []
@@ -641,6 +784,12 @@ def build_monthly_report(
                 "ACTIONABLE-Stichprobe zu klein für belastbare Renditekennzahlen "
                 f"(n={actionable_stats.n})."
             )
+    if instrument_comparison is not None and instrument_comparison.factor_vs_future is not None:
+        narrative.append(
+            f"Instrumentenklassenvergleich ({instrument_comparison.underlying_id}, "
+            f"{instrument_comparison.horizon_days}d, "
+            f"{instrument_comparison.notional_eur:.0f} EUR): {instrument_comparison.factor_note}"
+        )
 
     return MonthlyReport(
         month=month_start,
@@ -660,6 +809,7 @@ def build_monthly_report(
         trial_budget=trial_budget,
         drift_events=drift_events,
         shadow_portfolio=shadow_portfolio,
+        instrument_comparison=instrument_comparison,
         data_quality_notes=data_quality_notes,
         narrative=narrative,
     )

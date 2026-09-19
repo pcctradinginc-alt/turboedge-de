@@ -7,6 +7,7 @@ environment variables and CLI flags.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -41,6 +42,14 @@ from turboedge.notifications.gmail import GmailCredentials, GmailNotifier
 from turboedge.pipeline.scan import ScanOptions, run_scan
 from turboedge.pipeline.universe import NoProductsError, run_universe
 from turboedge.positions.ledger import PositionLedger
+from turboedge.pricing.instrument_compare import (
+    InputValue,
+    InstrumentComparisonResult,
+    InstrumentCostResult,
+    SimulationParams,
+    compare_instruments,
+    load_instruments_config,
+)
 from turboedge.provenance import git_commit, new_run_id
 from turboedge.reporting.console import (
     render_scan,
@@ -853,6 +862,11 @@ def position_close(
 db_app = typer.Typer(help="Database queries")
 app.add_typer(db_app, name="db")
 
+# --- compare subcommand (instrument-class cost comparison, Systemkonzept
+# 1.2 §12.1) ---
+compare_app = typer.Typer(help="Cross-instrument-class cost comparison")
+app.add_typer(compare_app, name="compare")
+
 # --- state subcommand + `db compact` (turboedge.cli_state) ---
 register_state_commands(app, db_app)
 
@@ -878,6 +892,177 @@ def db_info(ctx: typer.Context) -> None:
             table.add_row(table_name, str(count))
 
         console.print(table)
+
+
+def _render_instrument_comparison(result: InstrumentComparisonResult) -> None:
+    """Render every :class:`InstrumentCostResult` as its own table -- one
+    column of which is explicitly labeled 'gemessen/angenommen', per row --
+    plus the resulting cost factor between the wrapped instruments and the
+    modeled Eurex-Future."""
+    for r in result.results:
+        title = r.instrument_class
+        if r.issuer is not None:
+            title += f" ({r.issuer}, {r.isin})"
+        table = Table(title=title)
+        table.add_column("Kostenblock")
+        table.add_column("Betrag (EUR)", justify="right")
+        table.add_column("gemessen/angenommen")
+        table.add_column("Hinweis")
+        for line in r.lines:
+            amount_str = f"{line.amount_eur:,.4f}" if line.amount_eur is not None else "-- fehlt --"
+            source_str = line.source.value if line.source is not None else "[red]fehlt[/red]"
+            table.add_row(line.label, amount_str, source_str, line.note)
+        console.print(table)
+        if r.total_cost_eur is not None:
+            console.print(
+                f"  [bold]Gesamtkosten: {r.total_cost_eur:,.2f} EUR "
+                f"({r.total_cost_pct_of_notional:.3%} des Nominals)[/bold]\n"
+            )
+        else:
+            console.print(
+                f"  [yellow]Gesamtkosten nicht berechenbar: {r.missing_reason}[/yellow]\n"
+            )
+
+    console.print(f"[bold]{result.factor_note}[/bold]")
+    console.print(_FOOTER)
+
+
+@compare_app.command("instruments")
+def compare_instruments_cmd(
+    ctx: typer.Context,
+    underlying: str = typer.Option(..., "--underlying", help="Underlying id, e.g. DAX"),
+    horizon_days: int = typer.Option(..., "--horizon-days", help="Holding horizon in trading days"),
+    notional: float = typer.Option(..., "--notional", help="Notional underlying exposure in EUR"),
+    direction: str = typer.Option("long", "--direction", help="'long' or 'short'"),
+    json_out: str = typer.Option(
+        None, "--json-out", help="Write the full comparison as JSON to PATH"
+    ),
+) -> None:
+    """Compare total cost of IDENTICAL underlying exposure across instrument
+    classes: Turbo/KO-Zertifikat, Mini-Future, Eurex-Future (Systemkonzept
+    1.2 §12.1 "Instrumentenneutralitaet").
+
+    HONESTY: this system ingests no real Eurex quotes -- the Eurex-Future
+    side is a MODEL on the risk-free reference rate plus the placeholder
+    constants in configs/instruments.yaml, never a measurement. Every row of
+    every table is tagged 'measured' or 'assumed'; never read an 'assumed'
+    row as market-verified. Works entirely against already-ingested local
+    state (no live product fetch) -- run `turboedge scan-all` first if the
+    local state is stale or empty.
+    """
+    app_ctx = _load_app_context(ctx)
+
+    underlying_id = resolve_underlying_id(underlying)
+    if underlying_id is None:
+        err_console.print(f"[red]Unknown underlying: {underlying!r}[/red]")
+        raise typer.Exit(code=2)
+    try:
+        direction_value = Direction(direction)
+    except ValueError:
+        err_console.print(
+            f"[red]Invalid --direction: {direction!r}; must be 'long' or 'short'[/red]"
+        )
+        raise typer.Exit(code=2)  # noqa: B904
+    if horizon_days <= 0:
+        err_console.print("[red]--horizon-days must be > 0[/red]")
+        raise typer.Exit(code=2)
+    if notional <= 0:
+        err_console.print("[red]--notional must be > 0[/red]")
+        raise typer.Exit(code=2)
+
+    instruments_path = Path(app_ctx.config_dir) / "instruments.yaml"
+    try:
+        instruments_cfg = load_instruments_config(instruments_path)
+    except (OSError, ValueError) as exc:
+        err_console.print(f"[red]Could not load {instruments_path}: {exc}[/red]")
+        raise typer.Exit(code=2)  # noqa: B904
+
+    ecb_source_cfg = app_ctx.cfg.sources.get("ecb")
+    ecb_http = (
+        build_http_client(ecb_source_cfg)
+        if ecb_source_cfg is not None
+        else HttpClient(
+            user_agent=app_ctx.cfg.default.http_default_user_agent,
+            timeout_s=app_ctx.cfg.default.http_default_timeout_s,
+            min_interval_s=0.0,
+            max_retries=3,
+        )
+    )
+    estr_adapter = EcbEstrAdapter(ecb_http, fallback_rate=app_ctx.cfg.risk.reference_rate_fallback)
+    latest_estr = estr_adapter.fetch_latest()
+    ref_rate = (
+        InputValue.measured(
+            latest_estr.value,
+            f"ECB EST-Beobachtung vom {latest_estr.period.isoformat()} (adapters/ecb.py).",
+        )
+        if latest_estr is not None
+        else InputValue.assumed(
+            app_ctx.cfg.risk.reference_rate_fallback,
+            "ECB-Abruf fehlgeschlagen; configs/risk.yaml reference_rate_fallback verwendet.",
+        )
+    )
+
+    financing_fallback = InputValue.assumed(
+        app_ctx.cfg.risk.default_financing_spread,
+        "configs/risk.yaml default_financing_spread (kein verwertbarer "
+        "Finanzierungslevel-Verlauf).",
+    )
+    sim_params = SimulationParams(
+        n_paths=app_ctx.cfg.simulation.n_paths,
+        method=app_ctx.cfg.simulation.method,
+        block_size=app_ctx.cfg.simulation.block_size,
+        lookback_days=app_ctx.cfg.simulation.lookback_days,
+        seed=app_ctx.cfg.simulation.seed,
+    )
+
+    with Store(app_ctx.db_path) as store:
+        store.init_schema()
+        try:
+            result = compare_instruments(
+                store,
+                underlying_id=underlying_id,
+                notional_eur=notional,
+                horizon_days=horizon_days,
+                direction=direction_value,
+                ref_rate=ref_rate,
+                financing_spread_fallback=financing_fallback,
+                financing_adjustment_jump_threshold_pct=(
+                    app_ctx.cfg.risk.financing_adjustment_jump_threshold_pct
+                ),
+                instruments_cfg=instruments_cfg,
+                sim=sim_params,
+            )
+        except ValueError as exc:
+            err_console.print(f"[red]Comparison failed: {exc}[/red]")
+            raise typer.Exit(code=2)  # noqa: B904
+
+    _render_instrument_comparison(result)
+
+    if json_out:
+        json_path = Path(json_out)
+        json_path.parent.mkdir(parents=True, exist_ok=True)
+
+        def _cost_result_to_dict(r: InstrumentCostResult) -> dict[str, object]:
+            d = dataclasses.asdict(r)
+            for line in d["lines"]:
+                line["source"] = line["source"].value if line["source"] is not None else None
+            return d
+
+        cheapest = result.cheapest_wrapped
+        payload = {
+            "underlying_id": result.underlying_id,
+            "direction": result.direction.value,
+            "notional_eur": result.notional_eur,
+            "horizon_days": result.horizon_days,
+            "as_of": result.as_of.isoformat(),
+            "results": [_cost_result_to_dict(r) for r in result.results],
+            "cheapest_wrapped": _cost_result_to_dict(cheapest) if cheapest is not None else None,
+            "factor_vs_future": result.factor_vs_future,
+            "factor_note": result.factor_note,
+        }
+        with json_path.open("w") as f:
+            json.dump(payload, f, indent=2, default=str)
+        console.print(f"[blue]Wrote JSON report to {json_out}[/blue]")
 
 
 if __name__ == "__main__":

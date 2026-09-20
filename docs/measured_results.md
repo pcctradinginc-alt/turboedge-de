@@ -678,6 +678,143 @@ explicitly not yet a trading edge.** No thresholds, gates or the protected
 
 ---
 
+## 6.5 Does the pre-EV cost prefilter discard promising products? (2026-09-20)
+
+`ranking.yaml`'s `scan_filter.max_candidates_per_bucket: 25` simulates only
+the cheapest 25 candidates per (direction, leverage_bucket) group, ranked by
+`cost_rank_score` — a *cost* measure, not a return forecast. The suspicion
+this tests: since ACTIONABLE requires `lcb_ev > 0` and `lcb_ev` is only ever
+computed for simulated candidates, a product with a better expected value
+but higher costs would never be measured at all, and "no trade" would then
+be an artifact of the filter rather than a property of the market.
+
+**Scope — this is a narrow measurement.** It reads `candidate_sets` in the
+local state database: six scan runs from 2026-09-14 (two of them after the
+close), DAX and NDX only, 36,086 WATCH candidates of which 2,349 carry an
+`lcb_ev`. It is not a CI measurement and not a re-run; nothing was changed
+or re-simulated. Under §11.1's W4 precedent (a *measurement* of existing
+behavior is not a "Research-Änderung") it consumes no trial_id. Raising
+`max_candidates_per_bucket` on the strength of it would be an adaptation and
+would need one (2026Q4: 3 of 6 used).
+
+### The filter behaves exactly as documented
+
+| cost rank within its group | candidates | EV-evaluated |
+|---|---|---|
+| 1–25 | 2,124 | 2,124 (100%) |
+| >25 | 33,962 | 225 (0.7%) |
+
+The 225 are the shadow sample (`shadow_sample_per_stratum: 3`), drawn from
+the *full* pool independently of cost rank — Spec §25's selection-bias
+protection. That makes them an unbiased probe of precisely what the filter
+discards, recorded on every run since the feature shipped.
+
+### The discarded products are not better
+
+| | n | best `lcb_ev` | p99 | median |
+|---|---|---|---|---|
+| filtered (cheapest 25) | 2,124 | **−0.00682** | −0.00969 | −0.04744 |
+| shadow (random) | 225 | **−0.00749** | −0.00866 | −0.04975 |
+
+The best randomly drawn candidate is *worse* than the best filtered one.
+The shadow sample covers all 16 strata, and its ten best entries are all
+DAX short, leverage bucket 2–3 — the same corner the filtered winners come
+from — at cost ranks 68, 70, 72, 137, 156, 164, i.e. just behind the cutoff
+rather than deep in the discarded field.
+
+### Why the naive correlation misleads
+
+Across all evaluated candidates, `corr(cost_rank_score, lcb_ev) = −0.15`
+(r² = 0.022), which reads as "cost rank says almost nothing". That number is
+Simpson's paradox: it mixes leverage buckets with structurally different
+cost levels. The filter only ever ranks *within* one (run, direction,
+bucket) group, and within groups the relationship is positive — Spearman
+median +0.32, and quartile medians are monotone (−0.04664 / −0.04715 /
+−0.04769 / −0.04946 from cheapest to dearest quartile). It is a weak
+ordering, not a wrong one: 38 of 87 groups still rank negatively.
+
+### Conclusion: the prefilter is not why ACTIONABLE is 0
+
+Relaxing it cannot produce a trade proposal. The gap from the best measured
+candidate to break-even is 0.00682; the entire difference between the
+filtered and the random pool is 0.0007, an order of magnitude smaller. A
+negative result, and a useful one: a structural suspicion about the
+pipeline is ruled out, leaving the measured negative expected value in
+sections 1–2 and 6 as the sole reason for "no trade".
+
+**What this does not establish.** 225 of 33,962 is a 0.66% sample, and the
+question is about an extreme value, where a small sample is weakest. This
+exonerates the filter; it does not prove it optimal. Nor does it cover
+EURUSD/XAU (no local candidates) or any date other than 2026-09-14.
+
+## 6.6 Does the spot/quote timing offset inflate the measured EV? (2026-09-20)
+
+Roughly a third of priced candidates show an intrinsic value *above* their
+own mid quote (19,764 of 64,970) — economically impossible, since a turbo
+below intrinsic would be arbitrage. The cause is a timing offset: the spot
+used for `intrinsic_value` is not from the same instant as the issuer's
+quote. The concern this tests is the worst case for section 7's central
+claim: if a too-low spot inflates a short turbo's intrinsic value, and that
+feeds the expected value, then the measured best candidate (−0.00682) would
+be *optimistic*, and "no trade" would rest on numbers that are themselves
+wrong in the flattering direction.
+
+Same scope caveat as §6.5: local `candidate_sets`, six runs from
+2026-09-14, DAX/NDX, no re-simulation, no trial_id consumed.
+
+### The offset is concentrated in the *worst* candidates, not the best
+
+Relative offset is `(intrinsic − mid) / ask`.
+
+| | n | offset (median) | mean absolute offset |
+|---|---|---|---|
+| best 100 by `lcb_ev` | 100 | 0.00003 | **0.00071** |
+| all others | 2,572 | 0.00027 | **0.01201** |
+
+The top 100 carry a seventeen-fold *smaller* pricing inconsistency than the
+rest. Individually, the twenty best candidates' offsets all lie between
+−0.00099 and +0.00139, four of them negative — no systematic direction.
+
+By EV quartile (worst to best), mean offset runs 0.01917 / 0.00574 /
+0.00502 / 0.00307. So the `corr(offset, lcb_ev) = −0.39` (r² = 0.15)
+measured across all candidates is carried entirely by the bad end:
+products with an unclean price basis earn poor EV. That is the gate working
+as intended, not a bias in favour of the winners.
+
+### It also cannot reach the EV by construction
+
+Entry is the ask, never the mid (`net_return = exit_bid / entry_ask − 1`,
+`simulation/payoff.py`; Master Spec rule 11). The quantity measured here is
+intrinsic-vs-*mid*, which enters the net return only indirectly through
+`issuer_margin` — and `pipeline/scan.py` floors that at zero
+(`max(issuer_margin_pct, 0.0)`), so a negative margin cannot cheapen a
+candidate at all.
+
+### Conclusion: the measured EV is not flattered by this defect
+
+The −0.00682 is neither optimistic nor an artifact. The offset remains a
+genuine data-quality defect worth fixing on its own merits (it is what
+`implied_spot_deviation` already flags into DATA_QUALITY, where the mean
+absolute offset is 0.00440 — the integrity check is catching the visible
+cases), but it is not an explanation for ACTIONABLE = 0.
+
+**What this does not establish.** It measures the offset's *association*
+with EV, not a counterfactual: nothing here re-prices the candidates with a
+correctly synchronised spot and re-runs the simulation. That would be the
+only way to bound the effect exactly, and it needs price history the local
+state database does not have (399 bars for DAX/NDX against
+`lookback_days: 750`; no bars at all for EURUSD/XAU).
+
+### Taken together with §6.5
+
+Three structural explanations for "no ACTIONABLE" that would have been
+defects rather than findings are now measured and ruled out: a blocking
+gate (every evaluated candidate carries `lcb_ev_not_positive`, and no other
+watch reason — §5), a prefilter discarding better products (§6.5), and a
+pricing basis biased in the flattering direction (this section). What
+remains is the measurement in sections 1–2 and 6: no forecast has an edge
+that survives a turbo's costs.
+
 ## 7. Conclusion
 
 Across every avenue tested so far — the protected TSMOM baseline mapped to

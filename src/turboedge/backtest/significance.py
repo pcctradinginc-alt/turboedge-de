@@ -16,6 +16,55 @@ from scipy import stats
 
 _EULER_MASCHERONI = 0.5772156649015329
 
+#: Smallest ``std / max|r|`` a return series must have before its Sharpe
+#: ratio -- and therefore PSR/DSR -- carries any information.
+#:
+#: Measured 2026-09-20. ``np.std(ddof=1)`` over 20 identical values does not
+#: return 0.0 but 2.2e-19 (floating-point cancellation), so the natural-
+#: looking guard ``if std > 0`` never fires for a degenerate series. What got
+#: through instead: ``sr_hat = 4.5e15``, ``skew``/``kurtosis`` both ``nan``,
+#: and scipy's "Precision loss occurred in moment calculation due to
+#: catastrophic cancellation" RuntimeWarning (visible in every pytest run of
+#: this repository, via tests/reporting/test_weekly.py).
+#:
+#: The silent variant is worse than the loud one: a *nearly* identical series
+#: (20 values differing in the 10th decimal) raises no warning at all, yet
+#: yields ``sr_hat = 2.3e7`` and ``PSR = 0.9999999999994`` -- comfortably past
+#: `reporting/weekly.py`'s ``ladder_min_psr = 0.95`` promotion gate. That is
+#: not a rounding artifact but a governance hole: PSR/DSR exist to stop a
+#: model being promoted on noise, and they were at their most confident
+#: exactly where the data says least.
+#:
+#: This is reachable in production, not only in tests: `weekly.py` computes
+#: PSR from realized forward-ledger returns once a family has
+#: ``min_trades_for_comparison`` (10) trades, and ten turbo positions that all
+#: knocked out -- or all closed at the same target -- have identical returns
+#: by construction.
+#:
+#: 1e-6 sits far below anything real (a genuine return series has
+#: ``std / max|r|`` of order 1e-1..1) and far above float64 cancellation noise
+#: (~1e-16 relative). A series under it implies a Sharpe ratio above ~1e6,
+#: which is never a measurement.
+_MIN_RELATIVE_DISPERSION = 1e-6
+
+
+def _has_usable_dispersion(r: npt.NDArray[np.float64]) -> bool:
+    """Whether ``r`` varies enough for a Sharpe-based statistic to mean anything.
+
+    Scale-relative on purpose: an absolute floor would reject legitimately
+    small returns (a 0.01% daily series is not degenerate) while still
+    accepting a degenerate series denominated in larger numbers.
+    """
+    if r.size < 2:
+        return False
+    scale = float(np.max(np.abs(r)))
+    if not np.isfinite(scale) or scale == 0.0:
+        # All-zero (or non-finite) returns: no dispersion, and no scale to
+        # measure dispersion against.
+        return False
+    std = float(np.std(r, ddof=1))
+    return np.isfinite(std) and std > _MIN_RELATIVE_DISPERSION * scale
+
 
 def probabilistic_sharpe_ratio(
     returns: npt.NDArray[np.float64], benchmark_sr: float = 0.0
@@ -36,8 +85,20 @@ def probabilistic_sharpe_ratio(
     n = r.shape[0]
     if n < 3:
         raise ValueError(f"returns must have at least 3 observations, got {n}")
+    if not _has_usable_dispersion(r):
+        # A (near-)constant series carries no information about the true
+        # Sharpe ratio, so the honest answer is "undetermined" -- 0.5, the
+        # value PSR takes when the observed and benchmark Sharpe coincide.
+        # Deliberately not 1.0: the formula's limit for constant positive
+        # returns is certainty, and reporting certainty from ten identical
+        # knock-outs would let `weekly.py`'s ladder promote on noise (see
+        # `_MIN_RELATIVE_DISPERSION`). Returning early also keeps the
+        # degenerate input away from `stats.skew`/`stats.kurtosis`, whose
+        # catastrophic-cancellation RuntimeWarning was the visible symptom
+        # of this.
+        return 0.5
     std = float(np.std(r, ddof=1))
-    sr_hat = float(np.mean(r) / std) if std > 0 else 0.0
+    sr_hat = float(np.mean(r) / std)
     skew = float(stats.skew(r, bias=False))
     kurt = float(stats.kurtosis(r, fisher=False, bias=False))  # non-excess (normal == 3)
     denom_inner = 1.0 - skew * sr_hat + (kurt - 1.0) / 4.0 * sr_hat**2
@@ -73,8 +134,15 @@ def deflated_sharpe_ratio(
     n = r.shape[0]
     if n < 3:
         raise ValueError(f"returns must have at least 3 observations, got {n}")
+    if not _has_usable_dispersion(r):
+        # Same reasoning as `probabilistic_sharpe_ratio`, and the guard must
+        # live here too rather than being inherited from the PSR call at the
+        # end: `sr_std` below is built from this series' own skew/kurtosis,
+        # so a degenerate input would already have produced a `nan` `sr0`
+        # benchmark before PSR ever saw it.
+        return 0.5
     std = float(np.std(r, ddof=1))
-    sr_hat = float(np.mean(r) / std) if std > 0 else 0.0
+    sr_hat = float(np.mean(r) / std)
     skew_ = float(stats.skew(r, bias=False)) if skew is None else skew
     kurt_ = float(stats.kurtosis(r, fisher=False, bias=False)) if kurtosis is None else kurtosis
     sr_std = float(

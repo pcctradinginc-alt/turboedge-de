@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import pytest
 from scipy import stats
@@ -75,6 +77,70 @@ def test_dsr_rejects_invalid_n_trials() -> None:
     r = rng.normal(0.0, 0.01, size=100)
     with pytest.raises(ValueError):
         deflated_sharpe_ratio(r, n_trials=0)
+
+
+@pytest.mark.parametrize(
+    ("label", "returns"),
+    [
+        # Ten turbo positions that all knocked out, or all closed at the same
+        # target: identical returns by construction, and reachable in
+        # production once a family has `min_trades_for_comparison` (10) trades.
+        ("constant positive", [0.001] * 20),
+        ("constant negative", [-1.0] * 20),
+        ("all zero", [0.0] * 20),
+        # The silent case: differs only in the 10th decimal, raises no
+        # RuntimeWarning at all, and used to yield sr_hat = 2.3e7.
+        ("near-constant", [0.001, 0.001, 0.001, 0.0010000001] * 5),
+    ],
+)
+def test_psr_and_dsr_return_no_evidence_for_degenerate_series(
+    label: str, returns: list[float]
+) -> None:
+    """A (near-)constant return series must yield 0.5, not near-certainty.
+
+    ``np.std(ddof=1)`` over identical values returns ~2e-19, not 0.0, so the
+    former ``if std > 0`` guard never fired. What came out instead was
+    ``sr_hat`` of order 1e7..1e15 and ``PSR = 0.9999999999994`` -- past
+    `reporting/weekly.py`'s ``ladder_min_psr = 0.95``. These statistics exist
+    to stop promotion on noise; being most confident where the data says
+    least inverted their purpose.
+
+    0.5 is "undetermined" (observed Sharpe == benchmark), which blocks the
+    ladder rather than clearing it.
+    """
+    r = np.array(returns, dtype=np.float64)
+    assert probabilistic_sharpe_ratio(r) == 0.5
+    assert deflated_sharpe_ratio(r, n_trials=10) == 0.5
+
+
+def test_degenerate_series_raises_no_precision_warning() -> None:
+    """The visible symptom must be gone, not merely suppressed.
+
+    scipy's "Precision loss occurred in moment calculation due to
+    catastrophic cancellation" warning fired on every pytest run of this
+    repository via tests/reporting/test_weekly.py. It is gone because the
+    degenerate input no longer reaches `stats.skew`/`stats.kurtosis` -- not
+    because the warning is filtered anywhere.
+    """
+    r = np.array([0.001] * 20, dtype=np.float64)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        assert probabilistic_sharpe_ratio(r) == 0.5
+        assert deflated_sharpe_ratio(r, n_trials=10) == 0.5
+
+
+def test_dispersion_guard_does_not_reject_small_but_real_returns() -> None:
+    """The counterpart: the guard is scale-relative, so a genuinely small
+    return series is still evaluated normally.
+
+    Without this, an absolute floor could silently turn every low-volatility
+    family into "no evidence" -- replacing one wrong answer with another.
+    """
+    rng = np.random.default_rng(11)
+    tiny = rng.normal(1e-6, 1e-5, size=200)  # 0.001% mean, 0.001% sd
+    psr = probabilistic_sharpe_ratio(tiny)
+    assert psr != 0.5
+    assert 0.0 <= psr <= 1.0
 
 
 def test_benjamini_hochberg_textbook_example() -> None:

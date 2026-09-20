@@ -13,7 +13,7 @@ in-memory fakes (see ``tests/pipeline/conftest.py``).
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -588,3 +588,100 @@ def test_ev_evaluated_candidates_persist_raw_ko_probability(
     persisted = {c.isin: c for c in store.list_candidates()}
     for candidate in evaluated:
         assert persisted[candidate.isin].p_ko_raw == pytest.approx(candidate.p_ko_raw)
+
+
+def test_scan_warns_when_every_quote_was_too_stale_to_measure_anything(
+    cfg: TurboEdgeConfig,
+    store: Store,
+    tmp_path: Path,
+    make_product_adapter: Callable[..., Any],
+    make_price_adapter: Callable[..., Any],
+    make_estr_adapter: Callable[..., Any],
+    dax_product_factory: Callable[..., ProductSnapshot],
+    strong_uptrend_bars: Any,
+) -> None:
+    """A scan nobody was quoting into must say so, not look like a verdict.
+
+    Measured 2026-09-18 in CI: the 22:50 CEST scan rejected 9,881 of 10,022
+    DAX candidates on quote freshness alone and reported ACTIONABLE=0,
+    WATCH=0, REJECT=16,413 -- from `reports/summary.json` indistinguishable
+    from a run that examined those products and found none worth trading.
+    It had measured nothing about the market at all; off-exchange trading
+    had stopped hours earlier.
+
+    Note on the fixture: `make_dax_product` derives `retrieved_at` from
+    `quote_timestamp` unless an observation time is passed, so backdating
+    the quote alone leaves the SOURCE-side age at zero and trips only the
+    decision-time gate. Both reasons belong to the same set, so this is
+    sufficient here -- but this test does not exercise the source-side one.
+    """
+    products = [
+        _cheap_favorable_long(
+            dax_product_factory,
+            isin=f"DE000STALE{i:02d}",
+            quote_timestamp=_EVAL_TIME - timedelta(hours=2),
+        )
+        for i in range(3)
+    ]
+    adapter = make_product_adapter("source_a", products=products)
+    price_adapter = make_price_adapter(bars_by_underlying={"DAX": strong_uptrend_bars})
+
+    result = run_scan(
+        **_base_kwargs(
+            cfg=cfg,
+            store=store,
+            tmp_path=tmp_path,
+            product_adapters=[adapter],
+            price_adapter=price_adapter,
+            estr_adapter=make_estr_adapter(),
+            rng=np.random.default_rng(11),
+        ),
+        options=ScanOptions(underlying_id="DAX"),
+    )
+
+    assert "no_tradable_quotes_market_likely_closed" in result.warnings
+    # The warning is a description, never a decision: every candidate must
+    # still be REJECT for exactly the freshness reason the gate found, with
+    # no category changed by the warning's existence.
+    assert result.candidates
+    for candidate in result.candidates:
+        assert candidate.category == Category.REJECT
+        assert "quote_age_at_decision" in candidate.reasons
+
+
+def test_scan_stays_quiet_when_quotes_are_fresh(
+    cfg: TurboEdgeConfig,
+    store: Store,
+    tmp_path: Path,
+    make_product_adapter: Callable[..., Any],
+    make_price_adapter: Callable[..., Any],
+    make_estr_adapter: Callable[..., Any],
+    dax_product_factory: Callable[..., ProductSnapshot],
+    strong_uptrend_bars: Any,
+) -> None:
+    """The counterpart: a normal, in-hours scan must not raise the warning.
+
+    Without this, the warning could be raised unconditionally and the test
+    above would still pass -- which would make every honest "examined and
+    found nothing" run look like a scheduling accident, exactly inverting
+    the confusion it exists to prevent.
+    """
+    adapter = make_product_adapter(
+        "source_a", products=[_cheap_favorable_long(dax_product_factory)]
+    )
+    price_adapter = make_price_adapter(bars_by_underlying={"DAX": strong_uptrend_bars})
+
+    result = run_scan(
+        **_base_kwargs(
+            cfg=cfg,
+            store=store,
+            tmp_path=tmp_path,
+            product_adapters=[adapter],
+            price_adapter=price_adapter,
+            estr_adapter=make_estr_adapter(),
+            rng=np.random.default_rng(11),
+        ),
+        options=ScanOptions(underlying_id="DAX"),
+    )
+
+    assert "no_tradable_quotes_market_likely_closed" not in result.warnings

@@ -261,6 +261,60 @@ def _add_warning(warnings: list[str], message: str) -> None:
         warnings.append(message)
 
 
+#: Reject reasons that mean "nobody was quoting this product when we looked",
+#: as opposed to "this product was examined and found unsuitable".
+_STALE_QUOTE_REASONS = frozenset({"source_quote_stale", "quote_age_at_decision"})
+
+#: Share of candidates that must fail on quote freshness alone before a scan
+#: is reported as having measured nothing. Not a configurable threshold and
+#: deliberately not in configs/: it gates no candidate and changes no
+#: category -- it only decides whether a run describes itself honestly, so
+#: there is nothing here to tune toward a desired outcome.
+#:
+#: The two regimes are separated by two orders of magnitude, so any cutoff
+#: between them behaves identically (measured, CI pipeline runs 2026-09-18):
+#: the 14:20 CEST scan rejected 36 of 11,401 DAX candidates on freshness
+#: (0.3%), the 16:23 one 42 of 11,337 (0.4%); the 22:50 CEST scan rejected
+#: 9,881 of 10,022 (98.6%) and produced WATCH=0, ACTIONABLE=0,
+#: REJECT=16,413 across both underlyings. 0.9 sits in the empty space
+#: between them, far from either.
+_SILENT_MARKET_REJECT_SHARE = 0.9
+
+
+def _warn_if_nothing_was_measurable(
+    candidates: Sequence[CandidateEvaluation], warnings: list[str]
+) -> None:
+    """Flag a scan whose candidates almost all failed on quote freshness.
+
+    Such a run looks, from `reports/summary.json` and the job summary alone,
+    exactly like a run that examined thousands of products and found none
+    worth trading -- same ACTIONABLE=0, same large REJECT count. It is not:
+    nobody was quoting, so nothing about the market was measured. Reading
+    the second as the first is how a scheduling accident turns into an
+    apparent research result.
+
+    This is the 2026-09-20 finding behind that distinction: GitHub's
+    scheduler drifts by hours on this repository (crons at 07:40/10:10/
+    13:45/15:50/18:10 UTC fired at 12:20/14:23/17:13/18:39/20:50 on
+    2026-09-18, with the morning run not firing at all), so one scan a day
+    lands at 22:50 CEST -- after even off-exchange trading has stopped. Its
+    BNP quotes had a median age of 3,065s against a 900s gate. The gate did
+    exactly the right thing; only the report was ambiguous.
+
+    Changes no category, no gate and no threshold -- the identical
+    candidates are produced either way. `warnings` reaches
+    `reports/summary.json` (cli_learn.py), the aggregated scan-all result
+    (pipeline/scan_all.py) and the report mail's own Warnings block
+    (notifications/templates.py), so unlike the WATCH reasons this was
+    paired with, it is visible where the counts are read.
+    """
+    if not candidates:
+        return
+    stale = sum(1 for c in candidates if _STALE_QUOTE_REASONS.intersection(c.reasons))
+    if stale / len(candidates) >= _SILENT_MARKET_REJECT_SHARE:
+        _add_warning(warnings, "no_tradable_quotes_market_likely_closed")
+
+
 def _quote_age_stats(ages: Sequence[float]) -> dict[str, float | int]:
     """min/median/p90/max (seconds) + sample size for one issuer's quote ages.
 
@@ -2620,6 +2674,7 @@ def _run_scan_body(
         evaluation_time=evaluation_time,
         fetch_duration_s=fetch_duration_s,
     )
+    _warn_if_nothing_was_measurable(candidates, warnings)
 
     # 8) persist candidates + optional scan-report email
     store.append_candidates(candidates)

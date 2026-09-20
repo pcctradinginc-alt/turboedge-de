@@ -420,6 +420,38 @@ jobs:
           TURBOEDGE_EMAIL_TO: ${{ secrets.TURBOEDGE_EMAIL_TO }}
         run: uv run turboedge --log-format json research tournament --email
 
+      # W10's out-of-sample P(KO) calibrator evaluation
+      # (docs/measured_results.md §3.1) was run by hand exactly once, on
+      # 2026-09-19, and never again -- `research_trials`/`runs` in every
+      # environment show no `ko-calibration` run at all, and both
+      # `ko_calibration_results` and `ko_calibration_promotion` are empty.
+      # Its answer was NO PROMOTION (isotonic improves aggregate calibration
+      # but flips the mean signed error at sigma 1.5/2.0 from conservative
+      # to under-predicting KO risk; Platt degrades Brier outright), and
+      # `ranking/gates.py` consequently still consumes raw P(KO). But that
+      # answer is a property of the data as it stood on one day: more
+      # history, or a different volatility regime, could change it in
+      # either direction, and nothing would notice.
+      #
+      # Safe to automate precisely because a promotion here is a RECORD,
+      # not an effect: nothing in ranking/, pipeline/ or simulation/ reads
+      # `ko_calibration_promotion` or `ko_calibrator_version` (the command's
+      # own --help says so: "Measurement only -- ranking/gates.py and
+      # pipeline/scan.py are not touched by this command, even when a
+      # calibrator is promoted"). A future promotion therefore lands in the
+      # database for a human to review, and changes no gate on its own.
+      #
+      # Cost is negligible: measured 15.5s for one underlying locally
+      # (64,880 observations), so ~1 min for all four, inside this job's
+      # 60-minute timeout. A failed bar fetch falls back to stored bars
+      # rather than aborting (cli_learn.py), and `continue-on-error` keeps
+      # a genuinely unusable run (exit 3, "no usable observations") from
+      # turning the tournament's own result red -- this is a research
+      # measurement, not a gate on the weekly job.
+      - name: Re-run the W10 KO-calibration measurement (records only, promotes nothing)
+        continue-on-error: true
+        run: uv run turboedge --log-format json research ko-calibration
+
       - name: Keepalive -- re-enable every workflow (public repos auto-disable after 60 days idle)
         if: success()
         env:

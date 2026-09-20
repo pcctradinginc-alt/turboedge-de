@@ -311,9 +311,28 @@ def _log_scan_diagnostics(
     which reject reason? how old, from which source, measured which way?)
     measurable from the log alone, without re-running locally or guessing.
 
-    Returns the same ``reject_reason_counts`` mapping it logs, so the daily
-    research protocol digest's "ABLEHNENDE BEDINGUNG" counters
-    (`_build_daily_protocol_entry`) reuse this one computation instead of
+    Added 2026-09-20 (ACTIONABLE=0 investigation): `watch_reason_counts`,
+    the same tally over WATCH candidates. Until this existed, only REJECT
+    reasons were counted, so the log could say *that* every candidate
+    stopped short of ACTIONABLE but never *which* precondition was missing
+    -- `evaluate_gates` computes exactly that (`lcb_ev_not_evaluated` vs
+    `lcb_ev_not_positive` vs `p_ko_not_evaluated` vs
+    `cluster_risk_not_confirmed` vs `ratio_unverified`), and it was
+    discarded one line later. The distinction is the whole question: an
+    honest measured "EV is negative" (`lcb_ev_not_positive`) and a
+    structural "EV was never computed for this candidate"
+    (`lcb_ev_not_evaluated`) are indistinguishable from the outside
+    otherwise. Measured against the local state database at the time this
+    was added: all 2,349 EV-evaluated WATCH candidates carried
+    `lcb_ev_not_positive`, none carried any of the other four -- i.e. the
+    gate is not blocking, the expected value simply is not positive.
+
+    Returns the same ``reject_reason_counts`` mapping it logs (WATCH counts
+    are logged but deliberately NOT returned -- the daily research protocol
+    digest's "ABLEHNENDE BEDINGUNG" counters are about rejections, and
+    widening that return type would change `_build_daily_protocol_entry`'s
+    contract for no measured need), so the digest
+    (`_build_daily_protocol_entry`) reuses this one computation instead of
     re-deriving it.
     """
     ages_by_issuer: dict[str, list[float]] = {}
@@ -337,9 +356,12 @@ def _log_scan_diagnostics(
     }
 
     reject_reason_counts: Counter[str] = Counter()
+    watch_reason_counts: Counter[str] = Counter()
     for c in candidates:
         if c.category == Category.REJECT:
             reject_reason_counts.update(c.reasons)
+        elif c.category == Category.WATCH:
+            watch_reason_counts.update(c.reasons)
 
     counts = dict(reject_reason_counts.most_common())
     logger.info(
@@ -351,6 +373,7 @@ def _log_scan_diagnostics(
         quote_age_stats_by_issuer=quote_age_stats_by_issuer,
         source_quote_age_stats_by_issuer=source_quote_age_stats_by_issuer,
         reject_reason_counts=counts,
+        watch_reason_counts=dict(watch_reason_counts.most_common()),
     )
     return counts
 
@@ -2155,6 +2178,20 @@ def _run_ev_pipeline(
             f"ev_horizon={ev.horizon_days}d",
             "p_ko_conservative_see_docs",
         ]
+        # `p_ko_raw` closes the chain W10 deliberately left open (see
+        # CandidateEvaluation's own docstring: "once the scan pipeline is
+        # wired to populate it -- not this change, schema and persistence
+        # only"). `ev.p_ko` is the uncalibrated path-simulation P(KO) that
+        # `gate_input` above already gates on, so persisting it here adds no
+        # new computation and changes no decision -- it only stops the
+        # single most important risk number of a turbo from being discarded
+        # after every scan. Measured before this change: `p_ko_raw` was NULL
+        # in all 65,095 `candidate_sets` rows of the local state database.
+        # `p_ko_calibrated`/`ko_calibrator_version` stay `None` on purpose:
+        # no calibrator has been promoted (backtest/ko_calibration.py's
+        # promotion rule), and there is no runtime-applicable calibrator
+        # artifact to apply -- writing "raw" into a field named *calibrated*
+        # would misrepresent an uncalibrated number as a calibrated one.
         updated = original.model_copy(
             update={
                 "category": category,
@@ -2162,6 +2199,7 @@ def _run_ev_pipeline(
                 "lcb_ev": adjusted_lcb,
                 "premium_over_fair": premium_by_isin.get(isin),
                 "premium_uncertainty_term": premium_term,
+                "p_ko_raw": ev.p_ko,
             }
         )
         updated_candidates[isin] = updated

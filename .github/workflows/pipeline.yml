@@ -338,6 +338,20 @@ jobs:
       - name: Compact product_snapshots retention
         run: uv run turboedge --log-format json db compact
 
+      # GOVERNANCE.md §11.1/§12 (2026-09-19 entry): the six documented W9
+      # 2026Q3 trials were never actually written to `research_trials` in
+      # any environment (this repo's local dev DB and CI's own separate DB
+      # were both measured at 0 rows despite the changelog claiming the
+      # backfill had already happened) -- `count_research_trials_in_quarter`
+      # therefore undercounts the §1.2 quarterly adaptation budget wherever
+      # this runs. `research backfill-trials` inserts a row per trial_id
+      # only if that trial_id is not already present (research_trials'
+      # primary key), so running it here every eod is a harmless no-op once
+      # CI's own state DB has the six rows -- never re-inserts, never
+      # duplicates, never raises on a re-run.
+      - name: Backfill W9 2026Q3 research trials (idempotent bookkeeping fix)
+        run: uv run turboedge --log-format json research backfill-trials
+
       - name: Job summary
         if: always()
         uses: ./.github/actions/turboedge-state-summary

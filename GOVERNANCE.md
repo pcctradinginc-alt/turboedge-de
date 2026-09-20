@@ -315,6 +315,43 @@ Muster verstärken, negative Muster nicht löschen" / Rule 31): these
 entries are retained, not deleted, so none of the six is blindly retried
 next quarter without a documented regime-change justification.
 
+### 11.5 Phase D distributional baselines — attributed to 2026Q4
+
+Phase D (`docs/measured_results.md` §6) built and measured **three new
+model families** on the normalized horizon target: the
+`RegimeConditionalEmpiricalModel`, the `RegularizedLinearLocationModel`
+and the `RobustLocationScaleModel`. They are registered as
+`PD-2026Q4-001`, `-002` and `-003` in `research_trials`, all with status
+`dormant`.
+
+**Why these consume trial_ids at all.** §11.1 records that W4 did *not*
+consume one, because it only measured signals that already existed. That
+precedent does not extend here: Phase D did not re-measure an existing
+model, it introduced three new ones. Under §1.1 ("every research
+change — feature variant, threshold adjustment, model hyperparameter,
+sizing rule — receives a unique `trial_id`") a new model family is
+exactly the kind of change the budget exists to count. Treating them as
+budget-free because none was promoted would understate `N_effective` in
+every later deflation, which is the specific failure mode §3 is built to
+prevent.
+
+**Why 2026Q4 and not 2026Q3.** The 2026Q3 adaptation budget was already
+fully consumed (6/6) by W9 before Phase D began (§11.1). The honest
+options were to attribute the three trials to the next quarter, or to
+raise the budget. **The budget was not raised** — §1.2's limit of 6 per
+quarter is unchanged, and no exception was granted. Attribution to
+2026Q4 is therefore the conservative reading: it counts the trials in
+full, and it does so in the first quarter that actually has room for
+them.
+
+**What this does not mean.** None of the three is promoted, none is in
+the live scan ensemble (`models.forecast.build_default_models` is
+unchanged), and all three remain `dormant`. A measured CRPS improvement
+is explicitly insufficient for promotion under `SIGNAL_REGISTRY.md`
+§1.10 — promotion additionally requires a reproducible downstream net-EV
+advantage after realistic Turbo costs, path/KO risk and multiple-testing
+deflation, which has not been measured for these models.
+
 ---
 
 ## 12. Change Log for Research Framework

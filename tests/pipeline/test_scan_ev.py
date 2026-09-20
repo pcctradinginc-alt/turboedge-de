@@ -19,6 +19,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+import structlog.testing
 
 from turboedge.config import TurboEdgeConfig
 from turboedge.pipeline.scan import ScanOptions, run_scan
@@ -457,3 +458,133 @@ def test_prefiltered_out_watch_candidates_are_marked_not_evaluated(
     # neither, and never both.
     assert set(c.candidate_id for c in not_evaluated).isdisjoint(c.candidate_id for c in evaluated)
     assert len(not_evaluated) + len(evaluated) == len(non_reject)
+
+
+def test_scan_diagnostics_counts_watch_reasons_not_only_reject_reasons(
+    cfg: TurboEdgeConfig,
+    store: Store,
+    tmp_path: Path,
+    make_product_adapter: Callable[..., Any],
+    make_price_adapter: Callable[..., Any],
+    make_estr_adapter: Callable[..., Any],
+    dax_product_factory: Callable[..., ProductSnapshot],
+    strong_uptrend_bars: Any,
+) -> None:
+    """``scan_diagnostics`` must tally WATCH reasons, not only REJECT ones.
+
+    Until 2026-09-20 it counted ``Category.REJECT`` exclusively, so a scan
+    whose candidates all stopped one step short of ACTIONABLE logged *that*
+    they did but never *which* precondition was missing --
+    ``evaluate_gates`` computes exactly that and it was discarded one line
+    later. The distinction decides how the result must be read: an honest
+    measured "expected value is not positive" (``lcb_ev_not_positive``) and
+    a structural "expected value was never computed for this candidate"
+    (``lcb_ev_not_evaluated``) look identical from outside the process
+    otherwise, and only the second one would be a defect.
+    """
+    products = [
+        _cheap_favorable_long(
+            dax_product_factory,
+            isin=f"DE000WRSNS{i:02d}",
+            issuer="BankA",
+            financing_level=18000.0 - i * 2.0,
+        )
+        for i in range(40)
+    ]
+    adapter = make_product_adapter("source_a", products=products)
+    price_adapter = make_price_adapter(bars_by_underlying={"DAX": strong_uptrend_bars})
+
+    with structlog.testing.capture_logs() as logs:
+        result = run_scan(
+            **_base_kwargs(
+                cfg=cfg,
+                store=store,
+                tmp_path=tmp_path,
+                product_adapters=[adapter],
+                price_adapter=price_adapter,
+                estr_adapter=make_estr_adapter(),
+                rng=np.random.default_rng(7),
+            ),
+            options=ScanOptions(underlying_id="DAX"),
+        )
+
+    diagnostics = [entry for entry in logs if entry.get("event") == "scan_diagnostics"]
+    assert len(diagnostics) == 1, "exactly one scan_diagnostics line per scanned underlying"
+    watch_counts = diagnostics[0]["watch_reason_counts"]
+
+    watch_candidates = [c for c in result.candidates if c.category == Category.WATCH]
+    assert watch_candidates, "this fixture is built to leave WATCH candidates behind"
+
+    # The tally must reproduce the candidates' own reasons exactly -- it is a
+    # view onto them, never an independent (and therefore driftable) second
+    # derivation.
+    expected: dict[str, int] = {}
+    for candidate in watch_candidates:
+        for reason in candidate.reasons:
+            expected[reason] = expected.get(reason, 0) + 1
+    assert watch_counts == expected
+
+    # REJECT counting stays exactly as it was: the two tallies are disjoint
+    # views, and adding one must not silently fold the other into it.
+    reject_counts = diagnostics[0]["reject_reason_counts"]
+    reject_candidates = [c for c in result.candidates if c.category == Category.REJECT]
+    assert sum(reject_counts.values()) == sum(len(c.reasons) for c in reject_candidates)
+
+
+def test_ev_evaluated_candidates_persist_raw_ko_probability(
+    cfg: TurboEdgeConfig,
+    store: Store,
+    tmp_path: Path,
+    make_product_adapter: Callable[..., Any],
+    make_price_adapter: Callable[..., Any],
+    make_estr_adapter: Callable[..., Any],
+    dax_product_factory: Callable[..., ProductSnapshot],
+    strong_uptrend_bars: Any,
+) -> None:
+    """Every EV-evaluated candidate keeps its raw path-simulation P(KO).
+
+    ``ranking/gates.py`` already gates on this number, and the simulation
+    already produces it -- but until 2026-09-20 ``pipeline/scan.py`` dropped
+    it instead of writing it to the candidate, leaving ``p_ko_raw`` NULL in
+    all 65,095 rows of the local state database. A turbo's knock-out
+    probability is its central risk figure; discarding it after every scan
+    makes the persisted candidate unreproducible in the sense of rule 33.
+
+    ``p_ko_calibrated``/``ko_calibrator_version`` must stay ``None``: no
+    calibrator has been promoted, and there is no runtime-applicable
+    calibrator artifact -- writing the raw value into a field named
+    *calibrated* would misrepresent it.
+    """
+    adapter = make_product_adapter(
+        "source_a", products=[_cheap_favorable_long(dax_product_factory)]
+    )
+    price_adapter = make_price_adapter(bars_by_underlying={"DAX": strong_uptrend_bars})
+
+    result = run_scan(
+        **_base_kwargs(
+            cfg=cfg,
+            store=store,
+            tmp_path=tmp_path,
+            product_adapters=[adapter],
+            price_adapter=price_adapter,
+            estr_adapter=make_estr_adapter(),
+            rng=np.random.default_rng(1234),
+        ),
+        options=ScanOptions(underlying_id="DAX"),
+    )
+
+    evaluated = [
+        c for c in result.candidates if any(r.startswith("ev_horizon=") for r in c.reasons)
+    ]
+    assert evaluated, "this fixture is built so the EV pipeline actually runs"
+    for candidate in evaluated:
+        assert candidate.p_ko_raw is not None, f"{candidate.isin} lost its simulated P(KO)"
+        assert 0.0 <= candidate.p_ko_raw <= 1.0
+        assert candidate.p_ko_calibrated is None
+        assert candidate.ko_calibrator_version is None
+
+    # It must survive the round trip through DuckDB, not just live on the
+    # in-memory result object -- persistence is the entire point.
+    persisted = {c.isin: c for c in store.list_candidates()}
+    for candidate in evaluated:
+        assert persisted[candidate.isin].p_ko_raw == pytest.approx(candidate.p_ko_raw)

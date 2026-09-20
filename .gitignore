@@ -37,6 +37,13 @@ reports/*.txt
 reports/*.json
 !reports/.gitkeep
 
+# Ad-hoc measurement artifacts written into the checkout by hand (research
+# runs belong in the session scratchpad, never in the repo root) -- a
+# `phase_d_significance_results.json` from a discarded 500-draw preliminary
+# run was found untracked here on 2026-09-20.
+/phase_*.json
+/phase_*.log
+
 # Secrets
 .env
 .env.*

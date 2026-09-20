@@ -57,6 +57,7 @@ def test_init_schema_creates_all_tables_empty(store: Store) -> None:
         "walkforward_results",
         "ko_calibration_results",
         "ko_calibration_promotion",
+        "rejected_ratio_derivations",
     }
     assert all(v == 0 for v in counts.values())
 

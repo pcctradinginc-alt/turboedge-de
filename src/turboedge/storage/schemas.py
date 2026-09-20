@@ -144,6 +144,23 @@ class PositionStatus(StrEnum):
     CLOSED = "closed"
 
 
+class RatioDerivationOutcome(StrEnum):
+    """The non-``"ok"`` half of :meth:`~turboedge.adapters.gettex.
+    GettexAdapter._derive_ratio`'s outcome (``adapters/gettex.py`` module
+    docstring steps 3-5). Deliberately excludes an ``"ok"`` member: a row
+    that reaches ``"ok"`` gets a verified ``ratio`` and becomes a
+    :class:`ProductSnapshot` instead of a :class:`RejectedRatioDerivation`
+    -- these two record types are mutually exclusive by construction, and
+    this enum being closed to only the three failure outcomes is what makes
+    that invariant statically checkable rather than a convention someone
+    could accidentally violate later.
+    """
+
+    RATIO_REJECTED = "ratio_rejected"
+    VERIFICATION_FAILED = "verification_failed"
+    QUANTO_AMBIGUOUS = "quanto_ambiguous"
+
+
 # -- W6 learning enums (Master Spec §20-27, §46; Build Contract v2 W6) -------
 
 
@@ -283,6 +300,92 @@ class ProductSnapshot(Provenance):
     barrier_reliability: FieldReliability = FieldReliability.UNVERIFIED
     financing_level_reliability: FieldReliability = FieldReliability.UNVERIFIED
     raw_hash: str  # sha256 of the raw source record, for reproducibility
+
+
+class RejectedRatioDerivation(BaseModel):
+    """One product row whose Bezugsverhaeltnis (ratio) derivation was
+    discarded -- kept as research material instead of being counted and
+    thrown away (CLAUDE.md rule 31: "Positive Muster verstaerken, negative
+    Muster nicht loeschen").
+
+    Background: ``adapters/gettex.py``'s derive-then-verify ratio pipeline
+    (module docstring) already distinguishes four outcomes internally --
+    ``"ok"``, ``"ratio_rejected"``, ``"verification_failed"``,
+    ``"quanto_ambiguous"`` -- but before this model existed, only ``"ok"``
+    ever survived: ``ratio`` is a required, pricing-critical field on
+    :class:`ProductSnapshot`, so a row with no verified ratio had nothing to
+    attach an ``UNVERIFIED`` reliability tier *to* and was dropped after
+    only incrementing a counter (``_FetchStats``) and a transient
+    ``last_errors`` log line. That is precisely why
+    ``docs/product_data_quality.md`` could only ever report 0% ``UNVERIFIED``
+    ratio reliability for gettex -- an artifact of what got thrown away, not
+    a measurement of what the derivation actually does.
+
+    This model is the additive fix: one row per discarded derivation
+    attempt, carrying the raw identity fields, which outcome it hit, and the
+    quantities that drove that outcome (leverage, financing level, bid/ask,
+    the leverage-implied reference spot). It is deliberately **not** a
+    :class:`ProductSnapshot` and is never converted into one: nothing here
+    is ever priced, ranked, gated or shown as a candidate (that would need a
+    verified ``ratio``, which by definition does not exist for any row this
+    model describes). It exists purely as reproducible research material --
+    the same reason ``forward_ledger`` keeps every discarded
+    alternative/counterfactual (Master Spec §21) instead of only the
+    selected entry -- so a later session can measure the discard-outcome
+    distribution over time and evaluate whether a future adapter change
+    (e.g. a wider verification tolerance, a better-conditioned S_ref) moves
+    it, rather than re-deriving that history from scratch or trusting an
+    impression.
+
+    ``isin`` is deliberately plain ``str``, not :data:`IsinStr` -- a row
+    that never earned a verified ratio should not *additionally* be dropped
+    from this research record merely because its raw source ISIN string
+    happens not to satisfy the strict 12-alphanumeric-character check; that
+    check matters for a value this system will actually price or trade, not
+    for one it has already decided never to.
+
+    No field here is ever guessed (CLAUDE.md rule 29): a quantity the source
+    did not provide, or that could not be computed for this particular
+    outcome (e.g. no candidate ratio ever snapped to the grid for
+    ``"ratio_rejected"``, so there is nothing meaningful to store as "the
+    ratio" here at all -- this model does not even have such a field), is
+    left ``None``/omitted rather than defaulted or invented.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    isin: str
+    wkn: str | None = None
+    issuer: str
+    underlying_id: str | None = None
+    underlying_raw: str
+    direction: Direction
+    outcome: RatioDerivationOutcome
+    # Human-readable reason, mirroring the same text gettex.py already logs
+    # to `GettexRowError.error` for this row -- kept here too since that log
+    # line is otherwise transient (not itself persisted anywhere).
+    detail: str
+    # The quantities that drove the outcome (module docstring: "Groessen,
+    # die zur Verwerfung gefuehrt haben"). All optional/`None` when gettex
+    # itself did not provide them for this row -- never backfilled.
+    leverage: float | None = None
+    financing_level: float | None = None
+    knockout_barrier: float | None = None
+    bid: float | None = None  # "Geld"
+    ask: float | None = None  # "Brief"
+    # The leverage-implied reference spot (S_ref, module docstring step 1)
+    # in effect for this row's underlying at derivation time -- always known
+    # once a row reaches per-row derivation at all (a missing S_ref means
+    # the whole underlying was skipped before any row got here), so this is
+    # non-optional.
+    reference_spot: float
+    quote_timestamp: OptionalTzAwareDatetime = None
+    # Fetch-time "now" (the adapter's own clock) -- always known, unlike
+    # `quote_timestamp` (only present when the source itself supplied one).
+    observed_at: TzAwareDatetime
+    source: str
+    parser_version: str
+    raw_hash: str
 
 
 class UnderlyingBar(Provenance):

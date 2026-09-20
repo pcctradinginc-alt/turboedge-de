@@ -152,3 +152,44 @@ def bootstrap_ci(
     lo = float(np.percentile(stats_boot, 100.0 * alpha / 2.0))
     hi = float(np.percentile(stats_boot, 100.0 * (1.0 - alpha / 2.0)))
     return lo, hi
+
+
+def bootstrap_p_value(
+    values: npt.NDArray[np.float64],
+    stat: Callable[[npt.NDArray[np.float64]], float],
+    n: int,
+    rng: np.random.Generator,
+    *,
+    null_value: float = 0.0,
+) -> float:
+    """Two-sided bootstrap hypothesis-test p-value for ``H0: stat(population) == null_value``.
+
+    Standard bootstrap hypothesis test (Efron & Tibshirani 1993, §16.4): the
+    observed sample is re-centered so the null holds exactly in the
+    resampling population (``values - stat(values) + null_value``), then
+    resampled with replacement ``n`` times via the same caller-supplied,
+    seedable ``rng`` pattern as :func:`bootstrap_ci`. The p-value is the
+    fraction of those null-world bootstrap statistics at least as extreme as
+    the actually observed one, with add-one (Laplace) smoothing so a p-value
+    of exactly 0 is never reported from a finite number of resamples.
+
+    Used for e.g. a per-cell CRPS-difference test against a null model: pass
+    ``values`` as the *paired* per-observation ``crps_challenger -
+    crps_null`` differences and ``stat=np.mean``; a p-value near 0 means the
+    observed mean difference is unlikely under "no true difference".
+    """
+    v = np.asarray(values, dtype=np.float64)
+    if v.size == 0:
+        raise ValueError("values must not be empty")
+    if n < 1:
+        raise ValueError(f"n must be >= 1, got {n!r}")
+
+    observed = float(stat(v))
+    centered = v - observed + null_value
+    size = v.shape[0]
+    stats_boot = np.empty(n, dtype=np.float64)
+    for i in range(n):
+        sample = centered[rng.integers(0, size, size=size)]
+        stats_boot[i] = stat(sample)
+    extreme = np.sum(np.abs(stats_boot - null_value) >= abs(observed - null_value))
+    return float((extreme + 1) / (n + 1))

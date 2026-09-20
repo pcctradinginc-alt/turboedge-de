@@ -49,6 +49,8 @@ from turboedge.storage.schemas import (
     PositionStatus,
     ProductSnapshot,
     ProductType,
+    RatioDerivationOutcome,
+    RejectedRatioDerivation,
     ResearchTrial,
     ShadowPortfolioKind,
     ShadowPosition,
@@ -512,6 +514,38 @@ _DDL_STATEMENTS: tuple[str, ...] = (
         git_commit VARCHAR
     )
     """,
+    # -- Discarded ratio-derivation research material (docs/product_data_
+    # quality.md, storage/schemas.py's RejectedRatioDerivation docstring):
+    # additive, append-only, and deliberately NOT product_snapshots/
+    # candidate_sets -- a row here never had a verified ratio, so it is
+    # never priced, ranked or gated (see ranking/gates.py, untouched by
+    # this table). Not deduplicated (like ko_calibration_results): a re-run
+    # over the same rows is a new measurement, kept in full history, since
+    # the whole point is measuring the discard-outcome distribution over
+    # time (CLAUDE.md rule 31: negative patterns are never deleted).
+    """
+    CREATE TABLE IF NOT EXISTS rejected_ratio_derivations (
+        isin VARCHAR NOT NULL,
+        wkn VARCHAR,
+        issuer VARCHAR NOT NULL,
+        underlying_id VARCHAR,
+        underlying_raw VARCHAR NOT NULL,
+        direction VARCHAR NOT NULL,
+        outcome VARCHAR NOT NULL,
+        detail VARCHAR NOT NULL,
+        leverage DOUBLE,
+        financing_level DOUBLE,
+        knockout_barrier DOUBLE,
+        bid DOUBLE,
+        ask DOUBLE,
+        reference_spot DOUBLE NOT NULL,
+        quote_timestamp TIMESTAMPTZ,
+        observed_at TIMESTAMPTZ NOT NULL,
+        source VARCHAR NOT NULL,
+        parser_version VARCHAR NOT NULL,
+        raw_hash VARCHAR NOT NULL
+    )
+    """,
 )
 
 _ALL_TABLES: tuple[str, ...] = (
@@ -537,6 +571,7 @@ _ALL_TABLES: tuple[str, ...] = (
     "walkforward_results",
     "ko_calibration_results",
     "ko_calibration_promotion",
+    "rejected_ratio_derivations",
 )
 
 # Append-only log of every additive column migration `Store.init_schema()`
@@ -1888,6 +1923,55 @@ class Store:
             git_commit=row[5],
         )
 
+    # -- discarded ratio-derivation research material -----------------------
+
+    def append_rejected_ratio_derivations(self, records: Sequence[RejectedRatioDerivation]) -> int:
+        """Persist discarded ratio-derivation attempts as research material
+        (never product_snapshots/candidate_sets -- see the table's DDL
+        comment and `RejectedRatioDerivation`'s docstring). Not
+        deduplicated: a re-run over the same rows is a new measurement."""
+        if not records:
+            return 0
+        rows = [_rejected_ratio_derivation_row(r) for r in records]
+        self._conn.executemany(
+            f"INSERT INTO rejected_ratio_derivations "
+            f"({', '.join(_REJECTED_RATIO_DERIVATION_COLUMNS)}) "
+            f"VALUES ({', '.join(['?'] * len(_REJECTED_RATIO_DERIVATION_COLUMNS))})",
+            rows,
+        )
+        return len(rows)
+
+    def list_rejected_ratio_derivations(
+        self,
+        *,
+        underlying_id: str | None = None,
+        issuer: str | None = None,
+        outcome: RatioDerivationOutcome | None = None,
+    ) -> list[RejectedRatioDerivation]:
+        """Query persisted discarded ratio-derivation attempts, for
+        diagnostics and for evaluating future adapter changes against this
+        history -- never consumed by ranking/gates.py or any candidate
+        pipeline (this table is not `product_snapshots`)."""
+        clauses: list[str] = []
+        params: list[Any] = []
+        if underlying_id is not None:
+            clauses.append("underlying_id = ?")
+            params.append(underlying_id)
+        if issuer is not None:
+            clauses.append("issuer = ?")
+            params.append(issuer)
+        if outcome is not None:
+            clauses.append("outcome = ?")
+            params.append(outcome.value)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self._conn.execute(
+            f"SELECT {', '.join(_REJECTED_RATIO_DERIVATION_COLUMNS)} "
+            f"FROM rejected_ratio_derivations {where} "
+            "ORDER BY observed_at ASC, isin ASC",
+            params,
+        ).fetchall()
+        return [_row_to_rejected_ratio_derivation(row) for row in rows]
+
 
 # --------------------------------------------------------------------------
 # row (de)serialization helpers
@@ -2765,6 +2849,77 @@ def _row_to_ko_calibration_result(row: tuple[Any, ...]) -> KoCalibrationResultRe
         evaluated_at=_from_db_dt(row[11]),
         config_hash=row[12],
         git_commit=row[13],
+    )
+
+
+_REJECTED_RATIO_DERIVATION_COLUMNS: tuple[str, ...] = (
+    "isin",
+    "wkn",
+    "issuer",
+    "underlying_id",
+    "underlying_raw",
+    "direction",
+    "outcome",
+    "detail",
+    "leverage",
+    "financing_level",
+    "knockout_barrier",
+    "bid",
+    "ask",
+    "reference_spot",
+    "quote_timestamp",
+    "observed_at",
+    "source",
+    "parser_version",
+    "raw_hash",
+)
+
+
+def _rejected_ratio_derivation_row(r: RejectedRatioDerivation) -> tuple[Any, ...]:
+    return (
+        r.isin,
+        r.wkn,
+        r.issuer,
+        r.underlying_id,
+        r.underlying_raw,
+        r.direction.value,
+        r.outcome.value,
+        r.detail,
+        r.leverage,
+        r.financing_level,
+        r.knockout_barrier,
+        r.bid,
+        r.ask,
+        r.reference_spot,
+        _opt_to_utc(r.quote_timestamp),
+        _to_utc(r.observed_at),
+        r.source,
+        r.parser_version,
+        r.raw_hash,
+    )
+
+
+def _row_to_rejected_ratio_derivation(row: tuple[Any, ...]) -> RejectedRatioDerivation:
+    return RejectedRatioDerivation(
+        isin=row[0],
+        wkn=row[1],
+        issuer=row[2],
+        underlying_id=row[3],
+        underlying_raw=row[4],
+        direction=Direction(row[5]),
+        outcome=RatioDerivationOutcome(row[6]),
+        detail=row[7],
+        leverage=row[8],
+        financing_level=row[9],
+        knockout_barrier=row[10],
+        bid=row[11],
+        ask=row[12],
+        reference_spot=row[13],
+        quote_timestamp=_from_db_opt_dt(row[14]),
+        observed_at=_from_db_dt(row[15]),
+        source=row[16],
+        parser_version=row[17],
+        raw_hash=row[18],
     )
 
 

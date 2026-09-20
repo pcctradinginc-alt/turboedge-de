@@ -7,6 +7,7 @@ from scipy import stats
 from turboedge.backtest.significance import (
     benjamini_hochberg,
     bootstrap_ci,
+    bootstrap_p_value,
     deflated_sharpe_ratio,
     probabilistic_sharpe_ratio,
 )
@@ -133,3 +134,49 @@ def test_bootstrap_ci_different_seeds_can_differ() -> None:
     lo1, hi1 = bootstrap_ci(values, np.mean, n=200, rng=np.random.default_rng(1))
     lo2, hi2 = bootstrap_ci(values, np.mean, n=200, rng=np.random.default_rng(2))
     assert (lo1, hi1) != (lo2, hi2)
+
+
+def test_bootstrap_p_value_large_for_no_true_difference() -> None:
+    # Paired differences centered at 0 with substantial noise: should not
+    # look significant under the null.
+    rng_data = np.random.default_rng(9)
+    diffs = rng_data.normal(0.0, 1.0, size=500)
+    rng = np.random.default_rng(43)
+    p = bootstrap_p_value(diffs, np.mean, n=2000, rng=rng)
+    assert p > 0.05
+
+
+def test_bootstrap_p_value_small_for_clear_difference() -> None:
+    # Paired differences clearly and consistently negative (e.g. a
+    # challenger's per-cell CRPS reliably below the null's): p should be tiny.
+    rng_data = np.random.default_rng(10)
+    diffs = rng_data.normal(-1.0, 0.1, size=500)
+    rng = np.random.default_rng(44)
+    p = bootstrap_p_value(diffs, np.mean, n=2000, rng=rng)
+    assert p < 0.01
+
+
+def test_bootstrap_p_value_never_exactly_zero() -> None:
+    # Add-one smoothing: even an enormous, unambiguous effect never reports
+    # p == 0.0 from a finite number of resamples.
+    diffs = np.full(200, -5.0)
+    rng = np.random.default_rng(45)
+    p = bootstrap_p_value(diffs, np.mean, n=500, rng=rng)
+    assert p > 0.0
+
+
+def test_bootstrap_p_value_deterministic_with_same_seed() -> None:
+    values = np.array([1.0, -2.0, 3.0, -4.0, 0.5, -0.5, 2.5])
+    p1 = bootstrap_p_value(values, np.mean, n=500, rng=np.random.default_rng(123))
+    p2 = bootstrap_p_value(values, np.mean, n=500, rng=np.random.default_rng(123))
+    assert p1 == p2
+
+
+def test_bootstrap_p_value_symmetric_in_sign() -> None:
+    # A bootstrap test statistic (mean) should give (approximately) the same
+    # p-value whether the effect is positive or negative, for symmetric data.
+    rng_data = np.random.default_rng(11)
+    diffs = rng_data.normal(0.3, 1.0, size=400)
+    p_pos = bootstrap_p_value(diffs, np.mean, n=3000, rng=np.random.default_rng(46))
+    p_neg = bootstrap_p_value(-diffs, np.mean, n=3000, rng=np.random.default_rng(46))
+    assert p_pos == pytest.approx(p_neg, abs=0.03)

@@ -24,11 +24,11 @@ from pathlib import Path
 import structlog
 
 from turboedge.adapters.base import ProductFetchContext
-from turboedge.adapters.registry import ProductSourceAdapter
+from turboedge.adapters.registry import ProductSourceAdapter, RejectedRatioDerivationSource
 from turboedge.config import TurboEdgeConfig, config_hash
 from turboedge.provenance import git_commit
 from turboedge.storage.duckdb import Store
-from turboedge.storage.schemas import ProductSnapshot
+from turboedge.storage.schemas import ProductSnapshot, RejectedRatioDerivation
 from turboedge.storage.snapshots import SnapshotResult, write_snapshot_parquet
 from turboedge.universe.discover import FieldConflict, merge_snapshots
 
@@ -241,6 +241,33 @@ def _run_universe_body(
             field=conflict.field,
             values=conflict.values,
             sources=conflict.sources,
+        )
+
+    # Persist discarded ratio-derivation attempts BEFORE the empty-result
+    # check below, not after. A source that rejected every row it saw
+    # contributes no products at all, so an all-sources-empty run raises
+    # `NoProductsError` -- and that is precisely the run whose rejection
+    # records are most worth keeping. Writing them after the raise would
+    # discard the research material exactly when the derivation failed
+    # hardest, which is the failure mode `RejectedRatioDerivation` exists to
+    # end (CLAUDE.md rule 31). These records are never merged: a discarded
+    # attempt is not a product, has no verified ratio, and competes with no
+    # other source for the same ISIN -- `merge_snapshots` is about picking a
+    # winner between sources quoting the same instrument, which cannot
+    # apply here.
+    rejected_derivations: list[RejectedRatioDerivation] = []
+    for adapter in adapters:
+        if isinstance(adapter, RejectedRatioDerivationSource):
+            rejected_derivations.extend(adapter.drain_rejected_ratio_derivations())
+    if rejected_derivations:
+        store.append_rejected_ratio_derivations(rejected_derivations)
+        logger.info(
+            "universe_rejected_ratio_derivations_persisted",
+            count=len(rejected_derivations),
+            by_outcome={
+                outcome: sum(1 for r in rejected_derivations if r.outcome == outcome)
+                for outcome in sorted({r.outcome for r in rejected_derivations})
+            },
         )
 
     if not merge_result.products:

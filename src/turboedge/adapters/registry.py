@@ -20,7 +20,7 @@ from turboedge.adapters.base import (
     ProductFetchContext,
 )
 from turboedge.config import SourceConfig, TurboEdgeConfig
-from turboedge.storage.schemas import ProductSnapshot
+from turboedge.storage.schemas import ProductSnapshot, RejectedRatioDerivation
 
 logger = structlog.get_logger(__name__)
 
@@ -72,6 +72,40 @@ class ProductSourceAdapter(Protocol):
 
         Returns:
             AdapterMetadata with name, kind, version, homepage.
+        """
+        ...
+
+
+@runtime_checkable
+class RejectedRatioDerivationSource(Protocol):
+    """Optional add-on contract: an adapter that *derives* a pricing-critical
+    field can hand back the attempts it discarded.
+
+    Only ``adapters/gettex.py`` needs this today -- it is the one source that
+    reconstructs ``ratio`` instead of reading it (no gettex endpoint reports
+    a Bezugsverhaeltnis), so it is the one source that can reject a row for a
+    reason worth studying. Every other adapter simply does not satisfy this
+    protocol, and ``pipeline/universe.py``'s ``isinstance`` check skips it;
+    nothing else changes.
+
+    Deliberately a separate protocol rather than another method on
+    :class:`ProductSourceAdapter`: that contract is what every product source
+    must implement, and a CSV import or an issuer feed that reads ``ratio``
+    straight from its source has nothing to report here. Equally deliberately
+    a typed protocol rather than ``getattr(adapter, "...", ())`` in the
+    pipeline -- duck-typing by attribute name would silently return nothing
+    if this method were ever renamed, turning a wiring bug into permanent,
+    invisible data loss, which is exactly the failure mode this whole record
+    type exists to end (see :class:`RejectedRatioDerivation`).
+    """
+
+    def drain_rejected_ratio_derivations(self) -> Sequence[RejectedRatioDerivation]:
+        """Return this fetch's discarded derivation attempts.
+
+        "Drain" is the contract: the implementation must hand over the
+        records it accumulated during the most recent ``fetch_products``
+        call and must not return them again on a subsequent call, so a
+        caller that persists them cannot write the same attempt twice.
         """
         ...
 

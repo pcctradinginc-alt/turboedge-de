@@ -218,6 +218,8 @@ from turboedge.storage.schemas import (
     HealthStatus,
     ProductSnapshot,
     ProductType,
+    RatioDerivationOutcome,
+    RejectedRatioDerivation,
 )
 from turboedge.universe.underlying_map import get_underlying_meta, resolve_underlying_id
 
@@ -1021,6 +1023,16 @@ class GettexAdapter:
         # during the most recent :meth:`fetch_products` call -- exposed for
         # diagnostics/tests, keyed ``f"{underlying_id}:{issuer}"``.
         self.last_learned_fx: dict[str, float] = {}
+        # Discarded ratio-derivation attempts from the most recent
+        # `fetch_products` call, drained by `pipeline/universe.py` via
+        # `RejectedRatioDerivationSource`. Before this existed, a row that
+        # failed derivation only incremented a `_FetchStats` counter and
+        # appended a transient `last_errors` line that nothing persists --
+        # which is exactly why docs/product_data_quality.md can only report
+        # 0% UNVERIFIED ratio reliability for gettex (an artifact of what was
+        # thrown away, not a measurement). See `RejectedRatioDerivation`'s
+        # docstring and CLAUDE.md rule 31 ("negative Muster nicht loeschen").
+        self._rejected_ratio_derivations: list[RejectedRatioDerivation] = []
 
     @property
     def name(self) -> str:
@@ -1139,6 +1151,7 @@ class GettexAdapter:
         self._partial_universe = {}
         self._reference_spot_mismatches = {}
         self.last_learned_fx = {}
+        self._rejected_ratio_derivations = []
         now = self._clock()
         stats = _FetchStats()
 
@@ -1328,37 +1341,64 @@ class GettexAdapter:
                 if outcome == "ratio_rejected":
                     stats.ratio_rejected += 1
                     stats.note_example(row.isin)
+                    detail = "ratio_raw did not snap to the canonical grid within tolerance"
                     self.last_errors.append(
                         GettexRowError(
                             source=_GETTEX_SOURCE_NAME,
                             isin=row.isin,
-                            error="ratio_raw did not snap to the canonical grid within tolerance",
+                            error=detail,
                         )
+                    )
+                    self._record_rejected_derivation(
+                        row,
+                        outcome=RatioDerivationOutcome.RATIO_REJECTED,
+                        detail=detail,
+                        underlying_id=underlying_id,
+                        reference_spot=s_ref,
+                        now=now,
                     )
                     continue
                 if outcome == "verification_failed":
                     stats.verification_failed += 1
                     stats.note_example(row.isin)
+                    detail = "implied-spot verification failed for every hypothesis tried"
                     self.last_errors.append(
                         GettexRowError(
                             source=_GETTEX_SOURCE_NAME,
                             isin=row.isin,
-                            error="implied-spot verification failed for every hypothesis tried",
+                            error=detail,
                         )
+                    )
+                    self._record_rejected_derivation(
+                        row,
+                        outcome=RatioDerivationOutcome.VERIFICATION_FAILED,
+                        detail=detail,
+                        underlying_id=underlying_id,
+                        reference_spot=s_ref,
+                        now=now,
                     )
                     continue
                 if outcome == "quanto_ambiguous":
                     stats.quanto_ambiguous += 1
                     stats.note_example(row.isin)
+                    detail = (
+                        "quanto ambiguous: both the fx=1 and the non-quanto "
+                        "hypothesis verified -- genuine ambiguity, never guessed"
+                    )
                     self.last_errors.append(
                         GettexRowError(
                             source=_GETTEX_SOURCE_NAME,
                             isin=row.isin,
-                            error=(
-                                "quanto ambiguous: both the fx=1 and the non-quanto "
-                                "hypothesis verified -- genuine ambiguity, never guessed"
-                            ),
+                            error=detail,
                         )
+                    )
+                    self._record_rejected_derivation(
+                        row,
+                        outcome=RatioDerivationOutcome.QUANTO_AMBIGUOUS,
+                        detail=detail,
+                        underlying_id=underlying_id,
+                        reference_spot=s_ref,
+                        now=now,
                     )
                     continue
 
@@ -1454,6 +1494,64 @@ class GettexAdapter:
 
         _log_fetch_summary(stats)
         return snapshots
+
+    def drain_rejected_ratio_derivations(self) -> list[RejectedRatioDerivation]:
+        """Hand over this fetch's discarded derivation attempts exactly once.
+
+        Satisfies ``adapters/registry.RejectedRatioDerivationSource``. The
+        list is cleared as it is handed over, so a caller that persists these
+        (``pipeline/universe.py``) cannot write the same attempt twice if it
+        is ever called more than once per fetch -- `fetch_products` also
+        resets it at the start of every call, so the two together bound
+        duplicates from both ends.
+        """
+        drained = self._rejected_ratio_derivations
+        self._rejected_ratio_derivations = []
+        return drained
+
+    def _record_rejected_derivation(
+        self,
+        row: _ParsedRow,
+        *,
+        outcome: RatioDerivationOutcome,
+        detail: str,
+        underlying_id: str,
+        reference_spot: float,
+        now: datetime,
+    ) -> None:
+        """Keep one discarded ratio-derivation attempt as research material.
+
+        Every field comes straight off the parsed row, the reference spot in
+        effect for it, or this fetch's own clock -- nothing is computed,
+        defaulted or invented (CLAUDE.md rule 29). ``bid``/``ask`` stay
+        ``None`` when gettex did not quote them. There is deliberately no
+        ratio field: for ``ratio_rejected`` no candidate ever snapped to the
+        grid, so there is no such quantity to store (see
+        :class:`RejectedRatioDerivation`).
+        """
+        self._rejected_ratio_derivations.append(
+            RejectedRatioDerivation(
+                isin=row.isin,
+                wkn=row.wkn,
+                issuer=_normalize_issuer(row.issuer_raw),
+                underlying_id=underlying_id,
+                underlying_raw=row.underlying_raw,
+                direction=row.direction,
+                outcome=outcome,
+                detail=detail,
+                leverage=row.leverage,
+                financing_level=row.financing_level,
+                knockout_barrier=row.knockout_barrier,
+                bid=row.bid,
+                ask=row.ask,
+                reference_spot=reference_spot,
+                quote_timestamp=row.quote_timestamp,
+                observed_at=now,
+                source=_GETTEX_SOURCE_NAME,
+                parser_version=_GETTEX_PARSER_VERSION,
+                raw_hash=_raw_hash(row.raw),
+            )
+        )
 
     def _derive_ratio(
         self,

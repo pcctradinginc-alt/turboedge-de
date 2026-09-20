@@ -19,6 +19,8 @@ from turboedge.storage.schemas import (
     NotificationRecord,
     PositionStatus,
     ProductSnapshot,
+    RatioDerivationOutcome,
+    RejectedRatioDerivation,
     SignalSnapshot,
     SourceHealthRecord,
     UnderlyingBar,
@@ -246,6 +248,122 @@ def test_append_and_list_candidates(store: Store) -> None:
     fetched = store.list_candidates("run-1")
     assert len(fetched) == 1
     assert fetched[0] == candidate
+
+
+def _rejected_derivation(
+    isin: str,
+    *,
+    outcome: RatioDerivationOutcome = RatioDerivationOutcome.RATIO_REJECTED,
+    issuer: str = "BNP Paribas",
+    underlying_id: str | None = "DAX",
+    bid: float | None = 4.80,
+    ask: float | None = 4.86,
+) -> RejectedRatioDerivation:
+    return RejectedRatioDerivation(
+        isin=isin,
+        wkn="ABC123",
+        issuer=issuer,
+        underlying_id=underlying_id,
+        underlying_raw="DAX (Performance)",
+        direction=Direction.LONG,
+        outcome=outcome,
+        detail="ratio_raw did not snap to the canonical grid within tolerance",
+        leverage=12.5,
+        financing_level=23000.0,
+        knockout_barrier=23000.0,
+        bid=bid,
+        ask=ask,
+        reference_spot=25000.0,
+        quote_timestamp=datetime(2026, 9, 11, 12, 0, tzinfo=UTC),
+        observed_at=datetime(2026, 9, 11, 12, 5, tzinfo=UTC),
+        source="gettex",
+        parser_version="gettex/1",
+        raw_hash="deadbeef",
+    )
+
+
+def test_append_and_list_rejected_ratio_derivations_roundtrip(store: Store) -> None:
+    """The discarded-derivation research record survives storage unchanged.
+
+    This table had no test at all until now: schema, writer, reader and both
+    row converters shipped together, but nothing populated the table, so
+    nothing exercised them either (the same blind spot that let the gettex
+    adapter go on discarding these rows). A roundtrip is the minimum bar --
+    the whole point of the record is that a later session can measure the
+    discard-outcome distribution, which requires it to come back out exactly
+    as it went in.
+    """
+    record = _rejected_derivation("DE000REJECT1")
+    assert store.append_rejected_ratio_derivations([record]) == 1
+
+    fetched = store.list_rejected_ratio_derivations()
+    assert len(fetched) == 1
+    assert fetched[0] == record
+
+
+def test_append_rejected_ratio_derivations_empty_list_is_noop(store: Store) -> None:
+    assert store.append_rejected_ratio_derivations([]) == 0
+    assert store.list_rejected_ratio_derivations() == []
+
+
+def test_rejected_ratio_derivations_preserve_none_for_unquoted_fields(store: Store) -> None:
+    """A row gettex never quoted must come back as ``None``, not 0.0.
+
+    CLAUDE.md rule 29: a quantity the source did not provide is never
+    defaulted or invented. `bid`/`ask` are exactly such fields -- a bid-only
+    or entirely unquoted row is a normal gettex occurrence, and storing a
+    zero there would silently turn "not quoted" into "quoted at zero".
+    """
+    record = _rejected_derivation("DE000NOQUOTE", bid=None, ask=None)
+    store.append_rejected_ratio_derivations([record])
+
+    fetched = store.list_rejected_ratio_derivations()
+    assert len(fetched) == 1
+    assert fetched[0].bid is None
+    assert fetched[0].ask is None
+
+
+def test_list_rejected_ratio_derivations_filters(store: Store) -> None:
+    """Each filter narrows independently -- this is the query surface a later
+    session needs to compare discard-outcome distributions across adapter
+    changes (the record type's stated purpose)."""
+    store.append_rejected_ratio_derivations(
+        [
+            _rejected_derivation("DE000FILTER1", outcome=RatioDerivationOutcome.RATIO_REJECTED),
+            _rejected_derivation(
+                "DE000FILTER2",
+                outcome=RatioDerivationOutcome.VERIFICATION_FAILED,
+                issuer="HSBC",
+            ),
+            _rejected_derivation(
+                "DE000FILTER3",
+                outcome=RatioDerivationOutcome.QUANTO_AMBIGUOUS,
+                underlying_id="NDX",
+            ),
+        ]
+    )
+
+    assert len(store.list_rejected_ratio_derivations()) == 3
+    by_underlying = store.list_rejected_ratio_derivations(underlying_id="NDX")
+    assert [r.isin for r in by_underlying] == ["DE000FILTER3"]
+    by_issuer = store.list_rejected_ratio_derivations(issuer="HSBC")
+    assert [r.isin for r in by_issuer] == ["DE000FILTER2"]
+    by_outcome = store.list_rejected_ratio_derivations(
+        outcome=RatioDerivationOutcome.RATIO_REJECTED
+    )
+    assert [r.isin for r in by_outcome] == ["DE000FILTER1"]
+
+
+def test_rejected_ratio_derivations_are_not_deduplicated(store: Store) -> None:
+    """Documented behaviour (`append_rejected_ratio_derivations`' docstring):
+    a re-run over the same rows is a new measurement, not a duplicate to
+    suppress -- the discard history is a time series, and collapsing repeat
+    observations would destroy exactly the signal it exists to carry."""
+    record = _rejected_derivation("DE000REPEAT1")
+    store.append_rejected_ratio_derivations([record])
+    store.append_rejected_ratio_derivations([record])
+
+    assert len(store.list_rejected_ratio_derivations()) == 2
 
 
 def test_append_source_health(store: Store) -> None:

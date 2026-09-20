@@ -17,7 +17,12 @@ from turboedge.config import TurboEdgeConfig
 from turboedge.pipeline.universe import NoProductsError, run_universe
 from turboedge.provenance import new_run_id
 from turboedge.storage.duckdb import Store
-from turboedge.storage.schemas import Direction, ProductSnapshot
+from turboedge.storage.schemas import (
+    Direction,
+    ProductSnapshot,
+    RatioDerivationOutcome,
+    RejectedRatioDerivation,
+)
 
 _NOW = datetime(2026, 9, 10, 15, 30, tzinfo=UTC)
 
@@ -170,6 +175,138 @@ def test_run_universe_zero_products_raises_no_products_error(
     with pytest.raises(NoProductsError) as excinfo:
         run_universe(cfg, store, tmp_path, [adapter], ["DAX"], run_id=new_run_id())
     assert excinfo.value.source_errors == {}
+
+
+def _rejected(isin: str) -> RejectedRatioDerivation:
+    return RejectedRatioDerivation(
+        isin=isin,
+        wkn=None,
+        issuer="BNP Paribas",
+        underlying_id="DAX",
+        underlying_raw="DAX (Performance)",
+        direction=Direction.LONG,
+        outcome=RatioDerivationOutcome.RATIO_REJECTED,
+        detail="ratio_raw did not snap to the canonical grid within tolerance",
+        leverage=12.5,
+        financing_level=23000.0,
+        knockout_barrier=23000.0,
+        bid=None,
+        ask=None,
+        reference_spot=25000.0,
+        quote_timestamp=_NOW,
+        observed_at=_NOW,
+        source="gettex",
+        parser_version="gettex/1",
+        raw_hash="deadbeef",
+    )
+
+
+def test_run_universe_persists_rejected_ratio_derivations(
+    cfg: TurboEdgeConfig,
+    store: Store,
+    tmp_path: Path,
+    make_product_adapter: Callable[..., Any],
+    dax_product_factory: Callable[..., ProductSnapshot],
+) -> None:
+    """A source that derives a pricing-critical field hands back what it
+    discarded, and the pipeline persists it alongside the products.
+
+    Adapters that do not satisfy ``RejectedRatioDerivationSource`` are
+    untouched -- the ``isinstance`` check skips them, which is why this is a
+    separate protocol rather than another method every product source would
+    have to implement.
+    """
+    product = dax_product_factory(
+        isin="DE000GOOD001",
+        issuer="BankA",
+        direction=Direction.LONG,
+        financing_level=20000.0,
+        quote_timestamp=_NOW,
+    )
+    adapter = make_product_adapter(
+        "source_a",
+        products=[product],
+        rejected_ratio_derivations=[_rejected("DE000BAD0001"), _rejected("DE000BAD0002")],
+    )
+
+    run_universe(cfg, store, tmp_path, [adapter], ["DAX"], run_id=new_run_id())
+
+    persisted = store.list_rejected_ratio_derivations()
+    assert {r.isin for r in persisted} == {"DE000BAD0001", "DE000BAD0002"}
+    # The discarded rows never cross over into the priceable universe: they
+    # have no verified ratio, so nothing here may ever be priced, ranked or
+    # gated. Asserted against `product_snapshots` specifically -- that is the
+    # table `run_universe` actually writes, and the one everything
+    # downstream reads.
+    snapshot_isins = {
+        row[0]
+        for row in store._conn.execute(  # test-only introspection
+            "SELECT DISTINCT isin FROM product_snapshots"
+        ).fetchall()
+    }
+    assert snapshot_isins == {"DE000GOOD001"}
+    assert adapter.drain_calls == 1
+
+
+def test_rejected_ratio_derivations_survive_a_no_products_run(
+    cfg: TurboEdgeConfig,
+    store: Store,
+    tmp_path: Path,
+    make_product_adapter: Callable[..., Any],
+) -> None:
+    """The case that decides where the write belongs.
+
+    A source that rejected every row it saw contributes no products, so the
+    run raises ``NoProductsError`` -- and that is exactly the run whose
+    rejection records matter most. Persisting them after the raise would
+    discard the research material precisely when the derivation failed
+    hardest, which is the failure mode this record type exists to end.
+    """
+    adapter = make_product_adapter(
+        "source_a",
+        products=[],
+        rejected_ratio_derivations=[_rejected("DE000ALLBAD1")],
+    )
+
+    with pytest.raises(NoProductsError):
+        run_universe(cfg, store, tmp_path, [adapter], ["DAX"], run_id=new_run_id())
+
+    persisted = store.list_rejected_ratio_derivations()
+    assert [r.isin for r in persisted] == ["DE000ALLBAD1"]
+
+
+def test_run_universe_ignores_adapters_without_the_rejection_protocol(
+    cfg: TurboEdgeConfig,
+    store: Store,
+    tmp_path: Path,
+    dax_product_factory: Callable[..., ProductSnapshot],
+) -> None:
+    """An adapter that does not implement the optional protocol is skipped
+    silently -- no crash, no empty rows written."""
+
+    class MinimalAdapter:
+        name = "minimal"
+
+        def __init__(self, products: list[ProductSnapshot]) -> None:
+            self._products = products
+
+        def fetch_products(
+            self, underlying_ids: Any, *, context: Any = None
+        ) -> list[ProductSnapshot]:
+            return list(self._products)
+
+    product = dax_product_factory(
+        isin="DE000MIN0001",
+        issuer="BankA",
+        direction=Direction.LONG,
+        financing_level=20000.0,
+        quote_timestamp=_NOW,
+    )
+    adapter = MinimalAdapter([product])
+
+    run_universe(cfg, store, tmp_path, [adapter], ["DAX"], run_id=new_run_id())  # type: ignore[list-item]
+
+    assert store.list_rejected_ratio_derivations() == []
 
 
 def test_run_universe_manage_run_records_error_status_on_failure(

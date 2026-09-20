@@ -655,6 +655,115 @@ def test_missing_fx_hint_for_non_eur_underlying_limits_to_quanto_hypothesis() ->
     )
 
 
+@respx.mock
+def test_discarded_derivations_are_kept_as_research_material() -> None:
+    """A row whose ratio derivation failed is recorded, not just counted.
+
+    Same construction as the test above (8% fx mismatch, no fx_hint, so no
+    hypothesis verifies): 10 rows are discarded and no ProductSnapshot is
+    emitted. Before this existed, all that survived was a `_FetchStats`
+    counter and a transient `last_errors` line nothing persists -- which is
+    why docs/product_data_quality.md can only report 0% UNVERIFIED ratio
+    reliability for gettex: an artifact of what was thrown away, not a
+    measurement of what the derivation does (CLAUDE.md rule 31, and
+    `RejectedRatioDerivation`'s own docstring).
+    """
+    fx = 1.08
+    rows = [
+        _gettex_product(
+            f"DE000KEEP{k:03d}",
+            direction="long",
+            spot=20000.0,
+            financing_level=20000.0 - 100.0 * k,
+            ratio=0.01,
+            fx=fx,
+            underlying_name="NASDAQ 100",
+        )
+        for k in range(1, 11)
+    ]
+    respx.get(PRODUCTS_URL).mock(return_value=httpx.Response(200, json=_gettex_page_response(rows)))
+    adapter = _gettex_adapter(clock=_fixed_clock(datetime(2026, 9, 11, 12, 5, tzinfo=UTC)))
+
+    assert adapter.fetch_products(["NDX"]) == []
+
+    rejected = adapter.drain_rejected_ratio_derivations()
+    assert len(rejected) == 10
+    assert {r.isin for r in rejected} == {f"DE000KEEP{k:03d}" for k in range(1, 11)}
+    # Every record must name a real failure outcome -- never "ok", which by
+    # construction became a ProductSnapshot instead (RatioDerivationOutcome
+    # has no "ok" member precisely to make that invariant checkable).
+    assert all(
+        r.outcome in {"ratio_rejected", "verification_failed", "quanto_ambiguous"} for r in rejected
+    )
+    # The quantities that drove the outcome come straight off the parsed row,
+    # and the reference spot in effect for it is always known (a missing
+    # S_ref skips the whole underlying before any row reaches derivation).
+    for record in rejected:
+        assert record.underlying_id == "NDX"
+        assert record.issuer == _normalize_issuer("BNP Paribas")
+        assert record.reference_spot > 0
+        assert record.leverage is not None and record.leverage > 0
+        assert record.financing_level is not None
+        assert record.detail  # mirrors the same text last_errors carries
+        assert record.source == "gettex"
+    # The detail text must match what the adapter logged for the same row,
+    # so the persisted record and the transient log line cannot drift apart.
+    assert {r.detail for r in rejected} == {e.error for e in adapter.last_errors}
+
+
+@respx.mock
+def test_drain_rejected_ratio_derivations_hands_over_exactly_once() -> None:
+    """Drain semantics: the caller that persists these cannot write them twice.
+
+    Both ends are bounded -- draining clears the list, and `fetch_products`
+    resets it at the start of every call -- so neither a double drain nor a
+    second fetch can duplicate a discarded attempt in the database.
+    """
+    fx = 1.08
+    rows = [
+        _gettex_product(
+            f"DE000ONCE{k:03d}",
+            direction="long",
+            spot=20000.0,
+            financing_level=20000.0 - 100.0 * k,
+            ratio=0.01,
+            fx=fx,
+            underlying_name="NASDAQ 100",
+        )
+        for k in range(1, 11)
+    ]
+    respx.get(PRODUCTS_URL).mock(return_value=httpx.Response(200, json=_gettex_page_response(rows)))
+    adapter = _gettex_adapter(clock=_fixed_clock(datetime(2026, 9, 11, 12, 5, tzinfo=UTC)))
+
+    adapter.fetch_products(["NDX"])
+    assert len(adapter.drain_rejected_ratio_derivations()) == 10
+    assert adapter.drain_rejected_ratio_derivations() == []
+
+    # A second fetch starts from empty rather than accumulating on top of
+    # the first one's records.
+    adapter.fetch_products(["NDX"])
+    assert len(adapter.drain_rejected_ratio_derivations()) == 10
+
+
+@respx.mock
+def test_successful_derivation_records_nothing_as_rejected() -> None:
+    """The counterpart: a clean fetch must leave the research table empty.
+
+    Without this, `_record_rejected_derivation` could be called on every row
+    and the tests above would still pass -- turning a healthy run into a
+    fabricated discard history, which is worse than the missing data it
+    replaces.
+    """
+    rows = _long_short_batch(spot=25000.0, ratio=0.01, n_each=12)
+    respx.get(PRODUCTS_URL).mock(return_value=httpx.Response(200, json=_gettex_page_response(rows)))
+    adapter = _gettex_adapter(clock=_fixed_clock(datetime(2026, 9, 11, 12, 5, tzinfo=UTC)))
+
+    snapshots = adapter.fetch_products(["DAX"])
+
+    assert len(snapshots) >= 20
+    assert adapter.drain_rejected_ratio_derivations() == []
+
+
 # ===========================================================================
 # fetch_products: barrier != financing_level -> UNKNOWN product_type
 # ===========================================================================

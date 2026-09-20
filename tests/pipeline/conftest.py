@@ -33,6 +33,7 @@ from turboedge.storage.schemas import (
     HealthStatus,
     ProductSnapshot,
     ProductType,
+    RejectedRatioDerivation,
     UnderlyingBar,
 )
 
@@ -85,6 +86,7 @@ class FakeProductAdapter:
         exception: Exception | None = None,
         health_status: HealthStatus = HealthStatus.PASS,
         on_fetch: Callable[[], None] | None = None,
+        rejected_ratio_derivations: Sequence[RejectedRatioDerivation] | None = None,
     ) -> None:
         self._name = name
         self._products = list(products) if products is not None else []
@@ -93,6 +95,16 @@ class FakeProductAdapter:
         self._on_fetch = on_fetch
         self.fetch_calls = 0
         self.last_context: ProductFetchContext | None = None
+        # Only set when a test wants this fake to satisfy
+        # `adapters/registry.RejectedRatioDerivationSource` too. Left as an
+        # empty list otherwise, so every existing caller of
+        # `make_product_adapter` is unaffected -- the fake still *has* the
+        # method either way (that is what makes it satisfy the protocol),
+        # it just has nothing to hand over.
+        self._rejected_ratio_derivations = (
+            list(rejected_ratio_derivations) if rejected_ratio_derivations is not None else []
+        )
+        self.drain_calls = 0
 
     @property
     def name(self) -> str:
@@ -111,6 +123,13 @@ class FakeProductAdapter:
         if self._exception is not None:
             raise self._exception
         return list(self._products)
+
+    def drain_rejected_ratio_derivations(self) -> list[RejectedRatioDerivation]:
+        """Mirror `GettexAdapter`'s drain semantics: hand over once, then empty."""
+        self.drain_calls += 1
+        drained = self._rejected_ratio_derivations
+        self._rejected_ratio_derivations = []
+        return drained
 
     def healthcheck(self) -> HealthCheckResult:
         return HealthCheckResult(

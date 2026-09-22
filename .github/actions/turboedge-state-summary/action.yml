@@ -58,6 +58,33 @@ runs:
             else:
                 lines.append("No counts reported.")
 
+            # `warnings` was reaching reports/summary.json and going no
+            # further: this action rendered `counts` only, and the report
+            # mail that also carries them is gated on `send_on`
+            # (configs/gmail.yaml), which is ACTIONABLE-only -- and
+            # ACTIONABLE is structurally 0 today. So a run that warned
+            # about itself looked, in the job summary and in the log,
+            # exactly like one that had nothing to say.
+            #
+            # Measured on run 35659955585 (2026-09-21, 23:55 CEST): DAX
+            # raised `no_tradable_quotes_market_likely_closed` --
+            # 9,888 of 10,022 candidates (98.7%) rejected on quote
+            # freshness alone -- and no human-visible output mentioned it.
+            # Both freshness gates fired on the same products, WATCH was 0,
+            # and the summary showed only "ACTIONABLE 0 / REJECT 16054",
+            # which reads as a market verdict rather than a closed market.
+            #
+            # Cheap here specifically: this step already prints its text to
+            # stdout as well as GITHUB_STEP_SUMMARY, so one block makes
+            # warnings visible in the Actions log and the run summary at
+            # once -- no new plumbing, no second place to keep in sync.
+            warnings = data.get("warnings") or []
+            if warnings:
+                lines.append("")
+                lines.append(f"**Warnings ({len(warnings)}):**")
+                for warning in warnings:
+                    lines.append(f"- `{warning}`")
+
         text = "\n".join(lines) + "\n"
         print(text)
         if summary_path:

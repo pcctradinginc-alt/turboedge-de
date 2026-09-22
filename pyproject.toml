@@ -110,6 +110,14 @@ testpaths = ["tests"]
 addopts = "-m 'not live'"
 markers = [
   "live: tests that require real network access; excluded by default",
+  # Deliberately NOT in `addopts`: this runs by default, in CI included.
+  # The only test carrying it is ranking/test_ev.py's W7 performance proxy
+  # (7.7s, vs 0.03s for the next-slowest test in that file) -- a runtime
+  # assertion is worthless if the suite quietly stops running it. The
+  # marker exists so a local `-m "not slow"` is possible during iteration,
+  # and so pytest stops reporting it as a possible typo (an unregistered
+  # mark means a real typo would be swallowed just as silently).
+  "slow: measurably slower tests (seconds, not milliseconds); still run by default",
 ]
 
 [tool.coverage.run]

@@ -189,6 +189,14 @@ class _RawRecord:
     shrinkage_intensity: float = 0.0
 
 
+#: Largest underlying move (as a fraction, 3.0 = 300%) treated as physically
+#: possible over one scan horizon when bounding a simulated turbo return.
+#: Deliberately an order of magnitude above the historical record (~25% for
+#: a 14-day DAX move in the 2025-2026 sample) -- this exists to catch
+#: arithmetically impossible output, never to filter unattractive candidates.
+_MAX_PLAUSIBLE_UNDERLYING_MOVE = 3.0
+
+
 def _approx_leverage(terms: ProductTerms, spot0: float) -> float:
     """Standard turbo leverage approximation ``(spot * ratio) / (ask * fx)``.
 
@@ -370,6 +378,67 @@ def evaluate_product_horizons(
                 leverage = _approx_leverage(terms, spot0)
             bucket = leverage_bucket_for(leverage)
             group_key = f"{shrinkage_group_key(underlying_id, terms.direction, bucket)}|h{h}"
+
+            # Sanity bound on the simulated mean (2026-09-24 incident): a
+            # scan emitted three ACTIONABLE trade proposals quoting an
+            # expected net return of 28,779% and LCB(EV) of 21,775% on a
+            # leverage-2.7 DAX turbo -- arithmetically impossible, and it
+            # cleared `lcb_ev > 0` precisely because nothing checked the
+            # magnitude. `simulate_product_payoff` only rejects non-finite
+            # values, and 166.03 is finite.
+            #
+            # A turbo's return is bounded by its underlying's move times its
+            # leverage. `_MAX_PLAUSIBLE_UNDERLYING_MOVE` = 3.0 allows a 300%
+            # index move over a two-week horizon -- an order of magnitude
+            # beyond anything on record (the largest 14-day DAX move in the
+            # 2025-2026 sample is ~25%), so this cannot suppress a real
+            # candidate: at leverage 2.6 the bound is 780%, and the incident
+            # value was 16,603%. It is a physical-impossibility check, not a
+            # threshold on attractiveness -- nothing here makes ACTIONABLE
+            # easier to reach, only impossible values harder to emit.
+            #
+            # Excluded rather than raised: a ValueError here would abort the
+            # whole scan (nothing catches it, verified), which would turn one
+            # bad product into a total outage. The candidate keeps whatever
+            # category the pre-EV gates gave it (WATCH at best) and is simply
+            # never EV-evaluated, exactly like a prefilter drop.
+            #
+            # Every input is logged because the root cause is NOT yet known:
+            # financing spread, fair-value function, path simulation,
+            # forecast drift and spot0 were each measured and individually
+            # ruled out on 2026-09-24. This line is what will identify it.
+            plausible_bound = _MAX_PLAUSIBLE_UNDERLYING_MOVE * leverage
+            if abs(central_dist.mean) > plausible_bound or abs(pessimistic_dist.mean) > (
+                plausible_bound
+            ):
+                logger.error(
+                    "ev_implausible_mean_net_return_excluded",
+                    isin=isin,
+                    horizon_days=h,
+                    direction=terms.direction.value,
+                    central_mean=central_dist.mean,
+                    pessimistic_mean=pessimistic_dist.mean,
+                    plausible_bound=plausible_bound,
+                    leverage=leverage,
+                    p_ko=central_dist.p_ko,
+                    p_profit=central_dist.p_profit,
+                    spot0=spot0,
+                    entry_ask=terms.entry_ask,
+                    entry_bid=terms.entry_bid,
+                    financing_level=terms.financing_level,
+                    knockout_barrier=terms.knockout_barrier,
+                    ratio=terms.ratio,
+                    fx=terms.fx,
+                    financing_spread=terms.financing_spread,
+                    ref_rate=terms.ref_rate,
+                    premium_over_fair=terms.premium_over_fair,
+                    exit_spread_pct=terms.exit_spread_pct,
+                    product_type=terms.product_type.value,
+                    forecast_mean=forecast_by_horizon[h].mean,
+                    forecast_sigma=forecast_by_horizon[h].sigma,
+                    forecast_uncertainty=forecast_by_horizon[h].uncertainty,
+                )
+                continue
 
             # Sizing depends only on the central-scenario net-return sample,
             # P_KO and model uncertainty -- none of which depend on

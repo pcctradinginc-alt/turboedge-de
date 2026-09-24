@@ -540,3 +540,63 @@ def test_evaluate_product_horizons_performance_proxy() -> None:
     # Generous bound for CI variance; this scale is well below the full
     # contract target, see docstring.
     assert elapsed < 120.0
+
+
+def test_implausible_mean_net_return_is_excluded_not_emitted() -> None:
+    """2026-09-24 incident: three ACTIONABLE trade proposals were mailed out
+    quoting an expected net return of 28,779% and LCB(EV) of 21,775% on a
+    leverage-2.7 DAX turbo. Those are arithmetically impossible, and they
+    cleared `lcb_ev > 0` precisely because nothing checked the magnitude --
+    `simulate_product_payoff` only rejects non-finite values, and 166.03 is
+    finite.
+
+    A candidate whose simulated mean exceeds `underlying move x leverage`
+    by an order of magnitude must never reach the LCB/gate stage at all.
+    Here leverage is spot0*ratio/ask = 100/30 = 3.33, so the bound is 10.0
+    (1000%); a forecast drift of 5.0 log-return over the horizon puts the
+    simulated mean far beyond it.
+    """
+    terms = {"DE000BAD1": make_terms("DE000BAD1", barrier=70.0)}
+    evals = evaluate_product_horizons(
+        terms,
+        _forecasts(5.0),
+        BARS,
+        underlying_id="DAX",
+        spot0=100.0,
+        start=START,
+        as_of=AS_OF,
+        cluster_id="corr_1",
+        rng=np.random.default_rng(1),
+        horizons=HORIZONS,
+        cfg=FAST_CFG,
+        fair_value_fn=simple_fair_value,
+    )
+    assert evals == [], "an impossible simulated return must not produce an evaluation"
+
+
+def test_plausible_candidate_is_still_evaluated_after_the_bound() -> None:
+    """The bound must not suppress ordinary candidates.
+
+    Without this, the previous test would pass just as well if the bound
+    rejected everything -- which would silently disable the EV pipeline
+    instead of protecting it, a far worse failure than the one it fixes.
+    Same fixture, ordinary drift: every (product, horizon) pair survives.
+    """
+    terms = {"DE000OK01": make_terms("DE000OK01", barrier=70.0)}
+    evals = evaluate_product_horizons(
+        terms,
+        _forecasts(0.01),
+        BARS,
+        underlying_id="DAX",
+        spot0=100.0,
+        start=START,
+        as_of=AS_OF,
+        cluster_id="corr_1",
+        rng=np.random.default_rng(1),
+        horizons=HORIZONS,
+        cfg=FAST_CFG,
+        fair_value_fn=simple_fair_value,
+    )
+    assert len(evals) == len(HORIZONS)
+    for e in evals:
+        assert abs(e.mean_net_return) < 10.0

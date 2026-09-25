@@ -1772,6 +1772,37 @@ def _fit_forecast_ensemble(
                 git_commit=None,
             )
         )
+    # The ensemble forecast is the single most consequential input to the EV
+    # pipeline -- `ranking/ev.py::_drift_for_scenario` turns `mean` and
+    # `uncertainty` directly into the drift of every simulated path, and a
+    # wrong value there propagates into every candidate's expected return at
+    # once. It was persisted to `forecasts` but never logged, so during the
+    # 2026-09-24 incident investigation (three impossible ACTIONABLE
+    # proposals, expected net return 28,779%) the production runs could not
+    # be compared on it at all: the table lives inside the encrypted state
+    # artifact, while the log -- the one artifact that is readable -- carried
+    # scan diagnostics, gettex summaries and quote ages but not this.
+    #
+    # Same omission as the WATCH reasons fixed in 648b5d5: computed, stored,
+    # and invisible exactly where a defect has to be diagnosed. Redaction-safe
+    # (numbers only, no ISIN/WKN/price), one line per scanned underlying.
+    logger.info(
+        "forecast_ensemble",
+        underlying_id=next(iter(ensemble_by_horizon.values())).underlying_id
+        if ensemble_by_horizon
+        else None,
+        n_models=len(weight_map),
+        weights={k: round(v, 4) for k, v in sorted(weight_map.items())},
+        by_horizon={
+            f"{h}d": {
+                "mean": round(f.mean, 6),
+                "sigma": round(f.sigma, 6),
+                "uncertainty": round(f.uncertainty, 6),
+                "p_up": round(f.p_up, 4),
+            }
+            for h, f in sorted(ensemble_by_horizon.items())
+        },
+    )
     return ensemble_by_horizon, forecast_records, weight_map
 
 

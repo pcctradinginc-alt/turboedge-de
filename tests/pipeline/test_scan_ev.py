@@ -685,3 +685,61 @@ def test_scan_stays_quiet_when_quotes_are_fresh(
     )
 
     assert "no_tradable_quotes_market_likely_closed" not in result.warnings
+
+
+def test_scan_logs_the_ensemble_forecast_it_drives_the_ev_pipeline_with(
+    cfg: TurboEdgeConfig,
+    store: Store,
+    tmp_path: Path,
+    make_product_adapter: Callable[..., Any],
+    make_price_adapter: Callable[..., Any],
+    make_estr_adapter: Callable[..., Any],
+    dax_product_factory: Callable[..., ProductSnapshot],
+    strong_uptrend_bars: Any,
+) -> None:
+    """The ensemble forecast must be visible in the log, not only in DuckDB.
+
+    `ranking/ev.py::_drift_for_scenario` turns `mean` and `uncertainty`
+    directly into the drift of every simulated path, so a wrong value there
+    moves every candidate's expected return at once. During the 2026-09-24
+    incident (three ACTIONABLE proposals quoting 28,779% expected net
+    return) this was persisted to `forecasts` but never logged -- and that
+    table lives inside the encrypted state artifact, while the log is the
+    one artifact actually readable from outside. The production runs could
+    therefore not be compared on the single input that matters most.
+    """
+    adapter = make_product_adapter(
+        "source_a", products=[_cheap_favorable_long(dax_product_factory)]
+    )
+    price_adapter = make_price_adapter(bars_by_underlying={"DAX": strong_uptrend_bars})
+
+    with structlog.testing.capture_logs() as logs:
+        run_scan(
+            **_base_kwargs(
+                cfg=cfg,
+                store=store,
+                tmp_path=tmp_path,
+                product_adapters=[adapter],
+                price_adapter=price_adapter,
+                estr_adapter=make_estr_adapter(),
+                rng=np.random.default_rng(1234),
+            ),
+            options=ScanOptions(underlying_id="DAX"),
+        )
+
+    entries = [e for e in logs if e.get("event") == "forecast_ensemble"]
+    assert len(entries) == 1, "exactly one ensemble line per scanned underlying"
+    entry = entries[0]
+    assert entry["underlying_id"] == "DAX"
+    assert entry["n_models"] > 0
+
+    by_horizon = entry["by_horizon"]
+    assert by_horizon, "the drift inputs must be present, not an empty mapping"
+    for key, values in by_horizon.items():
+        assert key.endswith("d")
+        # These four are exactly what `_drift_for_scenario` and the path
+        # simulation consume; a missing one would leave the same blind spot.
+        assert set(values) == {"mean", "sigma", "uncertainty", "p_up"}
+        assert values["sigma"] >= 0.0
+        assert values["uncertainty"] >= 0.0
+        assert 0.0 <= values["p_up"] <= 1.0

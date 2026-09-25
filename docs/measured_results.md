@@ -927,6 +927,102 @@ separate pre-registered hypotheses and are not started by this trial.
 
 ---
 
+## 6.8 W12-D: does CFTC positioning add out-of-sample information? (2026-09-25)
+
+**Trial:** `TR-2026Q3-31e266`. **Question (H0-4):** does institutional
+positioning (CFTC Commitments of Traders) add forecast value over an
+own-history base?
+
+**Answer: NO, and more decisively than CBOE. DO NOT PROMOTE.**
+
+### Data
+
+CFTC Traders in Financial Futures, annual archives from
+`cftc.gov/files/dea/history/fut_fin_txt_<year>.zip`. `robots.txt` permits
+`/files/dea/`, no crawl delay; the endpoint answers 200 to the project's
+honest user agent. **10,128 observations, 844 weeks, 2010-07-20 to
+2026-09-15 (16.2 years)** — deeper than CBOE's 15.7.
+
+Series: dealer / asset-manager / leveraged-money net positions plus open
+interest, for `S&P 500 Consolidated`, `NASDAQ-100 Consolidated` and
+`EURO FX`.
+
+**Two data traps found and fixed, both worth recording:**
+
+1. **Contract names are not stable across the archive.** In 2015 the same
+   exposure was filed as "E-MINI S&P 500 STOCK INDEX" and "NASDAQ-100 STOCK
+   INDEX (MINI)"; today "E-MINI S&P 500" / "NASDAQ MINI". An exact-name map
+   against today's spelling silently returned **one market instead of
+   three** for every year before ~2022. Fixed by using the `Consolidated`
+   series, which keep one name throughout (verified 2011/2015/2020/2025) and
+   additionally aggregate across contract sizes.
+2. **A column name lies.** Files up to 2012 call the date column
+   `Report_Date_as_MM_DD_YYYY` but fill it with ISO values (`2011-12-27`).
+   Taking the name at face value parsed zero rows. The contract check caught
+   the rename rather than returning nothing silently — that is what it is
+   for, and it recovered three years of history.
+
+**Availability:** a COT report carries a Tuesday as-of date and is published
+the following Friday 15:30 ET. Using the as-of date would leak three days
+every week. Holidays shift that Friday (measured: 2025 had 51 Tuesdays and
+one Monday, 2025-11-10, around Veterans Day), so `available_at` = as-of + 6
+days at 00:00 UTC — costs two days in an ordinary week, cannot leak in a
+shifted one.
+
+### Method
+
+Identical harness to §6.7: same target, same ridge + empirical-residual
+quantiles, same `PurgedWalkForwardSplit(horizon=h, embargo=h, min_train=750,
+step=21)` with real label windows. Weekly features are forward-filled onto
+the daily axis — not imputation, since the frame is indexed by
+`available_at` and the last published positioning genuinely is the current
+information. All features normalised by open interest (a raw net-contract
+series is dominated by 15 years of book growth). Samples identical between
+variants in **20/20 cells**.
+
+### A construction error, corrected mid-run
+
+The first run used all three trader groups × six measures × three markets =
+**54 features against ~380 independent weeks (1:7)** — below the ratio at
+which ridge with fixed regularisation stops being dominated by estimation
+noise. It reported +15.9% to +79.9% CRPS degradation.
+
+Restricting to **leveraged money** (18 features, 1:21) roughly halved it.
+The restriction was chosen on the hypothesis, not the result: Research Wave
+2 names *crowding* as the concept, and that is speculative positioning —
+dealers are market makers, asset managers long-horizon allocators.
+Regularisation deliberately left unchanged so exactly one thing varied.
+Both runs are retained.
+
+### Results (18 features)
+
+| Metric | Outcome | CBOE (§6.7) for comparison |
+|---|---|---|
+| CRPS | **20/20 worse**, +3.41% .. +24.51% | 20/20, +0.32% .. +5.71% |
+| Pinball | **20/20 worse** | 20/20 worse |
+| Brier | **20/20 worse** | 20/20 worse |
+| BH (α=0.10) | **20/20 significant — all AGAINST, 0 in favour** | 6/20 |
+| median \|t\| | **9.91** | 1.57 |
+| 90% coverage | 0.888 → **0.838** | 0.887 → 0.883 |
+
+Breadth: 5/5 horizons worse for every underlying, degradation growing
+monotonically with horizon. No cherry-picking possible in either direction.
+
+### Conclusion
+
+H0-4 is **not rejected**. CFTC positioning degrades the distributional
+forecast on every cell and every metric, significantly so after FDR
+correction, and additionally makes the 90% interval *overconfident*
+(coverage 0.888 → 0.838). The plausible reading is that weekly positioning
+carries little about 3–14-day index returns while costing 18 parameters of
+estimation noise — but note this is a statement about **this** feature
+construction, not proof that positioning contains no information at all.
+
+Negative result, reported as such. Nothing promoted; the adapter, feature
+builder and tests remain as measurement infrastructure.
+
+---
+
 ## 7. Conclusion
 
 Across every avenue tested so far — the protected TSMOM baseline mapped to

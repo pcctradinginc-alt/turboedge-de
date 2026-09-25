@@ -293,6 +293,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **W12-D external information layer: CFTC positioning** (trial
+  `TR-2026Q3-31e266`) — Traders in Financial Futures net positions
+  (dealer / asset manager / leveraged money) plus open interest for
+  `S&P 500 Consolidated`, `NASDAQ-100 Consolidated` and `EURO FX`, from the
+  CFTC's own annual archives. **10,128 observations, 844 weeks, 2010-07-20
+  to 2026-09-15 (16.2 years)**. New: `adapters/cftc.py`,
+  `features/cftc_positioning.py`, `HttpClient.get_bytes` (the archives are
+  ZIPs; `get_text` would decode binary as UTF-8 and corrupt it).
+  **Result: DO NOT PROMOTE** — `docs/measured_results.md` §6.8. CRPS,
+  pinball and Brier all worse in 20/20 cells, **20/20 significant after
+  Benjamini-Hochberg and all against** CFTC, and the 90% interval becomes
+  overconfident (coverage 0.888 → 0.838). H0-4 not rejected.
+  Two data traps recorded because they would silently corrupt any long
+  history: contract names change across the archive (an exact-name map
+  returned one market instead of three for every year before ~2022 — fixed
+  via the name-stable `Consolidated` series), and the pre-2013 date column
+  is named `Report_Date_as_MM_DD_YYYY` while containing ISO values.
+  A construction error of mine is recorded too: the first run used 54
+  features against ~380 independent weeks (1:7) and overstated the damage
+  roughly twofold; restricting to leveraged money (18 features, 1:21) on the
+  hypothesis rather than on the result halved it.
+  Registered against an exhausted 2026Q3 budget with a logged override, same
+  reasoning as W12-A — flagged for review.
+
+
 - **W12-A external information layer: Cboe volatility state** (Research
   Wave 2, trial `TR-2026Q3-abd750`) — six official Cboe daily series (VIX,
   VIX9D, VIX3M, VVIX, OVX, GVZ) from the published

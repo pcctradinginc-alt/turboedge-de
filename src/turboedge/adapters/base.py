@@ -280,6 +280,23 @@ class HttpClient:
     ) -> str:
         return self._request("GET", url, params=params, headers=headers).text
 
+    def get_bytes(
+        self,
+        url: str,
+        *,
+        params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> bytes:
+        """Raw response body, for sources that serve archives rather than text.
+
+        Added for W12-D: the CFTC publishes Commitments of Traders history as
+        annual ZIP files, and routing those through `get_text` would decode
+        binary data as UTF-8 and corrupt it. Shares the same per-host rate
+        limiting, retry policy and stats counters as the other accessors --
+        the point is only that the body is not decoded.
+        """
+        return self._request("GET", url, params=params, headers=headers).content
+
     def post_json(
         self,
         url: str,

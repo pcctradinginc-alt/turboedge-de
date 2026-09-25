@@ -815,6 +815,118 @@ pricing basis biased in the flattering direction (this section). What
 remains is the measurement in sections 1–2 and 6: no forecast has an edge
 that survives a turbo's costs.
 
+## 6.7 W12-A: does Cboe volatility state add out-of-sample information? (2026-09-25)
+
+**Trial:** `TR-2026Q3-abd750` (kind `feature`, status `experimental`).
+**Question (H0-1, Research Wave 2 §12):** do Cboe volatility-state features
+add forecast value over an own-history base, out of sample, after
+multiple-testing correction and realistic Turbo costs?
+
+**Answer: NO. DO NOT PROMOTE.**
+
+### Prior
+
+`VixTermStructure` (trial `W9-2026Q3-004`) already tested two of these
+features — `vix9d_over_vix_minus_1` and `vix_over_vix3m_minus_1`, sourced
+from yfinance — and is recorded `dormant`: Brier +0.0091 worse than null,
+best edge 1.85 bp against SIGNAL_REGISTRY.md §1.10's 10 bp bar, 0/14 cells
+surviving BH (§2 above). W12-A is broader (six official series, ten
+features, VVIX/OVX/GVZ added) but that negative result was the honest prior.
+
+### Data
+
+Cboe's own daily-prices CSV endpoint
+(`cdn-api.cboe.com/api/global/us_indices/daily_prices/<INDEX>_History.csv`),
+chosen over yfinance because it is a published contract rather than an
+inferred one, and because it is *slower*: on 2026-09-25 17:00 UTC it carried
+data only through 09-24 while yfinance already served 09-25 — i.e. it
+reflects what was genuinely published. `robots.txt` permits the path
+(`/book/` and `*market_statistics/volume_reports/` are the only disallows,
+no crawl delay); the endpoint answers 200 to the project's honest user
+agent. Nothing was bypassed.
+
+| Series | rows | from | shape |
+|---|---:|---|---|
+| VIX | 9,281 | 1990-01-02 | OHLC |
+| VVIX | 5,112 | 2006-03-06 | close |
+| VIX9D | 3,955 | **2011-01-04** | OHLC |
+| VIX3M | 4,281 | 2009-09-18 | OHLC |
+| OVX | 4,279 | 2009-09-18 | close |
+| GVZ | 4,279 | 2009-09-18 | close |
+
+83,723 observations persisted to `external_observations`. VIX9D binds the
+common window to 2011.
+
+**Availability model:** a trading day's close is published the following
+day, so `available_at` = observation day + 1 at 00:00 UTC, and a prediction
+at the close of day *t* uses Cboe data through *t−1*. Deliberately
+conservative (the real publication is ~20:15 UTC the same day); it cannot
+leak and covers the 07:40 UTC scan. Enforced by
+`features/availability.py::assert_information_available_at_prediction`,
+whose tests construct leaking inputs on purpose and assert they raise.
+
+### Method
+
+Target `y = ln(P[t+h]/P[t]) / (sigma_t·sqrt(h))`, `sigma_t` a causal EWMA
+(λ=0.94). BASE features: own trend z-scores (21/63/126d), realised vol, vol
+change. BASE+CBOE: identical plus the ten features. Ridge (α=1) for the
+conditional mean, empirical training-residual quantiles for the
+distribution. `PurgedWalkForwardSplit(horizon=h, embargo=h, min_train=750,
+step=21)` with real label windows `[t, t+h]`, so overlapping labels are
+purged rather than straddling the boundary. Four underlyings × five
+horizons = 20 cells, ~3,000 OOS observations each (60,017 paired total).
+
+### Results
+
+| Metric | Outcome |
+|---|---|
+| CRPS | **20/20 cells worse** (+0.32% to +5.71%) |
+| Brier | **20/20 cells worse** |
+| BH (α=0.10) | **6/20 significant — all AGAINST Cboe, 0 in favour** |
+| 90% interval coverage | 0.887 → 0.883 (nominal 0.900) |
+| Economic (signal-direction return) | CBOE better in **7/20**, median Δ **−3.60 bp** |
+| Best edge, any cell | BASE +59.18 bp; **CBOE +39.87 bp** |
+| Realistic Turbo cost band | 50–150 bp / 7d — **0 CBOE cells clear even the low end** |
+
+**Two measurement errors found and corrected before these numbers, both
+mine, both recorded because they change how the result must be read:**
+
+1. Rolling windows were first computed on the wide frame, whose union index
+   reaches back to 1990 where VVIX (from 2006) is absent — a 252-day window
+   returns NaN if one NaN sits inside it. This silently cut the CBOE sample
+   by ~60% (3,347 → 1,295 OOS). Fixed by computing on each series' own
+   gap-free history. The uncorrected run reported +1.17% to +16.46% CRPS
+   degradation; the true figure is +0.32% to +5.71%. **The first run
+   overstated the damage by roughly a factor of three.**
+2. BASE and BASE+CBOE initially ran on different samples (the CBOE variant
+   starts later). Both now start at the first row where all CBOE features
+   exist. Residual difference 0.03–3.37% (mean 1.6%) is the US/EU holiday
+   calendar offset, measured at 2.8% independently; the paired analysis uses
+   common observations only.
+
+**A caveat on the economic numbers, stated because it cuts against reading
+them favourably:** the US indices show uniformly positive edges (NDX up to
++59 bp) and the European ones mixed-to-negative. That is the signature of
+secular upward drift with a mostly-long signal, not forecast skill —
+CLAUDE.md rule 11 forbids reading it as alpha. The only cell above the cost
+band's low end belongs to BASE, not to Cboe.
+
+### Conclusion
+
+Adding Cboe volatility state makes the distributional forecast worse on
+every cell, worse on Brier on every cell, and significantly worse on six
+after FDR correction — with **not one cell significantly better**. The
+economic measure adds nothing: median −3.60 bp, and no Cboe cell reaches
+even the low end of the cost band. H0-1 is **not rejected**.
+
+This is a **negative result, reported as such** and consistent with the
+prior W9 finding rather than contradicting it. Nothing is promoted; the
+adapter, schema, availability guard and feature builder remain in the tree
+as measurement infrastructure for the remaining W12 families, which are
+separate pre-registered hypotheses and are not started by this trial.
+
+---
+
 ## 7. Conclusion
 
 Across every avenue tested so far — the protected TSMOM baseline mapped to

@@ -32,6 +32,7 @@ from turboedge.storage.schemas import (
     Direction,
     DriftEvent,
     ExitReason,
+    ExternalObservation,
     FieldReliability,
     ForecastRecord,
     Instrument,
@@ -179,6 +180,25 @@ _DDL_STATEMENTS: tuple[str, ...] = (
         is_stale BOOLEAN NOT NULL,
         quality_score DOUBLE NOT NULL,
         PRIMARY KEY (underlying_id, ts, interval, source)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS external_observations (
+        series_id VARCHAR NOT NULL,
+        observation_time TIMESTAMPTZ NOT NULL,
+        value DOUBLE NOT NULL,
+        unit VARCHAR NOT NULL,
+        frequency VARCHAR NOT NULL,
+        source_version VARCHAR NOT NULL,
+        available_at TIMESTAMPTZ NOT NULL,
+        retrieved_at TIMESTAMPTZ NOT NULL,
+        source_timestamp TIMESTAMPTZ,
+        source VARCHAR NOT NULL,
+        schema_version VARCHAR NOT NULL,
+        parser_version VARCHAR NOT NULL,
+        is_stale BOOLEAN NOT NULL,
+        quality_score DOUBLE NOT NULL,
+        PRIMARY KEY (source, series_id, observation_time, available_at)
     )
     """,
     """
@@ -553,6 +573,7 @@ _ALL_TABLES: tuple[str, ...] = (
     "instruments",
     "product_snapshots",
     "underlying_prices",
+    "external_observations",
     "signals",
     "candidate_sets",
     "source_health",
@@ -899,6 +920,84 @@ class Store:
         return count
 
     # -- underlying bars ---------------------------------------------------
+
+    # -- external observations (W12) ---------------------------------------
+
+    def append_external_observations(self, observations: Sequence[ExternalObservation]) -> int:
+        """Persist external-series observations (Cboe volatility state first).
+
+        Idempotent on ``(source, series_id, observation_time, available_at)``:
+        re-fetching a full history file -- which is how these adapters work,
+        since the endpoints serve the entire series every time -- overwrites
+        the same rows instead of multiplying them.
+
+        ``available_at`` is deliberately part of the key, not just a column.
+        A revised print of the same observation arrives with a LATER
+        ``available_at`` and must be stored alongside the original, never on
+        top of it: a model predicting before the revision genuinely only had
+        the first value, and collapsing the two would silently backfill the
+        corrected number into history (CLAUDE.md rules 4/5).
+        """
+        if not observations:
+            return 0
+        rows = [_external_observation_row(o) for o in observations]
+        self._conn.executemany(
+            """
+            INSERT INTO external_observations (
+                series_id, observation_time, value, unit, frequency, source_version,
+                available_at, retrieved_at, source_timestamp, source,
+                schema_version, parser_version, is_stale, quality_score
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (source, series_id, observation_time, available_at) DO UPDATE SET
+                value = excluded.value,
+                unit = excluded.unit,
+                frequency = excluded.frequency,
+                source_version = excluded.source_version,
+                retrieved_at = excluded.retrieved_at,
+                source_timestamp = excluded.source_timestamp,
+                schema_version = excluded.schema_version,
+                parser_version = excluded.parser_version,
+                is_stale = excluded.is_stale,
+                quality_score = excluded.quality_score
+            """,
+            rows,
+        )
+        return len(rows)
+
+    def list_external_observations(
+        self,
+        *,
+        series_id: str | None = None,
+        available_at_max: datetime | None = None,
+    ) -> list[ExternalObservation]:
+        """Query external observations, optionally as of a point in time.
+
+        ``available_at_max`` is the point-in-time filter every backtest must
+        use: it selects what was genuinely published by that moment. It
+        filters ``available_at``, never ``observation_time`` -- see
+        ``features/availability.py`` for why that distinction is the whole
+        point of this table.
+        """
+        clauses: list[str] = []
+        params: list[Any] = []
+        if series_id is not None:
+            clauses.append("series_id = ?")
+            params.append(series_id)
+        if available_at_max is not None:
+            clauses.append("available_at <= ?")
+            params.append(available_at_max)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self._conn.execute(
+            f"""
+            SELECT series_id, observation_time, value, unit, frequency, source_version,
+                   available_at, retrieved_at, source_timestamp, source,
+                   schema_version, parser_version, is_stale, quality_score
+            FROM external_observations {where}
+            ORDER BY series_id ASC, observation_time ASC, available_at ASC
+            """,
+            params,
+        ).fetchall()
+        return [_row_to_external_observation(r) for r in rows]
 
     def append_underlying_bars(self, bars: Sequence[UnderlyingBar]) -> int:
         if not bars:
@@ -2924,3 +3023,41 @@ def _row_to_rejected_ratio_derivation(row: tuple[Any, ...]) -> RejectedRatioDeri
 
 
 __all__ = ["Store", "StoreError"]
+
+
+def _external_observation_row(o: ExternalObservation) -> tuple[Any, ...]:
+    return (
+        o.series_id,
+        o.observation_time,
+        o.value,
+        o.unit,
+        o.frequency,
+        o.source_version,
+        o.available_at,
+        o.retrieved_at,
+        o.source_timestamp,
+        o.source,
+        o.schema_version,
+        o.parser_version,
+        o.is_stale,
+        o.quality_score,
+    )
+
+
+def _row_to_external_observation(row: tuple[Any, ...]) -> ExternalObservation:
+    return ExternalObservation(
+        series_id=row[0],
+        observation_time=row[1],
+        value=row[2],
+        unit=row[3],
+        frequency=row[4],
+        source_version=row[5],
+        available_at=row[6],
+        retrieved_at=row[7],
+        source_timestamp=row[8],
+        source=row[9],
+        schema_version=row[10],
+        parser_version=row[11],
+        is_stale=row[12],
+        quality_score=row[13],
+    )

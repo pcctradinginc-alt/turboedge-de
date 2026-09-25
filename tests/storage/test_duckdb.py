@@ -13,6 +13,7 @@ from turboedge.storage.schemas import (
     Category,
     CostDecomposition,
     Direction,
+    ExternalObservation,
     FieldReliability,
     HealthStatus,
     ManualPosition,
@@ -41,6 +42,7 @@ def test_init_schema_creates_all_tables_empty(store: Store) -> None:
         "instruments",
         "product_snapshots",
         "underlying_prices",
+        "external_observations",
         "signals",
         "candidate_sets",
         "source_health",
@@ -1016,3 +1018,103 @@ def test_init_schema_creates_w6_tables_on_a_pre_w6_database(tmp_path: Path) -> N
         # A second init_schema() call remains idempotent.
         store.init_schema()
         assert store.table_counts()["forward_ledger"] == 0
+
+
+def _external_obs(
+    series_id: str,
+    observation_time: datetime,
+    available_at: datetime,
+    value: float,
+) -> ExternalObservation:
+    return ExternalObservation(
+        series_id=series_id,
+        value=value,
+        unit="index_points",
+        frequency="daily",
+        source_version="cboe_daily_prices_csv",
+        observation_time=observation_time,
+        available_at=available_at,
+        retrieved_at=datetime(2026, 9, 25, 17, 0, tzinfo=UTC),
+        source="cboe",
+        parser_version="1",
+        quality_score=1.0,
+    )
+
+
+def test_external_observations_roundtrip_and_are_idempotent(store: Store) -> None:
+    """Re-fetching is the normal case, not an edge case.
+
+    These endpoints serve the entire history on every request, so the same
+    rows arrive again on every run; they must overwrite rather than
+    accumulate.
+    """
+    obs = [
+        _external_obs(
+            "VIX.CLOSE",
+            datetime(2026, 9, 24, tzinfo=UTC),
+            datetime(2026, 9, 25, tzinfo=UTC),
+            15.67,
+        ),
+        _external_obs(
+            "VVIX.CLOSE",
+            datetime(2026, 9, 24, tzinfo=UTC),
+            datetime(2026, 9, 25, tzinfo=UTC),
+            90.57,
+        ),
+    ]
+    assert store.append_external_observations(obs) == 2
+    assert store.append_external_observations(obs) == 2
+    got = store.list_external_observations()
+    assert len(got) == 2
+    assert {o.series_id for o in got} == {"VIX.CLOSE", "VVIX.CLOSE"}
+
+
+def test_external_observations_empty_list_is_noop(store: Store) -> None:
+    assert store.append_external_observations([]) == 0
+    assert store.list_external_observations() == []
+
+
+def test_revision_is_stored_alongside_the_original_not_on_top_of_it(store: Store) -> None:
+    """A later-published correction must not overwrite the first print.
+
+    A model predicting before the revision genuinely only had the original
+    value; collapsing the two would backfill the corrected number into
+    history (CLAUDE.md rules 4/5). `available_at` is therefore part of the
+    primary key, not merely a column.
+    """
+    observation_time = datetime(2026, 9, 24, tzinfo=UTC)
+    original = _external_obs(
+        "VIX.CLOSE", observation_time, datetime(2026, 9, 25, 0, 0, tzinfo=UTC), 15.67
+    )
+    revision = _external_obs(
+        "VIX.CLOSE", observation_time, datetime(2026, 9, 25, 6, 0, tzinfo=UTC), 15.70
+    )
+    store.append_external_observations([original, revision])
+    got = store.list_external_observations(series_id="VIX.CLOSE")
+    assert len(got) == 2, "both prints must survive"
+    assert [o.value for o in got] == [15.67, 15.70]
+
+
+def test_point_in_time_query_filters_available_at_not_observation_time(store: Store) -> None:
+    """The query a backtest must use.
+
+    At 03:00 on 09-25 only the original print existed; the 06:00 revision
+    did not. Filtering on `observation_time` would return the revision too,
+    since both describe the same 09-24 observation -- which is precisely the
+    leak this table's key structure exists to prevent.
+    """
+    observation_time = datetime(2026, 9, 24, tzinfo=UTC)
+    store.append_external_observations(
+        [
+            _external_obs(
+                "VIX.CLOSE", observation_time, datetime(2026, 9, 25, 0, 0, tzinfo=UTC), 15.67
+            ),
+            _external_obs(
+                "VIX.CLOSE", observation_time, datetime(2026, 9, 25, 6, 0, tzinfo=UTC), 15.70
+            ),
+        ]
+    )
+    as_of = store.list_external_observations(
+        available_at_max=datetime(2026, 9, 25, 3, 0, tzinfo=UTC)
+    )
+    assert [o.value for o in as_of] == [15.67]

@@ -291,6 +291,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **W12-A external information layer: Cboe volatility state** (Research
+  Wave 2, trial `TR-2026Q3-abd750`) — six official Cboe daily series (VIX,
+  VIX9D, VIX3M, VVIX, OVX, GVZ) from the published
+  `cdn-api.cboe.com/.../daily_prices/<INDEX>_History.csv` endpoint, 83,723
+  observations persisted. New: `ExternalObservation` schema and
+  `external_observations` table (one generic shape for every W12 family,
+  keyed on `(source, series_id, observation_time, available_at)` so a later
+  revision is stored *alongside* the original print, never on top of it);
+  `adapters/cboe.py`; `features/availability.py` with
+  `assert_information_available_at_prediction` as the single point-in-time
+  gate (`available_at <= prediction_time`, never `observation_time`);
+  `features/cboe_volatility.py` with the ten causal features. 28 new tests,
+  including leakage tests that construct future information on purpose and
+  assert it raises, and contract tests against real captured payloads in
+  both shapes Cboe serves (OHLC and close-only).
+  **Result: DO NOT PROMOTE** — see `docs/measured_results.md` §6.7. CRPS
+  worse in 20/20 cells, Brier worse in 20/20, 6/20 significant after
+  Benjamini-Hochberg and **all six against** Cboe; economically CBOE is
+  better in 7/20 cells with a median of −3.60 bp, and no cell reaches even
+  the low end of the 50–150 bp Turbo cost band. H0-1 not rejected,
+  consistent with the prior `W9-2026Q3-004` (`vix_term_structure`) finding.
+  The adapter and feature infrastructure stay in the tree for the remaining
+  W12 families; nothing enters the production forecast ensemble.
+  Registered against an already-exhausted 2026Q3 adaptation budget
+  (GOVERNANCE.md §1.2, 6/6) with an explicit, logged override, on the
+  grounds that a measurement which promotes nothing does not inflate the
+  multiple-testing count — flagged for review.
+
 ### Fixed
 
 - **Split the single `max_quote_age_s` freshness gate into two** (Build

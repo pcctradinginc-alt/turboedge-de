@@ -401,6 +401,39 @@ class UnderlyingBar(Provenance):
     volume: float | None = None
 
 
+class ExternalObservation(Provenance):
+    """One observation of an external (non-product, non-underlying-price) series.
+
+    Workstream W12's shared schema for every external information family
+    (CBOE volatility state first; Eurex/Euwax/CFTC/macro later). Kept
+    deliberately generic -- one row per (series_id, observation_time) -- so a
+    new family needs an adapter and a feature builder, not a new table.
+
+    `available_at` is the field that matters and the reason this inherits
+    `Provenance` rather than redefining lineage: CLAUDE.md rule 5 requires
+    `available_at <= prediction_time`, NOT `observation_time <=
+    prediction_time`. For a daily volatility index those two differ by
+    roughly a day -- the 2026-09-25 close is not published while 2026-09-25
+    is still being traded -- and using `observation_time` as the cutoff
+    would leak tomorrow's volatility into today's forecast. Enforced by
+    `features.availability.assert_information_available_at_prediction`.
+
+    `value` is a single scalar on purpose. An OHLC series is stored as four
+    rows with distinct `series_id`s (e.g. "VIX.CLOSE"), so that a family
+    publishing only a close (VVIX, OVX, GVZ do) and one publishing OHLC
+    (VIX, VIX9D, VIX3M do) share one shape instead of forcing three null
+    columns onto the majority.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    series_id: str
+    value: float
+    unit: str
+    frequency: str
+    source_version: str
+
+
 class SourceHealthRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

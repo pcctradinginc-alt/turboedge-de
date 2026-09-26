@@ -395,3 +395,110 @@ def test_backtest_persists_walkforward_results(
         rows = store.list_walkforward_results(underlying_id="DAX")
         assert len(rows) >= 1
         assert all(r.brier_null is not None for r in rows)
+
+
+# --- research queue / approve (Phase 2) --------------------------------------
+
+
+def test_research_queue_seeds_the_catalog_and_prints_a_ranking(
+    tmp_config_dir: Path, tmp_state_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(
+        app, [*_base_args(tmp_config_dir, tmp_state_dir), "research", "queue", "--limit", "3"]
+    )
+    assert result.exit_code == 0, result.stdout
+    assert "RESEARCH QUEUE" in result.stdout
+    payload = json.loads((tmp_path / "reports" / "summary.json").read_text())
+    assert payload["mode"] == "research_queue"
+    assert payload["counts"]["seeded"] == 14
+
+
+def test_research_queue_output_keeps_the_human_approval_notice(
+    tmp_config_dir: Path, tmp_state_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The header must survive rich's markup parsing.
+
+    It is wrapped in square brackets, which rich reads as a markup tag and
+    drops unless markup is disabled -- silently deleting the one line that says
+    a ranking is not permission to act. The renderer's own test cannot catch
+    that, because the loss happens at the console.
+    """
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(
+        app, [*_base_args(tmp_config_dir, tmp_state_dir), "research", "queue", "--limit", "1"]
+    )
+    assert result.exit_code == 0, result.stdout
+    assert "human approval" in result.stdout
+
+
+def test_research_approve_requires_a_named_approver_and_a_reason(
+    tmp_config_dir: Path, tmp_state_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    base = _base_args(tmp_config_dir, tmp_state_dir)
+
+    missing_note = runner.invoke(
+        app, [*base, "research", "approve", "RO-EVENT-RISK", "--by", "tester"]
+    )
+    assert missing_note.exit_code != 0
+
+    missing_approver = runner.invoke(
+        app, [*base, "research", "approve", "RO-EVENT-RISK", "--note", "because"]
+    )
+    assert missing_approver.exit_code != 0
+
+
+def test_research_approve_records_the_decision_and_survives_reseeding(
+    tmp_config_dir: Path, tmp_state_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    base = _base_args(tmp_config_dir, tmp_state_dir)
+
+    approved = runner.invoke(
+        app,
+        [
+            *base,
+            "research",
+            "approve",
+            "RO-EVENT-RISK",
+            "--by",
+            "tester",
+            "--note",
+            "authorised for the integration test",
+        ],
+    )
+    assert approved.exit_code == 0, approved.stdout
+    assert "APPROVED" in approved.stdout
+    # No trial id was given, so the command must say so rather than let the
+    # entry look ready to run (Master Spec §23/§24).
+    assert "trial id" in approved.stdout
+
+    # Re-running the queue re-seeds the catalog; that must not undo the human
+    # decision above.
+    queued = runner.invoke(app, [*base, "research", "queue", "--limit", "14"])
+    assert queued.exit_code == 0, queued.stdout
+    assert "APPROVED" in queued.stdout
+    payload = json.loads((tmp_path / "reports" / "summary.json").read_text())
+    assert payload["counts"]["seeded"] == 0
+
+
+def test_research_approve_rejects_an_unknown_hypothesis(
+    tmp_config_dir: Path, tmp_state_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(
+        app,
+        [
+            *_base_args(tmp_config_dir, tmp_state_dir),
+            "research",
+            "approve",
+            "RO-DOES-NOT-EXIST",
+            "--by",
+            "tester",
+            "--note",
+            "typo",
+        ],
+    )
+    assert result.exit_code == 1
+    assert "Not approved" in result.stdout

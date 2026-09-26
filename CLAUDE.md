@@ -94,6 +94,25 @@ missing feature — see the roadmap in README.md.
 **Forward ledger, learning loop, reporting**
 - Forward ledger (entry + counterfactual alternatives), labeling of matured entries, posterior/ensemble-weight updates, drift detection (Page-Hinkley), model registry (champion/challenger/dormant), monthly/weekly reports
 
+**Meta layer (`src/turboedge/meta/`) — shadow only, never authoritative**
+- Phase 1 asks, before "what is the best trade?", the prior question "does the
+  system know enough here?": per-model trust (multiplicative, and a factor that
+  cannot be computed is recorded in `missing_factors` and penalised, never
+  defaulted to 1.0), six separate uncertainty axes, model disagreement, and a
+  PROCEED/WATCH_ONLY/ABSTAIN decision. `shadow_mode=True` on every decision;
+  nothing in `pipeline/scan.py` reads it. Against the current state it abstains
+  on every horizon, because `walkforward_results` is empty and calibration has
+  never been measured out-of-sample.
+- Phase 2 ranks *research questions* from a fixed catalog of 14
+  (`meta/catalog.py`) by a transparent value-of-information heuristic. Every
+  ranking input is an `Estimate` carrying its provenance — MEASURED, DECLARED
+  (a judgement, reasoning required) or UNKNOWN (penalised, never defaulted).
+  **The system may reorder the queue freely and may only ever write status
+  PROPOSED; every later state requires a named human via `research approve`
+  (§8).** None of Phase 2's own weights are tuned against an outcome — there is
+  no forward research data to tune them on, and doing so would be the parameter
+  fishing GOVERNANCE.md forbids.
+
 **Gmail Notifier**
 - SMTP SSL to smtp.gmail.com:465
 - Env: GMAIL_USER, GMAIL_APP_PASSWORD, TURBOEDGE_EMAIL_TO
@@ -160,6 +179,8 @@ turboedge position close --wkn XXXXX --price 5.42 --date 2026-09-15
 turboedge position reevaluate [--email]                                  # HOLD/REDUCE/EXIT/INVALIDATED per open position
 turboedge report monthly [--month YYYY-MM] [--email]
 turboedge research tournament [--email]                                  # weekly champion/challenger/dormant comparison
+turboedge research queue [--limit 10] [--rescore/--no-rescore]           # ranked research priorities (shadow; no authorisation)
+turboedge research approve <ID> --by WHO --note WHY [--trial-id ID]      # the human approval gate (Phase 2 §8)
 turboedge db info
 turboedge db compact [--keep-days N] [--hard-delete-after-days N]
 turboedge state pack --out state.tar.enc [--include-snapshots]

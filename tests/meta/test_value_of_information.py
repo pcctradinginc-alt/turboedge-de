@@ -21,6 +21,7 @@ from turboedge.meta.value_of_information import (
     CURRENT_UNCERTAINTY_FLOOR,
     OVERLAP_WEIGHT,
     PATTERN_SUPPORT_BONUS_CAP,
+    PRIOR_FAILURE_WEIGHT,
     SMALL_SAMPLE_REFERENCE,
     UNKNOWN_INPUT_PENALTY,
     rank,
@@ -159,9 +160,22 @@ def test_prior_failure_similarity_penalty_reduces_score() -> None:
     )
     assert tainted.score < clean.score
     factor = next(p for p in tainted.penalties if p.name == "prior_failure_similarity")
-    assert factor.value == pytest.approx(0.2)
+    assert factor.value == pytest.approx(1.0 - PRIOR_FAILURE_WEIGHT * 0.8)
     reason = next(r for r in tainted.reasons if "prior failure similarity" in r)
     assert "0.80" in reason
+
+
+def test_total_prior_failure_similarity_does_not_zero_the_score() -> None:
+    """Similarity is measured lexically, so a 1.0 can be a false positive.
+
+    Zeroing the score would let a string match close off a line of research
+    outright, and §9 explicitly allows a retest with new data or a new method.
+    """
+    identical = _score(
+        _opportunity(),
+        prior_failure_similarity=Estimate.measured(1.0, "same tokens as a failed hypothesis"),
+    )
+    assert identical.score > 0.0
 
 
 def test_data_availability_used_directly_as_factor() -> None:

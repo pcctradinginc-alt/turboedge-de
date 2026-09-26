@@ -38,11 +38,13 @@ from turboedge.backtest.ko_calibration import KoCalibrationMetrics, run_ko_calib
 from turboedge.backtest.walkforward import walk_forward_evaluate
 from turboedge.config import config_hash
 from turboedge.learning.drift import PageHinkley, PageHinkleyConfig, record_drift_event
+from turboedge.learning.failed_hypotheses import default_path as failed_hypotheses_default_path
 from turboedge.learning.labeler import label_due_entries
 from turboedge.learning.ledger import ForwardLedger
 from turboedge.learning.posterior import StrategyPosterior
 from turboedge.learning.registry import ModelRegistry
 from turboedge.learning.trials import backfill_w9_trials
+from turboedge.meta import IllegalTransition, ResearchQueue, render_research_queue
 from turboedge.models.baselines import (
     RegimeConditionalEmpiricalModel,
     RegularizedLinearLocationModel,
@@ -490,6 +492,100 @@ def report_monthly_cmd(
     _print_counts("report monthly", counts)
     console.print(f"Wrote {json_path} / {html_path}")
     _write_summary("report_monthly", counts, month=target_month.isoformat())
+
+
+def research_queue_cmd(
+    ctx: typer.Context,
+    limit: int = typer.Option(10, "--limit", help="How many entries to show"),
+    rescore: bool = typer.Option(
+        True, "--rescore/--no-rescore", help="Recompute priorities before printing"
+    ),
+) -> None:
+    """Show the ranked research queue (Phase 2, §8).
+
+    Priorities only. Nothing here authorises work: the system may reorder the
+    queue as often as it likes, but only ``research approve`` can move an entry
+    out of PROPOSED, and only a named human can run that.
+    """
+    app_ctx = ctx.obj
+    now = datetime.now(UTC)
+
+    with Store(app_ctx.db_path) as store:
+        store.init_schema()
+        queue = ResearchQueue(
+            store,
+            failed_hypotheses_path=failed_hypotheses_default_path(app_ctx.state_dir),
+        )
+        seeded = queue.seed_from_catalog(now=now)
+        if rescore:
+            queue.rescore(now=now)
+        entries = queue.ranked()
+        # markup=False: the rendered text contains square brackets (the
+        # "[priorities only -- implementation needs human approval]" header and
+        # the unknown-input lists), which rich would otherwise parse as markup
+        # tags and silently swallow -- losing exactly the line that says this
+        # queue is not permission to act.
+        console.print(render_research_queue(entries, limit=limit), markup=False, highlight=False)
+
+    if seeded:
+        console.print(
+            f"\nSeeded {len(seeded)} new catalog entr{'y' if len(seeded) == 1 else 'ies'}."
+        )
+    _write_summary("research_queue", {"open": len(entries), "seeded": len(seeded)})
+
+
+def research_approve_cmd(
+    ctx: typer.Context,
+    hypothesis_id: str = typer.Argument(..., help="Which opportunity to approve"),
+    approved_by: str = typer.Option(..., "--by", help="Who is approving this (required)"),
+    note: str = typer.Option(..., "--note", help="Why it is being approved (required)"),
+    trial_id: str | None = typer.Option(
+        None, "--trial-id", help="Existing trial id, if one has been registered"
+    ),
+) -> None:
+    """Approve one research opportunity for implementation (§8).
+
+    This is the human-approval gate. It is a CLI command rather than anything
+    automatic on purpose: the system is allowed to argue for a question, never
+    to authorise it. ``--by`` and ``--note`` are required because an approval
+    with no named approver and no stated reason is not an audit trail.
+
+    Approving does not start any work and changes no production code. It only
+    records that a human considers this question worth running.
+    """
+    app_ctx = ctx.obj
+    now = datetime.now(UTC)
+
+    with Store(app_ctx.db_path) as store:
+        store.init_schema()
+        queue = ResearchQueue(
+            store,
+            failed_hypotheses_path=failed_hypotheses_default_path(app_ctx.state_dir),
+        )
+        queue.seed_from_catalog(now=now)
+        try:
+            stored = queue.approve(
+                hypothesis_id,
+                approved_by=approved_by,
+                note=note,
+                trial_id=trial_id,
+                now=now,
+            )
+        except (ValueError, IllegalTransition, KeyError) as exc:
+            console.print(f"[red]Not approved:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+
+        console.print(
+            f"{stored.opportunity.hypothesis_id} -> "
+            f"{stored.opportunity.status.value} (by {approved_by})"
+        )
+        if trial_id is None:
+            console.print(
+                "No trial id recorded. One is required before this can move to RUNNING "
+                "(Master Spec §23/§24: every research change needs a trial id against "
+                "the adjustment budget)."
+            )
+    _write_summary("research_approve", {"approved": 1}, hypothesis_id=hypothesis_id)
 
 
 def research_tournament_cmd(
@@ -1040,6 +1136,8 @@ def register_learn_commands(app: typer.Typer, position_app: typer.Typer) -> None
     app.add_typer(report_app, name="report")
 
     research_app = typer.Typer(help="Research governance")
+    research_app.command("queue")(research_queue_cmd)
+    research_app.command("approve")(research_approve_cmd)
     research_app.command("tournament")(research_tournament_cmd)
     research_app.command("backfill-trials")(research_backfill_trials_cmd)
     research_app.command("ko-calibration")(research_ko_calibration_cmd)

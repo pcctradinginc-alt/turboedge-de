@@ -95,6 +95,16 @@ SMALL_SAMPLE_REFERENCE = 100.0
 #: ranking, not dominate one built from this opportunity's own estimates.
 PATTERN_SUPPORT_BONUS_CAP = 0.25
 
+#: How hard `prior_failure_similarity` bites. Below 1.0 for the same reason
+#: as OVERLAP_WEIGHT, and it matters more here: similarity is measured
+#: lexically, so a perfect 1.0 can mean two genuinely different questions that
+#: happen to share vocabulary -- "cross-asset residual momentum" scores 1.00
+#: against the failed "cross_asset_leadlag" on tokens alone. At weight 1.0
+#: that would zero the score outright and make the entry invisible, letting a
+#: string match silently close off a line of research. It should make it
+#: unattractive instead, and leave the §9 retest exceptions reachable.
+PRIOR_FAILURE_WEIGHT = 0.9
+
 #: How hard `overlap_with_existing_research` bites. Below 1.0 on purpose:
 #: total overlap should push a question far down the queue, but not to a
 #: score of exactly zero, because a re-examination with a new method or a
@@ -312,7 +322,9 @@ def score_opportunity(
         )
 
     similarity, similarity_f = _factor(
-        "prior_failure_similarity", prior_failure_similarity, lambda v: _clip01(1.0 - v)
+        "prior_failure_similarity",
+        prior_failure_similarity,
+        lambda v: _clip01(1.0 - PRIOR_FAILURE_WEIGHT * _clip01(v)),
     )
     penalties.append(similarity_f)
     if similarity is not None:

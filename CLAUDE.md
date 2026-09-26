@@ -148,6 +148,27 @@ missing feature — see the roadmap in README.md.
   no forward research data to tune them on, and doing so would be the parameter
   fishing GOVERNANCE.md forbids.
 
+**What runs on its own (`.github/workflows/pipeline.yml`)**
+- 5×/weekday: `scan-all --email` — the full forecast/path/EV/gate pipeline. It
+  emails a §34 trade proposal the moment a candidate clears every gate; there
+  is no manual step between a positive `lcb_ev` and the mail.
+- Daily eod: `label` → `learn` → `position reevaluate --email` → `db compact`.
+- Weekly: `backtest` (the only writer of `walkforward_results`, added
+  2026-09-26 — the meta layer abstained on missing calibration data until it
+  ran, see `docs/measured_results.md` §6.14), then `research excursion`,
+  `research queue`, `research tournament --email`, `research ko-calibration`.
+- Monthly: `report monthly --email`, plus pre-registered trial 2026Q4-001
+  (`research synthetic-ev`), which refuses before 2026-10-01 and refuses again
+  once its result file exists. It is meant to run exactly once.
+
+**The delivery path is verified end-to-end** (2026-09-26), which it had never
+been: `evaluate_gates` returns ACTIONABLE with every condition met and a
+distinct reason for each blocker; `newly_actionable` appends unconditionally;
+and `tests/pipeline/test_scan_actionable_delivery.py` has five unconditional
+tests that the email is built, sent, deduplicated and never dropped silently.
+Do not replace those with conditional `if category == ACTIONABLE` assertions —
+the previous test did that, passed either way, and left the path unexercised.
+
 **Gmail Notifier**
 - SMTP SSL to smtp.gmail.com:465
 - Env: GMAIL_USER, GMAIL_APP_PASSWORD, TURBOEDGE_EMAIL_TO

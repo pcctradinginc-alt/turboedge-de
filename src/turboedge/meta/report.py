@@ -10,6 +10,11 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from turboedge.meta.research_opportunity import (
+    EstimateBasis,
+    ResearchStatus,
+    StoredOpportunity,
+)
 from turboedge.meta.schemas import MetaDecision
 
 
@@ -71,4 +76,92 @@ def render_summary(decisions: Sequence[MetaDecision]) -> str:
     )
 
 
-__all__ = ["render_meta_decision", "render_summary"]
+def render_research_queue(
+    entries: Sequence[StoredOpportunity],
+    *,
+    limit: int | None = None,
+) -> str:
+    """The ranked research queue as readable text (Phase 2, §13).
+
+    Two things are shown that a bare ranking would hide, and they are the
+    reason this renderer exists rather than a sorted list of ids.
+
+    `evidence` is the share of ranking inputs that could actually be
+    measured. Most entries sit low, because the inputs to an *unrun*
+    experiment are judgements by construction -- a queue that presented
+    those scores without saying so would read as measurement.
+
+    `?` marks the inputs that are unknown. They are penalties in the score,
+    not gaps papered over with a neutral value, so an entry can rank low
+    purely because nobody knows enough about it yet -- which is useful
+    information and should be visible.
+    """
+    if not entries:
+        return "RESEARCH QUEUE: empty."
+
+    shown = entries if limit is None else entries[:limit]
+    lines = [
+        f"RESEARCH QUEUE ({len(entries)} open, showing {len(shown)})"
+        "   [priorities only -- implementation needs human approval]",
+        "",
+        f"  {'#':>2}  {'hypothesis':28} {'status':9} {'score':>7}  {'evidence':>8}  family",
+    ]
+    for rank, entry in enumerate(shown, start=1):
+        o = entry.opportunity
+        p = entry.priority
+        score = "  --   " if p is None else f"{p.score:7.4f}"
+        evidence = "    --  " if p is None else f"{p.evidence_completeness:7.0%} "
+        lines.append(
+            f"  {rank:>2}. {o.hypothesis_id:28} {o.status.value:9} {score}  {evidence}  "
+            f"{o.information_family.value}"
+        )
+
+    lines += ["", "  Detail:"]
+    for entry in shown:
+        o = entry.opportunity
+        p = entry.priority
+        lines.append(f"    {o.hypothesis_id}  ({o.information_family.value})")
+        lines.append(f"      {o.description}")
+        declared = sorted(
+            name for name in _RANKING_INPUTS if getattr(o, name).basis is EstimateBasis.DECLARED
+        )
+        if p is None:
+            lines.append("      not scored yet")
+        else:
+            lines.append(
+                f"      score {p.score:.4f}  (base {p.base_score:.4f})   "
+                f"evidence {p.evidence_completeness:.0%}"
+            )
+            if p.unknown_inputs:
+                lines.append(f"      ? unknown: {', '.join(sorted(p.unknown_inputs))}")
+            for reason in p.reasons:
+                lines.append(f"      - {reason}")
+        if declared:
+            lines.append(f"      declared (judgement, not measured): {', '.join(declared)}")
+        if o.status is not ResearchStatus.PROPOSED:
+            lines.append(
+                f"      {o.status.value} by {o.approved_by or 'unknown'}"
+                + (f" -- {o.status_note}" if o.status_note else "")
+            )
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
+#: The ranking-input field names, for the provenance line above. Kept beside
+#: the renderer rather than imported from storage so that a new input added to
+#: the schema shows up as absent here instead of being quietly omitted.
+_RANKING_INPUTS: tuple[str, ...] = (
+    "expected_information_gain",
+    "expected_economic_value",
+    "probability_of_resolving_uncertainty",
+    "implementation_cost",
+    "implementation_complexity",
+    "estimated_sample_size",
+    "current_uncertainty",
+    "data_availability",
+    "leakage_risk",
+    "overlap_with_existing_research",
+)
+
+
+__all__ = ["render_meta_decision", "render_research_queue", "render_summary"]

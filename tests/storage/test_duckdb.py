@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -7,6 +8,15 @@ from pathlib import Path
 import duckdb
 import pytest
 
+from turboedge.meta.research_opportunity import (
+    Estimate,
+    EstimateBasis,
+    InformationFamily,
+    ResearchOpportunity,
+    ResearchPriority,
+    ResearchStatus,
+    SuccessfulResearchPattern,
+)
 from turboedge.storage.duckdb import Store, StoreError
 from turboedge.storage.schemas import (
     CandidateEvaluation,
@@ -44,6 +54,8 @@ def test_init_schema_creates_all_tables_empty(store: Store) -> None:
         "underlying_prices",
         "external_observations",
         "meta_decisions",
+        "research_opportunities",
+        "successful_research_patterns",
         "signals",
         "candidate_sets",
         "source_health",
@@ -1119,3 +1131,206 @@ def test_point_in_time_query_filters_available_at_not_observation_time(store: St
         available_at_max=datetime(2026, 9, 25, 3, 0, tzinfo=UTC)
     )
     assert [o.value for o in as_of] == [15.67]
+
+
+# --- Phase 2 research queue tables -------------------------------------------
+
+
+def _opportunity(
+    hypothesis_id: str = "RO-TEST",
+    *,
+    status: ResearchStatus = ResearchStatus.PROPOSED,
+    approved_by: str | None = None,
+) -> ResearchOpportunity:
+    return ResearchOpportunity(
+        hypothesis_id=hypothesis_id,
+        description="A test hypothesis.",
+        information_family=InformationFamily.VOLATILITY_SURFACE,
+        affected_underlyings=["DAX", "NDX"],
+        affected_horizons=["5d", "7d"],
+        expected_information_gain=Estimate.declared(0.6, "judgement"),
+        expected_economic_value=Estimate.declared(0.3, "judgement"),
+        probability_of_resolving_uncertainty=Estimate.declared(0.7, "judgement"),
+        implementation_cost=Estimate.declared(3.0, "engineer-days"),
+        implementation_complexity=Estimate.declared(0.4, "judgement"),
+        estimated_sample_size=Estimate.measured(520.0, "weekly over 10y"),
+        current_uncertainty=Estimate.unknown("no meta decisions stored yet"),
+        data_availability=Estimate.measured(1.0),
+        leakage_risk=Estimate.declared(0.1, "next-day availability"),
+        overlap_with_existing_research=Estimate.measured(0.8, "matches vix_term_structure"),
+        status=status,
+        approved_by=approved_by,
+    )
+
+
+def test_research_opportunity_roundtrip_preserves_estimate_provenance(store: Store) -> None:
+    opportunity = _opportunity()
+    priority = ResearchPriority(
+        hypothesis_id="RO-TEST",
+        score=1.25,
+        base_score=2.5,
+        unknown_inputs=["current_uncertainty"],
+        evidence_completeness=0.9,
+        reasons=["one unknown input halves the score"],
+    )
+    scored_at = datetime(2026, 9, 26, 6, 0, tzinfo=UTC)
+
+    store.upsert_research_opportunity(opportunity, priority=priority, scored_at=scored_at)
+    stored = store.list_research_opportunities()
+
+    assert len(stored) == 1
+    assert stored[0].opportunity == opportunity
+    assert stored[0].priority == priority
+    assert stored[0].scored_at == scored_at
+    # The basis must survive the JSON round-trip: a MEASURED estimate coming
+    # back as DECLARED (or an UNKNOWN coming back with a value) would make the
+    # whole provenance mechanism decorative.
+    assert stored[0].opportunity.current_uncertainty.basis is EstimateBasis.UNKNOWN
+    assert stored[0].opportunity.current_uncertainty.value is None
+    assert stored[0].opportunity.estimated_sample_size.basis is EstimateBasis.MEASURED
+    assert stored[0].opportunity.implementation_cost.basis is EstimateBasis.DECLARED
+
+
+def test_research_opportunity_upsert_replaces_and_can_clear_a_score(store: Store) -> None:
+    store.upsert_research_opportunity(
+        _opportunity(),
+        priority=ResearchPriority(hypothesis_id="RO-TEST", score=1.0, base_score=1.0),
+    )
+    store.upsert_research_opportunity(_opportunity(), priority=None)
+
+    stored = store.get_research_opportunity("RO-TEST")
+    assert stored is not None
+    assert stored.priority is None
+
+
+def test_list_research_opportunities_orders_by_score_with_unscored_last(store: Store) -> None:
+    store.upsert_research_opportunity(_opportunity("RO-A"), priority=None)
+    store.upsert_research_opportunity(
+        _opportunity("RO-B"),
+        priority=ResearchPriority(hypothesis_id="RO-B", score=0.4, base_score=0.4),
+    )
+    store.upsert_research_opportunity(
+        _opportunity("RO-C"),
+        priority=ResearchPriority(hypothesis_id="RO-C", score=2.1, base_score=2.1),
+    )
+
+    ids = [s.opportunity.hypothesis_id for s in store.list_research_opportunities()]
+    assert ids == ["RO-C", "RO-B", "RO-A"]
+
+
+def test_list_research_opportunities_filters_by_status(store: Store) -> None:
+    store.upsert_research_opportunity(_opportunity("RO-A"))
+    store.upsert_research_opportunity(
+        _opportunity("RO-B", status=ResearchStatus.APPROVED, approved_by="user")
+    )
+
+    approved = store.list_research_opportunities(status=str(ResearchStatus.APPROVED))
+    assert [s.opportunity.hypothesis_id for s in approved] == ["RO-B"]
+
+
+def test_reading_an_opportunity_with_a_dropped_ranking_input_raises(store: Store) -> None:
+    """A schema change that loses a ranking input must fail loudly.
+
+    Silently reconstructing the row with a default would turn a missing
+    judgement into an invented one -- the exact failure this layer exists to
+    prevent.
+    """
+    store.upsert_research_opportunity(_opportunity())
+    estimates = json.loads(
+        store._conn.execute(
+            "SELECT estimates FROM research_opportunities WHERE hypothesis_id = 'RO-TEST'"
+        ).fetchone()[0]
+    )
+    del estimates["leakage_risk"]
+    store._conn.execute(
+        "UPDATE research_opportunities SET estimates = ? WHERE hypothesis_id = 'RO-TEST'",
+        [json.dumps(estimates)],
+    )
+
+    with pytest.raises(ValueError, match="leakage_risk"):
+        store.get_research_opportunity("RO-TEST")
+
+
+def test_successful_research_pattern_roundtrip_keeps_unmeasured_decay_none(store: Store) -> None:
+    pattern = SuccessfulResearchPattern(
+        pattern_id="SP-001",
+        information_family=InformationFamily.POSITIONING,
+        feature="cftc_lev_money",
+        underlying_id="NDX",
+        horizon="10d",
+        volatility_regime="mid_vol",
+        trend_regime="up",
+        oos_effect=0.031,
+        effective_sample=380,
+        stability=0.62,
+        economic_value=0.0012,
+        discovered_at=datetime(2026, 9, 20, tzinfo=UTC),
+        note="illustrative",
+    )
+
+    store.upsert_successful_research_pattern(pattern)
+    got = store.list_successful_research_patterns()
+
+    assert got == [pattern]
+    # None means "never re-measured", not "no decay"; a 0.0 here would silently
+    # certify an old winner as still valid.
+    assert got[0].decay_since_discovery is None
+    assert got[0].last_confirmed_at is None
+
+
+def test_list_successful_research_patterns_filters_by_family(store: Store) -> None:
+    base = dict(
+        underlying_id="DAX",
+        horizon="7d",
+        volatility_regime="low_vol",
+        trend_regime="range",
+        oos_effect=0.01,
+        effective_sample=100,
+        stability=0.5,
+        economic_value=0.0,
+        discovered_at=datetime(2026, 9, 1, tzinfo=UTC),
+    )
+    store.upsert_successful_research_pattern(
+        SuccessfulResearchPattern(
+            pattern_id="SP-A",
+            information_family=InformationFamily.POSITIONING,
+            feature="a",
+            **base,
+        )
+    )
+    store.upsert_successful_research_pattern(
+        SuccessfulResearchPattern(
+            pattern_id="SP-B",
+            information_family=InformationFamily.EVENT_RISK,
+            feature="b",
+            **base,
+        )
+    )
+
+    got = store.list_successful_research_patterns(
+        information_family=str(InformationFamily.EVENT_RISK)
+    )
+    assert [p.pattern_id for p in got] == ["SP-B"]
+
+
+def test_init_schema_creates_phase2_tables_on_a_pre_phase2_database(tmp_path: Path) -> None:
+    """The Phase 2 tables must appear on an existing database (CI restores one).
+
+    Same additive-migration guarantee the W6 test above covers, for the two
+    research-queue tables.
+    """
+    db_path = tmp_path / "turboedge.duckdb"
+    conn = duckdb.connect(str(db_path))
+    try:
+        conn.execute("CREATE TABLE runs (run_id VARCHAR PRIMARY KEY)")
+        conn.execute("INSERT INTO runs (run_id) VALUES ('pre-phase2')")
+    finally:
+        conn.close()
+
+    with Store(db_path) as store:
+        store.init_schema()
+        store.upsert_research_opportunity(_opportunity())
+        assert store.get_research_opportunity("RO-TEST") is not None
+        assert store.list_successful_research_patterns() == []
+        # The pre-existing row must survive the migration.
+        assert store._conn.execute("SELECT run_id FROM runs").fetchall() == [("pre-phase2",)]

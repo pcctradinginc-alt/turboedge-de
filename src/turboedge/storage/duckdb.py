@@ -25,6 +25,15 @@ from typing import Any, Self
 import duckdb
 import structlog
 
+from turboedge.meta.research_opportunity import (
+    Estimate,
+    InformationFamily,
+    ResearchOpportunity,
+    ResearchPriority,
+    ResearchStatus,
+    StoredOpportunity,
+    SuccessfulResearchPattern,
+)
 from turboedge.meta.schemas import (
     DecisionConfidence,
     MetaDecision,
@@ -236,6 +245,48 @@ _DDL_STATEMENTS: tuple[str, ...] = (
         git_commit VARCHAR,
         schema_version VARCHAR NOT NULL,
         PRIMARY KEY (run_id, underlying_id, horizon_days)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS research_opportunities (
+        hypothesis_id VARCHAR NOT NULL,
+        description VARCHAR NOT NULL,
+        information_family VARCHAR NOT NULL,
+        status VARCHAR NOT NULL,
+        trial_id VARCHAR,
+        approved_by VARCHAR,
+        approved_at TIMESTAMPTZ,
+        status_note VARCHAR NOT NULL,
+        affected_underlyings VARCHAR NOT NULL,
+        affected_horizons VARCHAR NOT NULL,
+        estimates VARCHAR NOT NULL,
+        priority_score DOUBLE,
+        priority_detail VARCHAR,
+        scored_at TIMESTAMPTZ,
+        schema_version VARCHAR NOT NULL,
+        PRIMARY KEY (hypothesis_id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS successful_research_patterns (
+        pattern_id VARCHAR NOT NULL,
+        information_family VARCHAR NOT NULL,
+        feature VARCHAR NOT NULL,
+        underlying_id VARCHAR NOT NULL,
+        horizon VARCHAR NOT NULL,
+        volatility_regime VARCHAR NOT NULL,
+        trend_regime VARCHAR NOT NULL,
+        oos_effect DOUBLE NOT NULL,
+        effective_sample INTEGER NOT NULL,
+        stability DOUBLE NOT NULL,
+        economic_value DOUBLE NOT NULL,
+        discovered_at TIMESTAMPTZ NOT NULL,
+        last_confirmed_at TIMESTAMPTZ,
+        decay_since_discovery DOUBLE,
+        trial_id VARCHAR,
+        note VARCHAR NOT NULL,
+        schema_version VARCHAR NOT NULL,
+        PRIMARY KEY (pattern_id)
     )
     """,
     """
@@ -612,6 +663,8 @@ _ALL_TABLES: tuple[str, ...] = (
     "underlying_prices",
     "external_observations",
     "meta_decisions",
+    "research_opportunities",
+    "successful_research_patterns",
     "signals",
     "candidate_sets",
     "source_health",
@@ -1066,6 +1119,74 @@ class Store:
             params,
         ).fetchall()
         return [_row_to_meta_decision(r) for r in rows]
+
+    # -- research queue (Phase 2) ------------------------------------------
+
+    def upsert_research_opportunity(
+        self,
+        opportunity: ResearchOpportunity,
+        *,
+        priority: ResearchPriority | None = None,
+        scored_at: datetime | None = None,
+    ) -> None:
+        """Insert or replace one opportunity, optionally with its score.
+
+        `estimates` and `priority_detail` are stored as JSON: the ranking
+        inputs are read as a block whenever the queue is rendered or
+        re-scored, and nothing queries an individual estimate relationally.
+        """
+        self._conn.execute(
+            f"INSERT OR REPLACE INTO research_opportunities "
+            f"({', '.join(_RESEARCH_OPPORTUNITY_COLUMNS)}) "
+            f"VALUES ({', '.join(['?'] * len(_RESEARCH_OPPORTUNITY_COLUMNS))})",
+            _research_opportunity_row(opportunity, priority, scored_at),
+        )
+
+    def list_research_opportunities(self, *, status: str | None = None) -> list[StoredOpportunity]:
+        """Every stored opportunity, highest last-computed priority first.
+
+        Unscored entries sort last rather than first: an entry with no score
+        has not been evaluated, which is not the same as being unimportant,
+        but putting it at the top would misrepresent it as ranked.
+        """
+        where = "WHERE status = ?" if status is not None else ""
+        params = [status] if status is not None else []
+        rows = self._conn.execute(
+            f"SELECT {', '.join(_RESEARCH_OPPORTUNITY_COLUMNS)} "
+            f"FROM research_opportunities {where} "
+            "ORDER BY priority_score DESC NULLS LAST, hypothesis_id ASC",
+            params,
+        ).fetchall()
+        return [_row_to_stored_opportunity(r) for r in rows]
+
+    def get_research_opportunity(self, hypothesis_id: str) -> StoredOpportunity | None:
+        rows = self._conn.execute(
+            f"SELECT {', '.join(_RESEARCH_OPPORTUNITY_COLUMNS)} "
+            "FROM research_opportunities WHERE hypothesis_id = ?",
+            [hypothesis_id],
+        ).fetchall()
+        return _row_to_stored_opportunity(rows[0]) if rows else None
+
+    def upsert_successful_research_pattern(self, pattern: SuccessfulResearchPattern) -> None:
+        self._conn.execute(
+            f"INSERT OR REPLACE INTO successful_research_patterns "
+            f"({', '.join(_RESEARCH_PATTERN_COLUMNS)}) "
+            f"VALUES ({', '.join(['?'] * len(_RESEARCH_PATTERN_COLUMNS))})",
+            _research_pattern_row(pattern),
+        )
+
+    def list_successful_research_patterns(
+        self, *, information_family: str | None = None
+    ) -> list[SuccessfulResearchPattern]:
+        where = "WHERE information_family = ?" if information_family is not None else ""
+        params = [information_family] if information_family is not None else []
+        rows = self._conn.execute(
+            f"SELECT {', '.join(_RESEARCH_PATTERN_COLUMNS)} "
+            f"FROM successful_research_patterns {where} "
+            "ORDER BY discovered_at ASC, pattern_id ASC",
+            params,
+        ).fetchall()
+        return [_row_to_research_pattern(r) for r in rows]
 
     def append_underlying_bars(self, bars: Sequence[UnderlyingBar]) -> int:
         if not bars:
@@ -3223,4 +3344,156 @@ def _row_to_meta_decision(row: tuple[Any, ...]) -> MetaDecision:
         config_hash=row[23],
         git_commit=row[24],
         schema_version=row[25],
+    )
+
+
+_RESEARCH_OPPORTUNITY_COLUMNS: tuple[str, ...] = (
+    "hypothesis_id",
+    "description",
+    "information_family",
+    "status",
+    "trial_id",
+    "approved_by",
+    "approved_at",
+    "status_note",
+    "affected_underlyings",
+    "affected_horizons",
+    "estimates",
+    "priority_score",
+    "priority_detail",
+    "scored_at",
+    "schema_version",
+)
+
+#: The `Estimate`-valued fields of `ResearchOpportunity`, serialised together
+#: into the `estimates` JSON column. Listed explicitly rather than derived by
+#: introspection so that adding a ranking input to the schema fails loudly
+#: here instead of being silently dropped on write.
+_OPPORTUNITY_ESTIMATE_FIELDS: tuple[str, ...] = (
+    "expected_information_gain",
+    "expected_economic_value",
+    "probability_of_resolving_uncertainty",
+    "implementation_cost",
+    "implementation_complexity",
+    "estimated_sample_size",
+    "current_uncertainty",
+    "data_availability",
+    "leakage_risk",
+    "overlap_with_existing_research",
+)
+
+
+def _research_opportunity_row(
+    o: ResearchOpportunity,
+    priority: ResearchPriority | None,
+    scored_at: datetime | None,
+) -> tuple[Any, ...]:
+    estimates = {f: getattr(o, f).model_dump(mode="json") for f in _OPPORTUNITY_ESTIMATE_FIELDS}
+    return (
+        o.hypothesis_id,
+        o.description,
+        str(o.information_family),
+        str(o.status),
+        o.trial_id,
+        o.approved_by,
+        o.approved_at,
+        o.status_note,
+        json.dumps(o.affected_underlyings),
+        json.dumps(o.affected_horizons),
+        json.dumps(estimates),
+        None if priority is None else priority.score,
+        None if priority is None else priority.model_dump_json(),
+        scored_at,
+        o.schema_version,
+    )
+
+
+def _row_to_stored_opportunity(row: tuple[Any, ...]) -> StoredOpportunity:
+    estimates = {k: Estimate.model_validate(v) for k, v in json.loads(row[10]).items()}
+    missing = set(_OPPORTUNITY_ESTIMATE_FIELDS) - estimates.keys()
+    if missing:
+        raise ValueError(
+            f"stored opportunity {row[0]!r} is missing ranking input(s) "
+            f"{sorted(missing)}; refusing to reconstruct it with defaults"
+        )
+    opportunity = ResearchOpportunity(
+        hypothesis_id=row[0],
+        description=row[1],
+        information_family=InformationFamily(row[2]),
+        status=ResearchStatus(row[3]),
+        trial_id=row[4],
+        approved_by=row[5],
+        approved_at=row[6],
+        status_note=row[7],
+        affected_underlyings=json.loads(row[8]),
+        affected_horizons=json.loads(row[9]),
+        schema_version=row[14],
+        **estimates,
+    )
+    priority = None if row[12] is None else ResearchPriority.model_validate_json(row[12])
+    return StoredOpportunity(opportunity=opportunity, priority=priority, scored_at=row[13])
+
+
+_RESEARCH_PATTERN_COLUMNS: tuple[str, ...] = (
+    "pattern_id",
+    "information_family",
+    "feature",
+    "underlying_id",
+    "horizon",
+    "volatility_regime",
+    "trend_regime",
+    "oos_effect",
+    "effective_sample",
+    "stability",
+    "economic_value",
+    "discovered_at",
+    "last_confirmed_at",
+    "decay_since_discovery",
+    "trial_id",
+    "note",
+    "schema_version",
+)
+
+
+def _research_pattern_row(p: SuccessfulResearchPattern) -> tuple[Any, ...]:
+    return (
+        p.pattern_id,
+        str(p.information_family),
+        p.feature,
+        p.underlying_id,
+        p.horizon,
+        p.volatility_regime,
+        p.trend_regime,
+        p.oos_effect,
+        p.effective_sample,
+        p.stability,
+        p.economic_value,
+        p.discovered_at,
+        p.last_confirmed_at,
+        p.decay_since_discovery,
+        p.trial_id,
+        p.note,
+        p.schema_version,
+    )
+
+
+def _row_to_research_pattern(row: tuple[Any, ...]) -> SuccessfulResearchPattern:
+    return SuccessfulResearchPattern(
+        pattern_id=row[0],
+        information_family=InformationFamily(row[1]),
+        feature=row[2],
+        underlying_id=row[3],
+        horizon=row[4],
+        volatility_regime=row[5],
+        trend_regime=row[6],
+        oos_effect=row[7],
+        effective_sample=row[8],
+        stability=row[9],
+        economic_value=row[10],
+        discovered_at=row[11],
+        last_confirmed_at=row[12],
+        decay_since_discovery=row[13],
+        trial_id=row[14],
+        note=row[15],
+        schema_version=row[16],
     )

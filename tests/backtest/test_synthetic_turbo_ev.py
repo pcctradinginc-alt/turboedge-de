@@ -1,4 +1,5 @@
-"""Tests for the pre-registration 2026Q4-001 harness (``backtest/synthetic_turbo_ev.py``).
+"""Tests for the pre-registration 2026Q4-001 harness (``backtest/synthetic_turbo_ev.py``),
+as amended by §10 (Amendment B).
 
 Every bar series here is constructed locally (seeded numpy, no network, no
 ``adapters/fallback_prices.py``) -- this suite never calls
@@ -6,16 +7,20 @@ Every bar series here is constructed locally (seeded numpy, no network, no
 module's own "do not measure before 2026-10-01" constraint.
 
 Coverage: standardised-universe construction (count, long/short split,
-barrier placement, fair-value entry, bid/ask relation), terms identity
-across arms, ``spot0``/universe consistency, the moving-block bootstrap on
-constructed series with a known mean, every verdict branch (including the
-negative-delta one), populated-and-separate stability fields, and the two
-mandatory anti-triviality checks.
+barrier placement, fair-value quote straddle per Amendment B), terms
+identity across arms, ``spot0`` consistency with the universe, the
+moving-block bootstrap on constructed series with a known mean, every
+verdict branch (including the negative-delta one), populated-and-separate
+stability fields, the two mandatory anti-triviality checks (now on
+``lcb_net_return``, the Amendment B primary statistic), a pin that the
+primary statistic really is the LCB and not the mean, and that ``spread``
+now genuinely changes the result (it could not before Amendment B).
 """
 
 from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -154,35 +159,48 @@ def test_universe_barrier_placement_matches_configured_distances() -> None:
         assert got == pytest.approx(want)
 
 
-def test_universe_entry_ask_equals_theoretical_fair_value() -> None:
+def _fair_value_for(terms, spot: float):  # type: ignore[no-untyped-def]
+    return theoretical_fair_value(
+        direction=terms.direction,
+        product_type=terms.product_type,
+        spot=spot,
+        financing_level=terms.financing_level,
+        knockout_barrier=terms.knockout_barrier,
+        ratio=terms.ratio,
+        fx=terms.fx,
+        ref_rate=terms.ref_rate,
+        financing_spread=terms.financing_spread,
+        as_of=date(2024, 3, 1),  # unused for TURBO_OPEN_END, any date works
+        maturity=None,
+        dividend_yield=0.0,
+    )
+
+
+def test_universe_quote_straddles_fair_value_per_amendment_b() -> None:
+    """Amendment B §10: entry_ask = fair_value * (1 + spread/2), entry_bid =
+    fair_value * (1 - spread/2) -- not the original §4 formula (entry_ask = fair_value
+    outright), which left entry_ask, the only field simulate_product_payoff reads,
+    invariant to spread."""
     spot = 137.5
-    cfg = SyntheticTurboConfig()
+    cfg = SyntheticTurboConfig(spread=0.02)
     universe = build_standardised_universe(spot, config=cfg)
     for terms in universe.values():
-        expected = theoretical_fair_value(
-            direction=terms.direction,
-            product_type=terms.product_type,
-            spot=spot,
-            financing_level=terms.financing_level,
-            knockout_barrier=terms.knockout_barrier,
-            ratio=terms.ratio,
-            fx=terms.fx,
-            ref_rate=terms.ref_rate,
-            financing_spread=terms.financing_spread,
-            as_of=date(2024, 3, 1),  # unused for TURBO_OPEN_END, any date works
-            maturity=None,
-            dividend_yield=0.0,
-        )
-        assert terms.entry_ask == pytest.approx(expected)
-        assert terms.entry_ask > 0.0
+        fair_value = _fair_value_for(terms, spot)
+        assert terms.entry_ask == pytest.approx(fair_value * 1.01)
+        assert terms.entry_bid == pytest.approx(fair_value * 0.99)
+        assert terms.entry_bid < fair_value < terms.entry_ask
 
 
-def test_universe_entry_bid_below_ask_by_configured_spread() -> None:
-    cfg = SyntheticTurboConfig(spread=0.02)
-    universe = build_standardised_universe(100.0, config=cfg)
-    for terms in universe.values():
-        assert terms.entry_bid == pytest.approx(terms.entry_ask * 0.98)
-        assert terms.entry_bid < terms.entry_ask
+def test_universe_spread_genuinely_changes_entry_ask() -> None:
+    """Amendment B §10, Change 3's premise: unlike the original §4 formula, entry_ask now
+    depends on spread. Directly pins the fact the spread-sensitivity check now relies on."""
+    spot = 123.0
+    universe_a = build_standardised_universe(spot, config=SyntheticTurboConfig(spread=0.0025))
+    universe_b = build_standardised_universe(spot, config=SyntheticTurboConfig(spread=0.01))
+    for isin, terms_a in universe_a.items():
+        terms_b = universe_b[isin]
+        assert terms_a.entry_ask != pytest.approx(terms_b.entry_ask)
+        assert terms_a.entry_bid != pytest.approx(terms_b.entry_bid)
 
 
 def test_universe_rejects_nonpositive_spot() -> None:
@@ -244,7 +262,15 @@ def test_both_arms_receive_the_identical_terms_object_at_every_date(monkeypatch)
 
 def test_spot0_passed_matches_the_spot_the_universe_was_built_from(monkeypatch) -> None:
     """§6.10: a spot0/universe mismatch produced 365 spurious gate crossings through
-    leverage -- pin that spot0 always agrees with the universe actually priced."""
+    leverage -- pin that spot0 always agrees with the universe actually priced.
+
+    Exercises :func:`sev._price_trial_grid` directly (not the full trial) so every recorded
+    call shares the one ``cfg`` this test rebuilds against: ``run_synthetic_net_ev_trial``'s
+    own §6 spread-sensitivity probes (Amendment B §10, Change 3) legitimately call
+    ``evaluate_product_horizons`` again under *different* ``cfg.spread`` values, which would
+    otherwise make this test's single fixed ``cfg`` the wrong universe to rebuild a probe
+    call's recorded terms against.
+    """
     calls: list[dict[str, object]] = []
     real_fn = sev.evaluate_product_horizons
 
@@ -256,7 +282,8 @@ def test_spot0_passed_matches_the_spot_the_universe_was_built_from(monkeypatch) 
 
     cfg = SyntheticTurboConfig(n_paths=10)
     bars = {"DAX": _bars(780, seed=2, daily_vol=0.009)}
-    run_synthetic_net_ev_trial(bars, config=cfg)
+    underlying_forecasts = sev._collect_forecasts_by_underlying(bars)
+    sev._price_trial_grid(underlying_forecasts, cfg)
 
     assert calls
     for call in calls:
@@ -264,6 +291,64 @@ def test_spot0_passed_matches_the_spot_the_universe_was_built_from(monkeypatch) 
         assert isinstance(spot0, float)
         expected_universe = build_standardised_universe(spot0, config=cfg)
         assert call["terms"] == expected_universe
+
+
+# ---------------------------------------------------------------------------
+# Amendment B §10, Change 1: the primary statistic is lcb_net_return
+# ---------------------------------------------------------------------------
+
+
+def test_primary_statistic_is_lcb_net_return_not_mean_net_return(monkeypatch) -> None:
+    """Pins the Amendment B §10 primary-statistic switch: rig a fake
+    ``evaluate_product_horizons`` whose ``mean_net_return`` is identical across arms (so
+    reading it would collapse the delta to exactly 0) but whose ``lcb_net_return`` tracks
+    each arm's real forecast mean (so it differs between arms, since regime_conditional and
+    null disagree on this history). If this module is ever switched back to reading
+    ``mean_net_return``, this test fails loudly instead of silently passing."""
+
+    def fake_evaluate_product_horizons(terms_by_isin, forecast_by_horizon, bars, **kwargs):  # type: ignore[no-untyped-def]
+        horizons = kwargs["horizons"]
+        out = []
+        for isin in terms_by_isin:
+            for h in horizons:
+                forecast = forecast_by_horizon[h]
+                out.append(
+                    SimpleNamespace(
+                        isin=isin,
+                        horizon_days=h,
+                        lcb_net_return=forecast.mean * 10.0,
+                        mean_net_return=0.12345,  # rigged identical across arms
+                    )
+                )
+        return out
+
+    monkeypatch.setattr(sev, "evaluate_product_horizons", fake_evaluate_product_horizons)
+
+    bars = {"DAX": _bars(780, seed=21, daily_vol=0.009)}
+    cfg = SyntheticTurboConfig(n_paths=10)
+    result = run_synthetic_net_ev_trial(bars, config=cfg)
+
+    assert abs(result.mean_delta_lcb_net_ev) > 1e-9
+
+
+# ---------------------------------------------------------------------------
+# Amendment B §10, Change 3: spread now genuinely changes the result
+# ---------------------------------------------------------------------------
+
+
+def test_spread_sensitivity_probes_genuinely_differ() -> None:
+    """Before Amendment B, spread could not affect entry_ask under simulate_product_payoff's
+    contract, so both probes were forced equal to the (unrelated) primary value. After
+    Amendment B, entry_ask genuinely depends on spread, so the two probes must be an actual,
+    independently re-simulated result, not a reused constant."""
+    cfg = SyntheticTurboConfig(n_paths=30)
+    bars = {"DAX": _bars(800, seed=42, daily_vol=0.009)}
+    underlying_forecasts = sev._collect_forecasts_by_underlying(bars)
+
+    sensitivity = sev._spread_sensitivity_mean_delta_lcb_net_ev(underlying_forecasts, cfg)
+
+    assert set(sensitivity) == {"spread_0.0025", "spread_0.01"}
+    assert sensitivity["spread_0.0025"] != pytest.approx(sensitivity["spread_0.01"])
 
 
 # ---------------------------------------------------------------------------
@@ -376,7 +461,6 @@ def test_verdict_boundary_p_equals_alpha_with_positive_delta_is_pass() -> None:
 
 
 def test_stability_analysis_groups_by_underlying_horizon_and_distance() -> None:
-    cfg = SyntheticTurboConfig()
     records = [
         sev._CellRecord(
             date_key=date(2020, 1, 1),
@@ -385,8 +469,8 @@ def test_stability_analysis_groups_by_underlying_horizon_and_distance() -> None:
             direction=Direction.LONG,
             barrier_distance=0.02,
             horizon_days=5,
-            net_ev_null=0.0,
-            net_ev_regime_conditional=0.01,
+            lcb_net_ev_null=0.0,
+            lcb_net_ev_regime_conditional=0.01,
         ),
         sev._CellRecord(
             date_key=date(2020, 1, 1),
@@ -395,8 +479,8 @@ def test_stability_analysis_groups_by_underlying_horizon_and_distance() -> None:
             direction=Direction.SHORT,
             barrier_distance=0.02,
             horizon_days=5,
-            net_ev_null=0.0,
-            net_ev_regime_conditional=-0.01,
+            lcb_net_ev_null=0.0,
+            lcb_net_ev_regime_conditional=-0.01,
         ),
         sev._CellRecord(
             date_key=date(2020, 1, 2),
@@ -405,11 +489,16 @@ def test_stability_analysis_groups_by_underlying_horizon_and_distance() -> None:
             direction=Direction.LONG,
             barrier_distance=0.05,
             horizon_days=10,
-            net_ev_null=0.0,
-            net_ev_regime_conditional=0.02,
+            lcb_net_ev_null=0.0,
+            lcb_net_ev_regime_conditional=0.02,
         ),
     ]
-    stability = sev._stability_analysis(records, primary_mean_delta_net_ev=0.005, cfg=cfg)
+    spread_sensitivity = {"spread_0.0025": 0.001, "spread_0.01": 0.002}
+    stability = sev._stability_analysis(
+        records,
+        primary_mean_delta_lcb_net_ev=0.005,
+        spread_sensitivity_mean_delta=spread_sensitivity,
+    )
 
     assert stability.n_cells == 3
     assert stability.share_cells_delta_positive == pytest.approx(2.0 / 3.0)
@@ -419,23 +508,35 @@ def test_stability_analysis_groups_by_underlying_horizon_and_distance() -> None:
     assert stability.delta_net_ev_by_horizon[10] == pytest.approx(0.02)
     assert stability.delta_net_ev_by_barrier_distance[0.02] == pytest.approx(0.0)
     assert stability.delta_net_ev_by_barrier_distance[0.05] == pytest.approx(0.02)
+    assert stability.spread_sensitivity_mean_delta == spread_sensitivity
+    assert stability.spread_sensitivity_sign_stable  # both probes positive, primary positive
+
+
+def test_stability_analysis_sign_stable_false_when_a_probe_flips_sign() -> None:
+    records = [
+        sev._CellRecord(
+            date_key=date(2020, 1, 1),
+            underlying_id="DAX",
+            isin="SYNTH-LONG-0.0200",
+            direction=Direction.LONG,
+            barrier_distance=0.02,
+            horizon_days=5,
+            lcb_net_ev_null=0.0,
+            lcb_net_ev_regime_conditional=0.01,
+        ),
+    ]
+    spread_sensitivity = {"spread_0.0025": 0.001, "spread_0.01": -0.0005}
+    stability = sev._stability_analysis(
+        records,
+        primary_mean_delta_lcb_net_ev=0.005,
+        spread_sensitivity_mean_delta=spread_sensitivity,
+    )
+    assert not stability.spread_sensitivity_sign_stable
 
 
 def test_stability_analysis_rejects_empty_records() -> None:
     with pytest.raises(ValueError):
-        sev._stability_analysis([], 0.0, SyntheticTurboConfig())
-
-
-def test_spread_sensitivity_reuses_primary_value_and_is_sign_stable() -> None:
-    """See the module's documented finding: entry_ask (and therefore NetEV) does not depend
-    on `spread` under the pre-registration's own §4 formula, so this is a proof, not a
-    simulation -- verified here at the unit level with a fabricated primary value."""
-    cfg = SyntheticTurboConfig()
-    sensitivity = sev._spread_sensitivity_mean_delta(0.001234, cfg)
-    assert sensitivity == {
-        "spread_0.0025": pytest.approx(0.001234),
-        "spread_0.01": pytest.approx(0.001234),
-    }
+        sev._stability_analysis([], 0.0, {"spread_0.0025": 0.0, "spread_0.01": 0.0})
 
 
 @pytest.fixture(scope="module")
@@ -474,10 +575,16 @@ def test_full_trial_stability_is_populated_and_separate_from_primary(
     )
     assert set(stability.delta_net_ev_by_underlying) == {"DAX"}
     assert 0.0 <= stability.share_cells_delta_positive <= 1.0
+
     assert set(stability.spread_sensitivity_mean_delta) == {"spread_0.0025", "spread_0.01"}
+    # Amendment B §10: the two probes are genuine, independent re-simulations -- they need not
+    # equal the primary value (spread=0.005, between the two probes) or each other.
     for v in stability.spread_sensitivity_mean_delta.values():
-        assert v == pytest.approx(small_trial_result.mean_delta_net_ev)
-    assert stability.spread_sensitivity_sign_stable
+        assert isinstance(v, float)
+    assert stability.spread_sensitivity_sign_stable == all(
+        (v > 0.0) == (small_trial_result.mean_delta_lcb_net_ev > 0.0)
+        for v in stability.spread_sensitivity_mean_delta.values()
+    )
 
     # Structural separation: the primary p-value/verdict live only on the top-level
     # result, never inside the (pydantic, extra="forbid") stability model.
@@ -499,7 +606,7 @@ def test_run_trial_raises_on_insufficient_history() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Mandatory anti-triviality checks
+# Mandatory anti-triviality checks (Amendment B §10: on lcb_net_return)
 # ---------------------------------------------------------------------------
 
 
@@ -508,12 +615,12 @@ def test_anti_triviality_genuinely_better_arm_passes() -> None:
     the priced grid must reach PASS -- otherwise a harness that always fails would pass
     this suite undetected.
 
-    Restricted to the LONG half of the grid: the central-scenario NetEV this harness reads
-    is driven purely by the forecast's drift (`HorizonForecast.mean`), which helps LONG
-    products and hurts SHORT products symmetrically for the same underlying (same forecast
-    feeds both) -- a whole-grid average would partially cancel a pure drift rig by
-    construction, which is a fact about the priced grid, not about the bootstrap/verdict
-    machinery under test here.
+    Restricted to the LONG half of the grid: the LCB NetEV this harness reads is driven,
+    for a fixed uncertainty, by the forecast's drift (`HorizonForecast.mean`) in both the
+    central and pessimistic scenarios, which helps LONG products and hurts SHORT products
+    symmetrically for the same underlying (same forecast feeds both) -- a whole-grid average
+    would partially cancel a pure drift rig by construction, which is a fact about the priced
+    grid, not about the bootstrap/verdict machinery under test here.
     """
     bars = _bars(900, seed=11, daily_vol=0.008)
     cfg = SyntheticTurboConfig(n_paths=300)
@@ -555,8 +662,8 @@ def test_anti_triviality_genuinely_better_arm_passes() -> None:
             horizons=[5],
             cfg=ev_cfg,
         )
-        null_means.append(float(np.mean([e.mean_net_return for e in null_evals])))
-        better_means.append(float(np.mean([e.mean_net_return for e in better_evals])))
+        null_means.append(float(np.mean([e.lcb_net_return for e in null_evals])))
+        better_means.append(float(np.mean([e.lcb_net_return for e in better_evals])))
 
     delta = np.asarray(better_means) - np.asarray(null_means)
     mean_delta = float(np.mean(delta))
@@ -570,8 +677,8 @@ def test_anti_triviality_genuinely_better_arm_passes() -> None:
 
 
 def test_anti_triviality_identical_forecasts_yield_null_result() -> None:
-    """(2) Two identical forecasts (same model, in effect) must yield delta NetEV ~= 0 and
-    a non-significant p -- otherwise a harness that always finds a difference would pass
+    """(2) Two identical forecasts (same model, in effect) must yield delta LCB NetEV ~= 0
+    and a non-significant p -- otherwise a harness that always finds a difference would pass
     this suite undetected."""
     bars = _bars(900, seed=12, daily_vol=0.008)
     cfg = SyntheticTurboConfig(n_paths=300)
@@ -609,12 +716,12 @@ def test_anti_triviality_identical_forecasts_yield_null_result() -> None:
             horizons=[5],
             cfg=ev_cfg,
         )
-        mean_a = float(np.mean([e.mean_net_return for e in evals_a]))
-        mean_b = float(np.mean([e.mean_net_return for e in evals_b]))
+        mean_a = float(np.mean([e.lcb_net_return for e in evals_a]))
+        mean_b = float(np.mean([e.lcb_net_return for e in evals_b]))
         deltas.append(mean_b - mean_a)
 
     delta = np.asarray(deltas)
-    # Identical forecast + identical (seeded) paths => bit-identical NetEV per cell.
+    # Identical forecast + identical (seeded) paths => bit-identical LCB NetEV per cell.
     assert np.allclose(delta, 0.0, atol=1e-9)
 
     p = sev._moving_block_bootstrap_p_value(

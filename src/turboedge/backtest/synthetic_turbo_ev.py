@@ -1,4 +1,5 @@
-"""Harness for pre-registration 2026Q4-001 (``docs/preregistration_2026Q4_001.md``).
+"""Harness for pre-registration 2026Q4-001 (``docs/preregistration_2026Q4_001.md``),
+**as amended by §10 (Amendment B)**.
 
 **Do not call :func:`run_synthetic_net_ev_trial` against real fetched price
 history before 2026-10-01.** The pre-registration this module implements
@@ -19,8 +20,8 @@ is not automatically economically valuable once priced through turbo costs,
 KO risk and spread. This module answers the second question on a fixed,
 frozen method, for one pre-registered primary hypothesis:
 
-    H0: NetEV(regime_conditional) - NetEV(null) <= 0
-    H1: NetEV(regime_conditional) - NetEV(null)  > 0
+    H0: LCB_NetEV(regime_conditional) - LCB_NetEV(null) <= 0
+    H1: LCB_NetEV(regime_conditional) - LCB_NetEV(null)  > 0
 
 **One primary p-value** (one-sided, alpha=0.10, moving-block bootstrap over
 prediction dates, block length 21). Everything else this module computes is
@@ -29,7 +30,7 @@ independent primary test, never promoted to primary after the fact -- kept
 in a structurally separate :class:`StabilityAnalysis` field so a reader
 cannot mistake one for the other.
 
-Design, following the pre-registration exactly (§4):
+Design, following the pre-registration exactly (§4, as amended by §10):
 
 - :func:`build_standardised_universe` depends on ``spot``/``config`` only --
   never a forecast -- so the identical ``dict[str, ProductTerms]`` object is
@@ -39,45 +40,79 @@ Design, following the pre-registration exactly (§4):
 - ``entry_ask`` is the theoretical fair value (``pricing/fair_value.py::
   theoretical_fair_value`` -- **not** ``pricing/intrinsic.py``, which has no
   such function; this prompt's file pointer was wrong and is corrected here,
-  noted in the trial report rather than picked silently).
+  noted in the trial report rather than picked silently), *quote-straddled*
+  by ``spread`` per Amendment B: ``entry_ask = fair_value * (1 + spread/2)``,
+  ``entry_bid = fair_value * (1 - spread/2)`` -- not the original §4 formula
+  (``entry_ask = fair_value`` outright, ``entry_bid = entry_ask * (1 -
+  spread)``), which left ``entry_ask`` -- the only field
+  ``simulation/payoff.py::simulate_product_payoff`` ever reads -- invariant
+  to ``spread`` altogether (Amendment B, "Entry-side cost: §4 was too
+  generous").
 - Walk-forward reuses ``backtest/walkforward.py::walk_forward_evaluate``
   (never a second walk-forward loop), called once per horizon with
   ``embargo=horizon`` (pre-registration §4, matching
   ``docs/measured_results.md`` §6.12's own reproducibility record) --
   *not* once for the whole horizon ladder with one shared embargo, which is
   what a single ``walk_forward_evaluate(..., horizons=HORIZONS, embargo=X)``
-  call would give.
+  call would give. Per Amendment B, this walk-forward step is independent of
+  ``spread`` (forecasting reads only ``bars``, never ``ProductTerms``), so
+  :func:`_collect_forecasts_by_underlying` runs it **once** and its result is
+  reused for the primary run and both §6 spread-sensitivity probes (see
+  :func:`_spread_sensitivity_mean_delta_lcb_net_ev`).
 - ``ranking/ev.py::evaluate_product_horizons`` is reused for the actual
-  payoff/knockout/cost pricing. Its ``ProductHorizonEvaluation.mean_net_return``
-  (the *central*-scenario simulated mean net return -- i.e. paths built with
-  drift = the model's own point forecast, per that module's own scenario
-  design) is used as "the aggregate simulated net expected return... priced
-  through the existing payoff/knock-out/cost machine" (pre-registration §1).
+  payoff/knockout/cost pricing. Its ``ProductHorizonEvaluation.lcb_net_return``
+  is used as the primary statistic (Amendment B; see below), read once per
+  arm, per date, per grid cell, and averaged first across the grid (per
+  date) and then across dates.
 
-**Known interpretation flagged, not silently resolved** (see this trial's
-report, not just this docstring): ``evaluate_product_horizons``'s central
-scenario consumes only ``forecast.mean`` as path drift -- ``forecast.sigma``/
-``uncertainty``/quantiles feed the *pessimistic* scenario (LCB/utility/
-sizing), never the central-scenario mean-net-return number this module reads
-as NetEV. So the primary statistic computed here is driven entirely by each
-model's point-mean forecast difference, not by any improvement to the
-*shape* of the predicted distribution that CRPS (docs/measured_results.md
-§6.11-13) actually measures. This is the existing EV pipeline's own design,
-reused unmodified per the brief ("reuse it rather than writing a second..."),
-not a choice made here -- flagged because it bears directly on what a PASS
-or FAIL in this trial can and cannot be read as evidence of.
+**Amendment B, Change 1 -- why ``lcb_net_return`` and not ``mean_net_return``.**
+The original §4 aggregation used ``ProductHorizonEvaluation.mean_net_return``
+-- the *central*-scenario simulated mean net return, i.e. paths built with
+drift = the model's own point forecast mean and nothing else
+(``ranking/ev.py::_drift_for_scenario``, ``_SCENARIO_CENTRAL`` branch reads
+only ``forecast.mean``). Separately, ``simulation/paths.py::simulate_paths``
+has **no volatility parameter at all**; path dispersion comes entirely from
+``bars``, which are identical across both arms of this trial. So
+``mean_net_return`` cannot be moved by anything the two forecast models
+disagree about *except* their point-mean drift -- it is structurally
+incapable of reflecting a distributional (width/CRPS) improvement, which is
+what the pre-registration's §1 hypothesis, as originally worded, claimed to
+test.
 
-**Second known interpretation flagged**: pre-registration §6 asks for
-"sensitivity of the sign of the result to `spread` at 0.0025 and 0.01".
-Under the pre-registration's own §4 formula (`entry_ask` = fair value,
-`entry_bid = entry_ask * (1 - spread)`) and
-``simulation/payoff.py::simulate_product_payoff``'s actual contract (every
-net_return is computed from ``terms.entry_ask`` alone; ``entry_bid`` is
-stored on ``ProductTerms`` but never read by the payoff engine), no value of
-``spread`` can change any simulated NetEV in this harness. The sensitivity
-check is implemented faithfully (see :func:`_spread_sensitivity_mean_delta`)
-but is proven, not merely observed, to be a no-op given the current engine
-contract -- see that function's docstring and this trial's report.
+``lcb_net_return`` reads both ``forecast.mean`` (via the central scenario)
+**and** ``forecast.uncertainty`` (via the pessimistic scenario feeding
+``ranking/lcb.py::lower_confidence_bound``), so it feels more of what the two
+models actually disagree about than the mean alone -- and it is the quantity
+``ranking/gates.py``'s ACTIONABLE gate actually uses
+(``ranking/ev.py::to_candidate_gate_input``: ``lcb_ev=evaluation.
+lcb_net_return``), so a PASS here answers a question this system's own
+trading decision actually depends on.
+
+**Scope limit, stated plainly, not overclaimed**: ``forecast.uncertainty`` is
+the standard error of the forecast's own mean estimate -- **not** the
+predictive width that ``docs/measured_results.md`` §6's CRPS scores measure.
+This module's primary statistic therefore still cannot answer *"does the
+improved predictive width carry economic value"*; only a future change that
+extends ``simulation/paths.py::simulate_paths`` to accept a forecast
+volatility could test that (Amendment B: "a separate, later trial and not a
+patch to this one").
+
+**Amendment B, Change 2 -- the quote now straddles fair value.** The original
+§4 formula set ``entry_ask`` to the theoretical fair value outright, with
+``spread`` only ever reducing ``entry_bid``. ``simulation/payoff.py::
+simulate_product_payoff`` computes every net return from ``terms.entry_ask``
+and never reads ``terms.entry_bid`` at all, so no value of ``spread`` could
+change any simulated NetEV in the original harness -- making §6's
+spread-sensitivity check a provable no-op. Amendment B replaces the formula
+with a genuine two-sided quote around fair value:
+
+    entry_ask = fair_value * (1 + spread / 2)
+    entry_bid = fair_value * (1 - spread / 2)
+
+``entry_ask`` -- the field every net return is computed from -- now
+genuinely depends on ``spread``, so §6's sensitivity check is now a real
+computation rather than a structural identity (see
+:func:`_spread_sensitivity_mean_delta_lcb_net_ev`).
 """
 
 from __future__ import annotations
@@ -111,6 +146,11 @@ _STEP = 21
 _ALPHA = 0.10
 _BLOCK_LENGTH = 21
 _N_BOOTSTRAP_RESAMPLES = 20_000
+
+#: Pre-registration §6: probe values for the spread-sensitivity stability
+#: check ("sensitivity of the sign of the result to `spread` at 0.0025 and
+#: 0.01").
+_SPREAD_PROBES = (0.0025, 0.01)
 
 #: ``theoretical_fair_value`` requires an ``as_of`` date, but the
 #: standardised universe is built exclusively from ``turbo_open_end``
@@ -159,7 +199,8 @@ def _parse_synthetic_isin(isin: str) -> tuple[Direction, float]:
 def build_standardised_universe(
     spot: float, *, config: SyntheticTurboConfig
 ) -> dict[str, ProductTerms]:
-    """The fixed standardised turbo grid for one prediction date's spot (pre-registration §4).
+    """The fixed standardised turbo grid for one prediction date's spot (pre-registration §4,
+    entry/exit quote per Amendment B §10).
 
     Depends on ``spot``/``config`` only -- **never** a forecast -- so the
     identical returned ``dict`` can be (and, in
@@ -173,12 +214,14 @@ def build_standardised_universe(
     One product per (barrier distance, direction): distances below spot are
     long, above spot are short (§4), ``financing_level == knockout_barrier``
     (open-end convention -- ``ProductType.TURBO_OPEN_END``, per
-    ``storage/schemas.py``'s own convention comment), ``entry_ask`` is the
-    theoretical fair value with no premium applied at entry (§4, verbatim:
-    "entry_ask = theoretical fair value" -- distinct from
-    ``premium_over_fair``, which this module carries forward at 0.0 and
-    which only ever affects *exit* valuation inside
-    ``simulation/payoff.py``), and ``entry_bid = entry_ask * (1 - spread)``.
+    ``storage/schemas.py``'s own convention comment). The quote straddles
+    theoretical fair value symmetrically around it (Amendment B §10,
+    replacing §4's original "entry_ask = fair value outright" formula, which
+    left ``entry_ask`` -- the only field ``simulation/payoff.py`` ever
+    reads -- invariant to ``spread``):
+
+        entry_ask = fair_value * (1 + spread / 2)
+        entry_bid = fair_value * (1 - spread / 2)
 
     Raises:
         ValueError: if ``spot <= 0`` or any ``config.barrier_distances``
@@ -209,8 +252,12 @@ def build_standardised_universe(
                 maturity=None,
                 dividend_yield=0.0,
             )
-            entry_ask = fair_value
-            entry_bid = entry_ask * (1.0 - config.spread)
+            # Amendment B §10: a genuine two-sided quote straddling fair
+            # value, replacing §4's "entry_ask = fair value" (which made
+            # entry_ask, the only field simulate_product_payoff reads,
+            # invariant to `spread`).
+            entry_ask = fair_value * (1.0 + config.spread / 2.0)
+            entry_bid = fair_value * (1.0 - config.spread / 2.0)
             isin = _synthetic_isin(direction, distance)
             universe[isin] = ProductTerms(
                 isin=isin,
@@ -232,9 +279,11 @@ def build_standardised_universe(
 
 
 class ArmResult(BaseModel):
-    """One model's ("arm's") results: the aggregate NetEV plus the per-date series behind it.
+    """One model's ("arm's") results: the aggregate LCB NetEV plus the per-date series
+    behind it (Amendment B §10 -- the primary statistic is ``lcb_net_return``, not
+    ``mean_net_return``).
 
-    ``dates``/``grid_mean_net_ev_by_date``/``n_cells_by_date`` are
+    ``dates``/``grid_mean_lcb_net_ev_by_date``/``n_cells_by_date`` are
     positionally aligned (same length, same order); ``n_cells_by_date``
     records how many ``(underlying, isin, horizon)`` grid cells contributed
     to that date's mean, which is diagnostic for how much the walk-forward's
@@ -246,9 +295,12 @@ class ArmResult(BaseModel):
 
     model_id: str
     dates: list[date]
-    grid_mean_net_ev_by_date: list[float]
+    #: Per date, the mean across the standardised grid of each cell's
+    #: ``ProductHorizonEvaluation.lcb_net_return`` for this arm.
+    grid_mean_lcb_net_ev_by_date: list[float]
     n_cells_by_date: list[int]
-    aggregate_mean_net_ev: float
+    #: Mean over dates of ``grid_mean_lcb_net_ev_by_date``.
+    aggregate_mean_lcb_net_ev: float
 
 
 class StabilityAnalysis(BaseModel):
@@ -262,30 +314,35 @@ class StabilityAnalysis(BaseModel):
     delta_net_ev_by_barrier_distance: dict[float, float]
     share_cells_delta_positive: float = Field(ge=0.0, le=1.0)
     n_cells: int = Field(gt=0)
-    #: Mean delta NetEV recomputed (pre-registration §6) at ``spread`` in
-    #: {0.0025, 0.01} -- keys ``"spread_0.0025"``/``"spread_0.01"``. See
-    #: :func:`_spread_sensitivity_mean_delta` for why, under the current
-    #: payoff-engine contract, these are proven equal to the primary
-    #: ``mean_delta_net_ev`` rather than independently re-simulated.
+    #: Mean delta LCB NetEV, genuinely re-simulated (Amendment B §10; see
+    #: :func:`_spread_sensitivity_mean_delta_lcb_net_ev`) at ``spread`` in
+    #: {0.0025, 0.01} -- keys ``"spread_0.0025"``/``"spread_0.01"``. Prior to
+    #: Amendment B this reused the primary value unchanged, because
+    #: ``spread`` could not affect ``entry_ask`` under the original §4
+    #: formula; Amendment B's quote-straddle formula makes ``entry_ask``
+    #: (and therefore every simulated net return) genuinely depend on
+    #: ``spread``, so this is now a full grid re-run per probe value.
     spread_sensitivity_mean_delta: dict[str, float]
-    #: Whether the sign of ``mean_delta_net_ev`` is unchanged at both probe
-    #: spread values -- the reader-facing summary pre-registration §6 asks
-    #: for ("the reader must be able to see that without re-running
+    #: Whether the sign of ``mean_delta_lcb_net_ev`` is unchanged at both
+    #: probe spread values -- the reader-facing summary pre-registration §6
+    #: asks for ("the reader must be able to see that without re-running
     #: anything").
     spread_sensitivity_sign_stable: bool
 
 
 class SyntheticEvResult(BaseModel):
-    """Pre-registration 2026Q4-001 result: exactly one primary p-value (§4/§5) plus the
-    stability analysis (§6), kept in a structurally separate nested field so a reader cannot
-    mistake secondary evidence for the primary test."""
+    """Pre-registration 2026Q4-001 result: exactly one primary p-value (§4/§5, statistic per
+    Amendment B §10) plus the stability analysis (§6), kept in a structurally separate nested
+    field so a reader cannot mistake secondary evidence for the primary test."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     null_arm: ArmResult
     regime_conditional_arm: ArmResult
-    #: Primary statistic (§4): mean over dates of (regime_conditional - null).
-    mean_delta_net_ev: float
+    #: Primary statistic (§4, as amended by §10): mean over dates of
+    #: (regime_conditional - null) LCB NetEV -- **not** the mean-scenario
+    #: NetEV (see module docstring, "Amendment B, Change 1").
+    mean_delta_lcb_net_ev: float
     #: Primary, one-sided, moving-block-bootstrap p-value (§4).
     p_value: float = Field(ge=0.0, le=1.0)
     alpha: float = Field(gt=0.0, lt=1.0)
@@ -304,7 +361,8 @@ class SyntheticEvResult(BaseModel):
 
 @dataclass(frozen=True, slots=True)
 class _CellRecord:
-    """One ``(prediction date, underlying, isin, horizon)`` grid cell's NetEV, both arms."""
+    """One ``(prediction date, underlying, isin, horizon)`` grid cell's LCB NetEV, both arms
+    (Amendment B §10: ``ProductHorizonEvaluation.lcb_net_return``, not ``mean_net_return``)."""
 
     date_key: date
     underlying_id: str
@@ -312,12 +370,25 @@ class _CellRecord:
     direction: Direction
     barrier_distance: float
     horizon_days: int
-    net_ev_null: float
-    net_ev_regime_conditional: float
+    lcb_net_ev_null: float
+    lcb_net_ev_regime_conditional: float
 
     @property
     def delta(self) -> float:
-        return self.net_ev_regime_conditional - self.net_ev_null
+        return self.lcb_net_ev_regime_conditional - self.lcb_net_ev_null
+
+
+@dataclass(frozen=True, slots=True)
+class _UnderlyingForecasts:
+    """One underlying's bars plus both arms' walk-forward OOS forecasts -- computed once
+    (Amendment B §10: forecasting does not depend on ``spread``) and reused across the primary
+    run and every §6 spread-sensitivity probe (see :func:`_price_trial_grid`)."""
+
+    bars: list[UnderlyingBar]
+    bars_by_ts: dict[datetime, UnderlyingBar]
+    null_by_date: dict[date, tuple[datetime, dict[int, HorizonForecast]]]
+    regime_by_date: dict[date, tuple[datetime, dict[int, HorizonForecast]]]
+    common_dates: list[date]
 
 
 def _collect_oos_forecasts_by_date(
@@ -352,35 +423,62 @@ def _collect_oos_forecasts_by_date(
     return by_date
 
 
-def _run_trial_grid(
+def _collect_forecasts_by_underlying(
     bars_by_underlying: Mapping[str, Sequence[UnderlyingBar]],
-    cfg: SyntheticTurboConfig,
-) -> list[_CellRecord]:
-    """Walk-forward both arms, then price the identical standardised grid (§4) at every
-    common prediction date, for every underlying. No look-ahead: ``evaluate_product_horizons``'s
-    own ``bars``/``start`` filtering (``simulation/paths.py::simulate_paths``) excludes any bar
-    at or after ``start`` from the path-simulation bootstrap sample, and each model was fit
-    only on bars up to that fold's training bar's ``available_at`` inside
-    ``walk_forward_evaluate`` -- this function adds no additional data access of its own.
-    """
-    records: list[_CellRecord] = []
+) -> dict[str, _UnderlyingForecasts]:
+    """Walk-forward both arms for every underlying, exactly once (Amendment B §10: the
+    forecasts do not depend on ``spread``, so this result is reused for the primary run and
+    both §6 spread-sensitivity probes rather than re-walked-forward per probe)."""
+    result: dict[str, _UnderlyingForecasts] = {}
     for underlying_id, bars in bars_by_underlying.items():
         bars_list = list(bars)
         if not bars_list:
             raise ValueError(f"bars_by_underlying[{underlying_id!r}] must not be empty")
         bars_by_ts = {b.ts: b for b in bars_list}
-
         null_by_date = _collect_oos_forecasts_by_date(bars_list, NullModel)
         regime_by_date = _collect_oos_forecasts_by_date(bars_list, RegimeConditionalEmpiricalModel)
         common_dates = sorted(set(null_by_date) & set(regime_by_date))
+        result[underlying_id] = _UnderlyingForecasts(
+            bars=bars_list,
+            bars_by_ts=bars_by_ts,
+            null_by_date=null_by_date,
+            regime_by_date=regime_by_date,
+            common_dates=common_dates,
+        )
+    return result
 
-        for d in common_dates:
-            ts, null_forecast_map = null_by_date[d]
-            _, regime_forecast_map = regime_by_date[d]
+
+def _price_trial_grid(
+    underlying_forecasts: Mapping[str, _UnderlyingForecasts],
+    cfg: SyntheticTurboConfig,
+) -> list[_CellRecord]:
+    """Price the identical standardised grid (§4, quote per Amendment B §10) at every common
+    prediction date, for every underlying, under both arms' already-computed forecasts.
+
+    Takes pre-computed forecasts (:func:`_collect_forecasts_by_underlying`)
+    rather than bars, so it can be called once for the primary ``cfg.spread``
+    and again, cheaply (no re-walk-forward), for each §6 spread-sensitivity
+    probe (:func:`_spread_sensitivity_mean_delta_lcb_net_ev`) -- only
+    ``build_standardised_universe`` (cheap) and
+    ``evaluate_product_horizons`` (the actual path-simulation cost) are
+    repeated per call.
+
+    No look-ahead: ``evaluate_product_horizons``'s own ``bars``/``start``
+    filtering (``simulation/paths.py::simulate_paths``) excludes any bar at
+    or after ``start`` from the path-simulation bootstrap sample, and each
+    model was fit only on bars up to that fold's training bar's
+    ``available_at`` inside ``walk_forward_evaluate`` -- this function adds
+    no additional data access of its own.
+    """
+    records: list[_CellRecord] = []
+    for underlying_id, uf in underlying_forecasts.items():
+        for d in uf.common_dates:
+            ts, null_forecast_map = uf.null_by_date[d]
+            _, regime_forecast_map = uf.regime_by_date[d]
             common_horizons = sorted(set(null_forecast_map) & set(regime_forecast_map))
             if not common_horizons:
                 continue
-            bar = bars_by_ts.get(ts)
+            bar = uf.bars_by_ts.get(ts)
             if bar is None:  # pragma: no cover -- internal invariant
                 raise AssertionError(
                     f"prediction ts {ts!r} not found in bars_by_underlying[{underlying_id!r}]"
@@ -395,7 +493,7 @@ def _run_trial_grid(
             null_evals = evaluate_product_horizons(
                 universe,
                 {h: null_forecast_map[h] for h in common_horizons},
-                bars_list,
+                uf.bars,
                 underlying_id=underlying_id,
                 spot0=bar.close,
                 start=bar.available_at,
@@ -412,7 +510,7 @@ def _run_trial_grid(
             regime_evals = evaluate_product_horizons(
                 universe,
                 {h: regime_forecast_map[h] for h in common_horizons},
-                bars_list,
+                uf.bars,
                 underlying_id=underlying_id,
                 spot0=bar.close,
                 start=bar.available_at,
@@ -439,13 +537,31 @@ def _run_trial_grid(
                         direction=direction,
                         barrier_distance=distance,
                         horizon_days=horizon_days,
-                        net_ev_null=null_by_key[(isin, horizon_days)].mean_net_return,
-                        net_ev_regime_conditional=regime_by_key[
+                        lcb_net_ev_null=null_by_key[(isin, horizon_days)].lcb_net_return,
+                        lcb_net_ev_regime_conditional=regime_by_key[
                             (isin, horizon_days)
-                        ].mean_net_return,
+                        ].lcb_net_return,
                     )
                 )
     return records
+
+
+def _grid_means_by_date(
+    records: Sequence[_CellRecord],
+) -> tuple[list[date], list[float], list[float], list[int]]:
+    """Group cell records by prediction date and average the LCB NetEV within each date, per
+    arm -- shared by the primary run and every spread-sensitivity probe so both compute the
+    per-date grid mean identically."""
+    by_date: dict[date, list[_CellRecord]] = {}
+    for rec in records:
+        by_date.setdefault(rec.date_key, []).append(rec)
+    dates_sorted = sorted(by_date)
+    null_means = [float(np.mean([r.lcb_net_ev_null for r in by_date[d]])) for d in dates_sorted]
+    regime_means = [
+        float(np.mean([r.lcb_net_ev_regime_conditional for r in by_date[d]])) for d in dates_sorted
+    ]
+    n_cells_by_date = [len(by_date[d]) for d in dates_sorted]
+    return dates_sorted, null_means, regime_means, n_cells_by_date
 
 
 def _moving_block_bootstrap_p_value(
@@ -499,16 +615,18 @@ def _moving_block_bootstrap_p_value(
 
 
 def _verdict(
-    p_value: float, mean_delta_net_ev: float, alpha: float
+    p_value: float, mean_delta_lcb_net_ev: float, alpha: float
 ) -> tuple[Literal["PASS", "FAIL_NULL_RESULT", "FAIL_NEGATIVE_SIGNIFICANT"], str]:
-    """Pre-registration §5's decision table, verbatim, stated before any result existed."""
-    if p_value <= alpha and mean_delta_net_ev > 0.0:
+    """Pre-registration §5's decision table, verbatim, stated before any result existed
+    (statistic per Amendment B §10: LCB NetEV, not mean-scenario NetEV)."""
+    if p_value <= alpha and mean_delta_lcb_net_ev > 0.0:
         return (
             "PASS",
-            f"p={p_value:.4f} <= alpha={alpha} and mean delta NetEV={mean_delta_net_ev:.6f} > 0: "
-            "the distribution improvement carries economic information on standardised terms "
-            "(pre-registration §5 row 1). Necessary condition met; forward real-product arm "
-            "becomes the next trial. Still no promotion.",
+            f"p={p_value:.4f} <= alpha={alpha} and mean delta LCB NetEV="
+            f"{mean_delta_lcb_net_ev:.6f} > 0: the distribution improvement carries economic "
+            "information on standardised terms (pre-registration §5 row 1). Necessary "
+            "condition met; forward real-product arm becomes the next trial. Still no "
+            "promotion.",
         )
     if p_value > alpha:
         return (
@@ -519,59 +637,71 @@ def _verdict(
         )
     return (
         "FAIL_NEGATIVE_SIGNIFICANT",
-        f"p={p_value:.4f} <= alpha={alpha} but mean delta NetEV={mean_delta_net_ev:.6f} <= 0: "
-        "reported as evidence the better distribution is actively worse economically "
-        "(pre-registration §5 row 3) -- a more informative negative than a null result.",
+        f"p={p_value:.4f} <= alpha={alpha} but mean delta LCB NetEV="
+        f"{mean_delta_lcb_net_ev:.6f} <= 0: reported as evidence the better distribution is "
+        "actively worse economically (pre-registration §5 row 3) -- a more informative "
+        "negative than a null result.",
     )
 
 
-def _spread_sensitivity_mean_delta(
-    primary_mean_delta_net_ev: float, cfg: SyntheticTurboConfig
+def _spread_sensitivity_mean_delta_lcb_net_ev(
+    underlying_forecasts: Mapping[str, _UnderlyingForecasts], cfg: SyntheticTurboConfig
 ) -> dict[str, float]:
     """Pre-registration §6: "sensitivity of the sign of the result to `spread` at 0.0025 and
     0.01" -- so a result whose sign flips under a halved spread assumption is visible without
     re-running anything (§6, citing §6.10's leverage-amplification finding).
 
-    Under the pre-registration's own §4 formula, ``spread`` only ever enters
-    ``ProductTerms.entry_bid`` (``entry_ask`` is the theoretical fair value,
-    unconditional on ``spread``); ``simulation/payoff.py::
-    simulate_product_payoff`` computes every net_return from ``entry_ask``
-    alone and never reads ``entry_bid``. So no value of ``spread`` can
-    change any simulated NetEV in this harness, and therefore cannot change
-    the sign of the primary result either -- this is a structural fact about
-    the pre-registration's formula composed with the existing payoff
-    engine's contract, not an empirical finding that needs 2x the (already
-    expensive) path-simulation re-run to observe. It is verified directly
-    below (entry_ask invariance under both probe ``spread`` values, on the
-    real ``build_standardised_universe``) and raises loudly if that
-    invariant is ever broken by a future change to either module, rather
-    than silently reporting a stale number.
+    **Genuinely re-runs the trial grid at each probe spread** (Amendment B
+    §10: the quote-straddle formula makes ``entry_ask`` -- the only field
+    ``simulation/payoff.py::simulate_product_payoff`` reads -- depend on
+    ``spread``, so the pre-Amendment-B shortcut of reusing the primary mean
+    delta unchanged is no longer valid; it would silently misreport this
+    check as a no-op it no longer is).
+
+    This costs two extra grid-pricing passes (the same
+    ``evaluate_product_horizons`` cost as the primary run, once per probe
+    spread) -- the honest price of a check that can now actually fail. It
+    does **not** cost two extra walk-forward passes: ``underlying_forecasts``
+    is computed once by the caller (:func:`_collect_forecasts_by_underlying`)
+    and reused here unchanged, because forecasting reads only ``bars``, never
+    ``ProductTerms``/``spread``.
+
+    Raises:
+        ValueError: if a probe spread yields no evaluable cell at all
+            (propagated as a clear error rather than a silently empty/zero
+            sensitivity entry).
     """
-    probe_spot = 100.0  # arbitrary and irrelevant: entry_ask's spread-independence holds for
-    # any spot > 0, since `spread` never enters the fair-value computation at all.
-    baseline_universe = build_standardised_universe(probe_spot, config=cfg)
     sensitivity: dict[str, float] = {}
-    for probe_spread in (0.0025, 0.01):
+    for probe_spread in _SPREAD_PROBES:
         probe_cfg = replace(cfg, spread=probe_spread)
-        probe_universe = build_standardised_universe(probe_spot, config=probe_cfg)
-        for isin, probe_terms in probe_universe.items():
-            baseline_terms = baseline_universe[isin]
-            if probe_terms.entry_ask != baseline_terms.entry_ask:  # pragma: no cover
-                raise AssertionError(
-                    "spread changed entry_ask -- the payoff-engine spread-invariance this "
-                    "stability shortcut relies on no longer holds; recompute "
-                    "mean_delta_net_ev at this spread via a full _run_trial_grid rerun "
-                    "instead of reusing the primary result"
-                )
-        sensitivity[f"spread_{probe_spread}"] = primary_mean_delta_net_ev
+        probe_records = _price_trial_grid(underlying_forecasts, probe_cfg)
+        if not probe_records:
+            raise ValueError(
+                f"spread-sensitivity probe at spread={probe_spread} evaluated no cells -- "
+                "cannot compute a stability figure from zero data"
+            )
+        _, null_means, regime_means, _ = _grid_means_by_date(probe_records)
+        delta = np.asarray(regime_means, dtype=np.float64) - np.asarray(
+            null_means, dtype=np.float64
+        )
+        sensitivity[f"spread_{probe_spread}"] = float(np.mean(delta))
     return sensitivity
 
 
 def _stability_analysis(
-    records: Sequence[_CellRecord], primary_mean_delta_net_ev: float, cfg: SyntheticTurboConfig
+    records: Sequence[_CellRecord],
+    primary_mean_delta_lcb_net_ev: float,
+    spread_sensitivity_mean_delta: Mapping[str, float],
 ) -> StabilityAnalysis:
-    """Pre-registration §6: per-underlying/per-horizon/per-barrier-distance delta NetEV, the
-    share of cells with a positive delta, and the spread sign-sensitivity -- all secondary."""
+    """Pre-registration §6: per-underlying/per-horizon/per-barrier-distance delta LCB NetEV,
+    the share of cells with a positive delta, and the spread sign-sensitivity -- all secondary.
+
+    Takes the already-computed ``spread_sensitivity_mean_delta`` (see
+    :func:`_spread_sensitivity_mean_delta_lcb_net_ev`) rather than computing
+    it itself, so this function stays a pure grouping/summary step over
+    ``records`` and is independently testable against fabricated records
+    without re-running the (expensive, Amendment-B-genuine) spread probes.
+    """
     if not records:
         raise ValueError("records must not be empty")
 
@@ -586,17 +716,16 @@ def _stability_analysis(
         if rec.delta > 0.0:
             n_positive += 1
 
-    spread_sensitivity = _spread_sensitivity_mean_delta(primary_mean_delta_net_ev, cfg)
-
     return StabilityAnalysis(
         delta_net_ev_by_underlying={k: float(np.mean(v)) for k, v in by_underlying.items()},
         delta_net_ev_by_horizon={k: float(np.mean(v)) for k, v in by_horizon.items()},
         delta_net_ev_by_barrier_distance={k: float(np.mean(v)) for k, v in by_distance.items()},
         share_cells_delta_positive=n_positive / len(records),
         n_cells=len(records),
-        spread_sensitivity_mean_delta=spread_sensitivity,
+        spread_sensitivity_mean_delta=dict(spread_sensitivity_mean_delta),
         spread_sensitivity_sign_stable=all(
-            (v > 0.0) == (primary_mean_delta_net_ev > 0.0) for v in spread_sensitivity.values()
+            (v > 0.0) == (primary_mean_delta_lcb_net_ev > 0.0)
+            for v in spread_sensitivity_mean_delta.values()
         ),
     )
 
@@ -606,7 +735,8 @@ def run_synthetic_net_ev_trial(
     *,
     config: SyntheticTurboConfig | None = None,
 ) -> SyntheticEvResult:
-    """Run the pre-registration 2026Q4-001 historical-synthetic trial (§4/§5/§6).
+    """Run the pre-registration 2026Q4-001 historical-synthetic trial (§4/§5/§6, as amended
+    by §10).
 
     Takes bars as an argument rather than fetching them itself, so it is
     testable against constructed synthetic bars, and so the caller (which
@@ -620,15 +750,19 @@ def run_synthetic_net_ev_trial(
     (``models.directional.NullModel``, ``models.baselines.
     RegimeConditionalEmpiricalModel``) are walked forward per horizon
     (``PurgedWalkForwardSplit`` via ``walk_forward_evaluate``,
-    ``min_train=750``, ``step=21``, ``embargo=horizon``); at every
-    prediction date common to both arms and to at least one horizon, the
-    identical standardised grid (:func:`build_standardised_universe`) is
-    priced under each arm's forecast via ``evaluate_product_horizons``
-    (common random numbers: a fresh ``Generator(seed)`` for each arm's
-    call). The primary statistic is the mean over dates of the
-    whole-grid-mean NetEV difference (regime_conditional - null); its
-    one-sided moving-block-bootstrap p-value and the pre-registration §5
-    verdict are returned alongside the §6 stability analysis.
+    ``min_train=750``, ``step=21``, ``embargo=horizon``) **exactly once**
+    (:func:`_collect_forecasts_by_underlying`); at every prediction date
+    common to both arms and to at least one horizon, the identical
+    standardised grid (:func:`build_standardised_universe`, quote per
+    Amendment B §10) is priced under each arm's forecast via
+    ``evaluate_product_horizons`` (common random numbers: a fresh
+    ``Generator(seed)`` for each arm's call). The primary statistic is the
+    mean over dates of the whole-grid-mean **LCB** NetEV difference
+    (regime_conditional - null; Amendment B §10, not the mean-scenario
+    NetEV); its one-sided moving-block-bootstrap p-value and the
+    pre-registration §5 verdict are returned alongside the §6 stability
+    analysis, whose spread-sensitivity entries are genuine re-runs of the
+    grid at each probe spread reusing the same walk-forward forecasts.
 
     Raises:
         ValueError: if ``bars_by_underlying`` is empty, any underlying's
@@ -642,7 +776,9 @@ def run_synthetic_net_ev_trial(
     if not bars_by_underlying:
         raise ValueError("bars_by_underlying must not be empty")
 
-    cell_records = _run_trial_grid(bars_by_underlying, cfg)
+    underlying_forecasts = _collect_forecasts_by_underlying(bars_by_underlying)
+
+    cell_records = _price_trial_grid(underlying_forecasts, cfg)
     if not cell_records:
         raise ValueError(
             "no (date, underlying, horizon) cells were evaluated -- check that "
@@ -650,20 +786,11 @@ def run_synthetic_net_ev_trial(
             f"step={_STEP} plus the longest horizon ({max(HORIZONS)}d)"
         )
 
-    by_date: dict[date, list[_CellRecord]] = {}
-    for rec in cell_records:
-        by_date.setdefault(rec.date_key, []).append(rec)
-    dates_sorted = sorted(by_date)
-
-    null_means = [float(np.mean([r.net_ev_null for r in by_date[d]])) for d in dates_sorted]
-    regime_means = [
-        float(np.mean([r.net_ev_regime_conditional for r in by_date[d]])) for d in dates_sorted
-    ]
-    n_cells_by_date = [len(by_date[d]) for d in dates_sorted]
+    dates_sorted, null_means, regime_means, n_cells_by_date = _grid_means_by_date(cell_records)
     delta_by_date = np.asarray(regime_means, dtype=np.float64) - np.asarray(
         null_means, dtype=np.float64
     )
-    mean_delta_net_ev = float(np.mean(delta_by_date))
+    mean_delta_lcb_net_ev = float(np.mean(delta_by_date))
 
     bootstrap_rng = np.random.default_rng(cfg.seed)
     p_value = _moving_block_bootstrap_p_value(
@@ -673,28 +800,30 @@ def run_synthetic_net_ev_trial(
         rng=bootstrap_rng,
     )
 
-    verdict, verdict_reason = _verdict(p_value, mean_delta_net_ev, _ALPHA)
-    stability = _stability_analysis(cell_records, mean_delta_net_ev, cfg)
+    verdict, verdict_reason = _verdict(p_value, mean_delta_lcb_net_ev, _ALPHA)
+
+    spread_sensitivity = _spread_sensitivity_mean_delta_lcb_net_ev(underlying_forecasts, cfg)
+    stability = _stability_analysis(cell_records, mean_delta_lcb_net_ev, spread_sensitivity)
 
     null_arm = ArmResult(
         model_id=NullModel().model_id,
         dates=dates_sorted,
-        grid_mean_net_ev_by_date=null_means,
+        grid_mean_lcb_net_ev_by_date=null_means,
         n_cells_by_date=n_cells_by_date,
-        aggregate_mean_net_ev=float(np.mean(null_means)),
+        aggregate_mean_lcb_net_ev=float(np.mean(null_means)),
     )
     regime_arm = ArmResult(
         model_id=RegimeConditionalEmpiricalModel().model_id,
         dates=dates_sorted,
-        grid_mean_net_ev_by_date=regime_means,
+        grid_mean_lcb_net_ev_by_date=regime_means,
         n_cells_by_date=n_cells_by_date,
-        aggregate_mean_net_ev=float(np.mean(regime_means)),
+        aggregate_mean_lcb_net_ev=float(np.mean(regime_means)),
     )
 
     return SyntheticEvResult(
         null_arm=null_arm,
         regime_conditional_arm=regime_arm,
-        mean_delta_net_ev=mean_delta_net_ev,
+        mean_delta_lcb_net_ev=mean_delta_lcb_net_ev,
         p_value=p_value,
         alpha=_ALPHA,
         block_length=_BLOCK_LENGTH,

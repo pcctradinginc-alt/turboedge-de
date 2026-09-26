@@ -2420,6 +2420,21 @@ def _maybe_send_trade_proposals(
         p = priced.get(candidate.isin)
         ev = evaluations_by_isin.get(candidate.isin)
         if p is None or ev is None:
+            # A candidate that cleared every gate and then vanished before the
+            # email is the one failure this system cannot afford to take
+            # quietly: the entire pipeline exists to produce this message.
+            # Previously a bare `continue`, which dropped it with no warning,
+            # no log line and no trace in the scan result -- indistinguishable
+            # from "no candidate was actionable today".
+            missing = "priced" if p is None else "evaluation"
+            _add_warning(warnings, f"actionable_dropped_missing_{missing}")
+            logger.error(
+                "actionable_candidate_dropped",
+                isin=candidate.isin,
+                underlying_id=underlying_id,
+                missing=missing,
+                lcb_ev=candidate.lcb_ev,
+            )
             continue
         context = TradeProposalContext(
             underlying_id=underlying_id,

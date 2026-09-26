@@ -1,0 +1,140 @@
+# Pre-registration: 2026Q4-001 — does a better return distribution carry economic value?
+
+**Written 2026-09-26. Frozen on commit. No measurement had been run against
+this specification when it was written, and none may be run before
+2026-10-01.**
+
+This is the first trial written under GOVERNANCE.md §11.2's one-primary-
+hypothesis rule. It exists because `docs/measured_results.md` §6.11-§6.13
+produced *robust retrospective evidence* for one forecast model and nothing
+confirmatory: the moving-block bootstrap that made `regime_conditional`
+survive deflation was chosen after its positive result was already known. The
+number that matters has not been produced. This document fixes the method
+before it is.
+
+---
+
+## 1. Primary hypothesis — exactly one
+
+Let `NetEV(m)` be the aggregate simulated net expected return of a fixed,
+standardised turbo universe, priced through the existing payoff / knock-out /
+cost machine, using forecast model `m`.
+
+    H0:  NetEV(regime_conditional) - NetEV(null)  <=  0
+    H1:  NetEV(regime_conditional) - NetEV(null)  >   0
+
+**One primary p-value.** One-sided, α = 0.10, moving-block bootstrap over
+prediction dates, block length 21 trading days (≥ the longest horizon, as in
+§6.12).
+
+Everything else in §6 below is stability analysis. It is reported and it may
+not be deflated as an independent primary test, and it may not be promoted to
+primary after the fact.
+
+## 2. Why this and not the other candidate
+
+`regularized_linear_location` also survives BH at the model level (p = 0.0142
+vs 0.0135). Only `regime_conditional` is pre-registered here, because
+registering both would make this two primary hypotheses and halve the BH
+threshold for each. If this test passes, the second model is a separate
+trial against a separate budget unit.
+
+## 3. What this test is NOT
+
+This is the **historical synthetic** arm of the two-part design in §6.13. It
+uses standardised turbos with stated terms and makes **no claim that any of
+these products existed or were quotable at any historical date.** Master Spec
+rule 18 forbids back-historizing current products, and the reason is
+substantive: underlying history does not record which turbos an issuer
+offered, what it quoted, or what its financing level was.
+
+It therefore answers *"does the better distribution carry economic information
+at all?"* and cannot answer *"is this tradeable?"* The tradeability question
+is the forward real-product arm, which needs forward data accumulating since
+2026-09-13 and is not part of this trial.
+
+A pass here is a necessary, not sufficient, condition for promotion.
+
+## 4. Frozen method
+
+**Models.** `NullModel` and `RegimeConditionalEmpiricalModel` exactly as they
+exist at the commit that adds this file. No configuration tuning, no variant
+selection. If either class changes before the run, the trial is void and must
+be re-registered.
+
+**Data.** `adapters/fallback_prices.py::YFinancePriceAdapter`,
+`lookback_days=4000`, underlyings DAX, NDX, EURUSD, XAU. The fetch date, the
+per-underlying bar count after the OHLC-consistency filter, and the adapter's
+skip summary are recorded with the result (the omission that made §6
+irreproducible).
+
+**Walk-forward.** `PurgedWalkForwardSplit`, `min_train=750`, `step=21`,
+`embargo=horizon`, horizons 3/5/7/10/14 — identical to §6.12 so the forecast
+side is not re-tuned by this trial.
+
+**Standardised turbo universe.** At each prediction date, for each underlying
+and horizon, a fixed grid constructed from that date's spot:
+
+- barrier distances: 2%, 5%, 10%, 15%, 20% below spot (long) and above (short)
+- `financing_level` = barrier (open-end convention, as `ProductTerms` uses)
+- `ratio` = 0.01, `fx` = 1.0
+- `entry_ask` = theoretical fair value; `entry_bid` = `entry_ask * (1 - spread)`
+- `spread` = 0.005, `financing_spread` = 0.02, `ref_rate` = 0.02,
+  `premium_over_fair` = 0.0, `exit_spread_pct` = 0.005
+
+**These terms are identical across both arms at every date.** The only
+difference between arms is the forecast handed to
+`ranking/ev.py::evaluate_product_horizons`. Any result therefore attributes to
+the forecast and to nothing else. The absolute level of `NetEV` is an artefact
+of the cost assumptions above and is not interpretable on its own; only the
+difference between arms is.
+
+**Aggregation.** Per prediction date, the mean net expected return across the
+whole grid, per arm. The primary statistic is the mean over dates of
+(regime_conditional − null).
+
+**Paths.** 2,000 per evaluation, seed 20261001, identical across arms.
+
+## 5. Decision rule — stated before the result
+
+| outcome | reading |
+|---|---|
+| p ≤ 0.10 **and** mean ΔNetEV > 0 | **PASS.** The distribution improvement carries economic information on standardised terms. Necessary condition met; forward real-product arm becomes the next trial. Still no promotion. |
+| p > 0.10 | **FAIL.** Recorded in `failed_hypotheses.json`. The CRPS improvement is statistically interesting and economically inert on these terms. |
+| mean ΔNetEV ≤ 0 with p ≤ 0.10 | **FAIL**, and reported as evidence the better distribution is actively *worse* economically — a more informative negative than a null result. |
+
+**No threshold, gate or cost assumption may be adjusted after seeing the
+result.** If the cost assumptions in §4 turn out to dominate the answer, that
+is itself the finding, and changing them constitutes a new trial.
+
+## 6. Stability analysis (secondary, never primary)
+
+Reported with the result, deflated against nothing, promoted to primary never:
+per-underlying ΔNetEV; per-horizon ΔNetEV; per-barrier-distance ΔNetEV; the
+share of (date, product, horizon) cells with ΔNetEV > 0; sensitivity of the
+sign of the result to `spread` at 0.0025 and 0.01.
+
+The last of these is included deliberately: §6.10 measured that the EV stage
+amplifies a 0.23pp forecast difference into 365 gate crossings, so a result
+that flips sign under a halved spread assumption is not a robust result and
+the reader must be able to see that without re-running anything.
+
+## 7. Budget and denominator
+
+Charged to **2026Q4**, trial id assigned on the run date (2026-10-01 or
+later), not now — §11.1 records what charging a quarter's work to a different
+quarter's budget did to this repository's books twice already.
+
+**2026Q4 primary hypotheses pre-registered so far: 1 (this one).** The BH
+denominator for this trial's primary p-value is the count of Q4 primary
+hypotheses at the time of correction, not a cell count. Per §11.2, per-cell
+results are stability analysis.
+
+## 8. Pre-committed statement of ignorance
+
+Written before the run: the honest prior is FAIL. Every economic test in this
+repository has failed — 0/20 forecast cells, 0/80 challenger cells, Cboe,
+CFTC. A 1.4% CRPS improvement is small against a spread of 50bp plus financing
+and knock-out asymmetry. If this passes, the first question to ask is whether
+the cost assumptions in §4 are too generous, not whether an edge has been
+found.

@@ -309,6 +309,21 @@ in 2026 Q3. Full numbers: `docs/measured_results.md`; per-signal detail:
   the approved `RO-MAE-PREDICTION` / `RO-MFE-PREDICTION` — opens against
   the 2026Q4 budget on 2026-10-01, with Q4 starting at 0 of 6, not 3.
 
+### 11.1a Pre-registered for 2026Q4
+
+| # | hypothesis | document | trial id | status |
+|---|---|---|---|---|
+| 1 | `NetEV(regime_conditional) - NetEV(null) > 0` on standardised turbos | [`docs/preregistration_2026Q4_001.md`](../docs/preregistration_2026Q4_001.md) | assigned on the run date | **registered, not run** |
+
+**2026Q4 primary hypotheses: 1 of 6 budget units reserved.** Q4 begins at 0 of
+6 — the `PD-2026Q4-001..003` labels are Q3 work and are documented as
+mislabelled in §11.5, not as Q4 spend.
+
+The trial id is deliberately **not** assigned yet. Q3 is closed at 11 of 6 and
+today is 2026-09-26, so registering now would either consume a Q3 unit that
+does not exist or charge Q3 work to Q4 — the two errors §11.1 and §11.5 record.
+The run happens on or after 2026-10-01, and the id is assigned then.
+
 ### 11.2 Effective number of hypotheses tested (for deflation)
 
 The unit is the (family, underlying, horizon) **cell actually measured** —

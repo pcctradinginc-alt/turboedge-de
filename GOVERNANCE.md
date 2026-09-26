@@ -313,9 +313,13 @@ in 2026 Q3. Full numbers: `docs/measured_results.md`; per-signal detail:
 
 | # | hypothesis | document | trial id | status |
 |---|---|---|---|---|
-| 1 | `NetEV(regime_conditional) - NetEV(null) > 0` on standardised turbos | [`docs/preregistration_2026Q4_001.md`](../docs/preregistration_2026Q4_001.md) | assigned on the run date | **registered, not run** |
+| 1 | `LCB_NetEV(regime_conditional) - LCB_NetEV(null) > 0` on standardised turbos | [`docs/preregistration_2026Q4_001.md`](../docs/preregistration_2026Q4_001.md) | see below | **run 2026-09-26, charged to 2026Q3 as 12 of 6** (Amendment C) |
 
-**2026Q4 primary hypotheses: 1 of 6 budget units reserved.** Q4 begins at 0 of
+**2026Q4 primary hypotheses: 0 of 6.** The one trial listed here was brought
+forward to 2026-09-26 (Amendment C) and is charged to Q3, as the 12th of 6.
+Charging it to Q4 would repeat the `PD-2026Q4-001..003` error exactly.
+
+**Superseded note:** Q4 begins at 0 of
 6 — the `PD-2026Q4-001..003` labels are Q3 work and are documented as
 mislabelled in §11.5, not as Q4 spend.
 

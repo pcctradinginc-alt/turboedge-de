@@ -272,3 +272,48 @@ Every monthly run after October will legitimately refuse, so the step is
 this document, not left in an expiring artifact, and it records the fetch
 date, the per-underlying bar count and the git commit — the provenance whose
 absence made §6 irreproducible.
+
+---
+
+## 12. Amendment C (2026-09-26) — run brought forward, and what that costs
+
+**Written before the run.** The date guard is overridden and the trial runs on
+2026-09-26 instead of waiting for 2026-10-01.
+
+### What this does not cost
+
+**Confirmatory status is unaffected.** §1-§8 were written, committed and frozen
+before any measurement of the primary hypothesis existed, and Amendments A and
+B were both written from reading the code rather than from a result. Nothing
+about what was known when the method was fixed changes by running five days
+earlier. The failure this document guards against — choosing the test after
+seeing the outcome — is not in play.
+
+### What it does cost
+
+**Budget attribution.** §7 charged this to 2026Q4 specifically so the trial
+would be opened in the quarter it is charged to, which is the rule §11.1 and
+§11.5 of GOVERNANCE.md exist to enforce after this repository broke it twice in
+opposite directions. Running in September means that rule is broken a third
+time unless the trial is charged to Q3.
+
+**It is therefore charged to 2026Q3, as the 12th of 6.** Q3 already stands at
+11 of 6 and is documented as over budget, so a 12th unit changes the honest
+record's character not at all — it was already a quarter that ran past its
+limit. What it must not do is quietly become a Q4 unit, which would be the
+exact error of the `PD-2026Q4-001..003` labels.
+
+The deflation denominator moves from eleven model-level hypotheses to twelve.
+Recomputed effect on §6.13's conclusion: negligible — the rank-2 BH threshold
+goes from `2/11·0.10 = 0.0182` to `2/12·0.10 = 0.0167`, and the Phase D
+p-values of 0.0135 and 0.0142 both still clear it.
+
+### Why
+
+The repository's standing goal is to find an economic edge if one exists and
+report it. This is the only experiment currently capable of answering that, and
+it is fully specified. Five days of tidier bookkeeping is not worth five days
+of not knowing, and the bookkeeping cost is recorded here rather than absorbed.
+
+The `--not-before` guard stays in the code. It was overridden deliberately,
+once, with this written reason — which is different from it not being there.

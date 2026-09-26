@@ -353,10 +353,16 @@ p ~ 1e-6; at a plausible 2-4 effectively independent cells it gives p between
 0.06 and 0.25. Neither number is a measurement -- they bracket how much the
 "20/20" framing can carry.
 
-Until Phase D is re-measured with per-cell significance against the
-cumulative universe, **"better in 20/20 cells" is a consistent directional
-observation, not a deflated result**, and the models stay out of the live
-ensemble on those grounds as well as on the missing net-EV test.
+**Re-measured 2026-09-26 — see `docs/measured_results.md` §6.11.** With §6's
+own documented parameters the result is 18/20, 15/20 and 14/20, not 20/20, at
+roughly half the effect size. Treating the 20 cells as independent, only
+`regime_conditional` survives BH against the cumulative 180 (p=4.02e-04 vs a
+5.6e-04 threshold). At a plausible 2-4 effectively independent cells, nothing
+survives any deflation.
+
+**"Better in 20/20 cells" is therefore a directional observation, not a
+deflated result**, and the models stay out of the live ensemble on those
+grounds as well as on the missing net-EV test.
 
 **Required from here:** deflation denominators are cumulative across all
 cells measured on overlapping data in the same quarter, not per wave. A new

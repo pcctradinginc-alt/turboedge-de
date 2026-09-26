@@ -1229,3 +1229,79 @@ right now carries far more weight than a -2.47% CRPS number does.
 **Next:** per-cell significance for Phase D (§6 reports win counts, no
 p-values, no bootstrap, no BH, no DSR — see GOVERNANCE.md §11.2), and the same
 run at more than one decision date once the forward ledger spans several.
+
+---
+
+## 6.11 Phase D re-measured: the 20/20 result does not survive deflation (2026-09-26)
+
+§6 reports the three distributional baselines beating the null on CRPS in
+**20/20 cells** with mean improvements of -3.22%, -3.45% and -2.47%. It
+reports no p-value, no bootstrap, no Benjamini-Hochberg and no DSR. This
+section supplies them, and re-runs the measurement first.
+
+### Replication
+
+Re-run with §6's own documented parameters — `min_train=750`, `step=21`,
+`embargo=horizon_days`, same four underlyings, same five horizons, yfinance
+history to 2026-09-26:
+
+| family | cells won | mean ΔCRPS | best cell | worst cell | sign-test p |
+|---|---|---|---|---|---|
+| regime_conditional | **18/20** | **-1.29%** | -2.66% | +1.19% | 4.02e-04 |
+| regularized_linear | **15/20** | **-1.30%** | -2.78% | +1.46% | 4.14e-02 |
+| robust_location_scale | **14/20** | **-0.67%** | -1.99% | +1.57% | 1.15e-01 |
+
+**20/20 does not reproduce, and the effect is about half the documented
+size.** The direction survives — all three still improve mean CRPS, and
+regime_conditional does so in 18 of 20 cells — but "every single cell" does
+not.
+
+Checked and excluded as explanations: the embargo (running `embargo=h` per
+horizon instead of 0 changes the means by 0.03pp), and the walk-forward
+parameters (the CLI `backtest` uses `min_train=250, step=10, embargo=14` from
+`configs/forecast.yaml`, which is a *different* experiment and gives 6/20,
+8/20, 12/20 — noted here because that discrepancy is what prompted the exact
+replication). What remains is the data vintage (2026-09-19 vs 2026-09-26,
+about five trading days out of ~3,900, plus yfinance restatements) and the
+undocumented bar history length of the original run. Neither is verifiable
+after the fact, which is itself the finding: **§6 did not record enough to be
+reproducible.**
+
+### Deflation
+
+The sign test above treats the 20 cells as 20 independent trials. Under that
+assumption, Benjamini-Hochberg at α=0.10:
+
+| deflated against | survivors |
+|---|---|
+| 3 hypotheses (own wave) | regime_conditional, regularized_linear |
+| **180 hypotheses (cumulative 2026Q3, GOVERNANCE.md §11.2)** | **regime_conditional only** — and barely: p=4.02e-04 against a threshold of 5.6e-04 |
+
+**But the independence assumption is the whole result.** The 20 cells are 4
+underlyings × 5 overlapping horizons; DAX and NDX are strongly correlated and
+the five horizons share bars. At a plausible effective count:
+
+| effectively independent cells | sign-test p for 18/20 |
+|---|---|
+| 4 | 0.125 |
+| 3 | 0.250 |
+| 2 | 0.500 |
+
+**Nothing survives any deflation at any of those.** The apparent significance
+of the repository's only positive result rests entirely on counting 20
+correlated cells as 20 independent trials.
+
+### Verdict
+
+**DO NOT PROMOTE, and for a stronger reason than before.** Previously these
+models were held back because a better likelihood is not an economic edge and
+no downstream net-EV test existed (§6.10 now supplies the sensitivity side of
+that). They are now also held back because the distributional improvement
+itself is not statistically established once the cells are counted honestly.
+
+This does not say the models are worthless. `regime_conditional` improving
+mean CRPS in 18 of 20 cells is a real directional observation, and it is the
+best one in this repository. It says the claim "better in 20/20 cells" carried
+more weight than the evidence supports, and that the next step for these
+models is a proper effective-sample treatment — not promotion, and not a
+downstream EV test built on top of an unestablished forecast improvement.

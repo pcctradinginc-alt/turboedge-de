@@ -53,10 +53,12 @@ Konkretisierungen (z.B. Anpassungsbudget, Ruin-Grenzen) stehen versioniert in GO
 
 ## Current Milestone: One Measured Improvement, No Measured Edge
 
-**The single most important open question in this repository** (2026-09-26):
-the Phase D distributional baselines improve CRPS in 20/20 cells per family
-(regime-conditional -3.22%, regularized-linear -3.45%, robust location-scale
--2.47%) — but **no downstream turbo net-EV test has been run**. A better
+**State of the only positive result** (re-measured 2026-09-26): the Phase D
+distributional baselines were reported as improving CRPS in 20/20 cells. On
+re-run with §6's own parameters it is 18/20, 15/20 and 14/20 at about half the
+effect size, and **nothing survives deflation once the 20 correlated cells are
+not counted as 20 independent trials** (`docs/measured_results.md` §6.11).
+Separately, no downstream turbo net-EV test has been run. A better
 predicted return distribution is not an economic edge until the same
 historical decisions have been pushed through the full payoff / KO / cost
 machine against the null. Until that test exists, these models stay out of

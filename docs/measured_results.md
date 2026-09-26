@@ -1417,3 +1417,109 @@ The economic question (§6.10) remains separate and unanswered: a real
 distributional improvement of 1.4% still says nothing about net EV after
 turbo costs, and §6.10 shows the EV stage amplifies forecast differences
 enough that this cannot be assumed either way.
+
+---
+
+## 6.13 The deflation denominator was mixing levels (2026-09-26)
+
+§6.12 deflated an **aggregate, model-level** bootstrap p-value against **180
+individual cell tests** and concluded that nothing survives. That was
+over-penalising, and it changed the answer.
+
+### The objection
+
+A research trial, a model, four underlyings, five horizons, a cell and an
+aggregated bootstrap are six different levels. Benjamini-Hochberg corrects
+across hypotheses **tested at the same level**. The bootstrap in §6.12 tests
+one hypothesis per model — "this model improves aggregate OOS CRPS against
+the null" — and pooling across cells is what the block bootstrap does
+internally. Comparing its output against a count of cell-level tests mixes
+apples and pears.
+
+### Recomputed at model level
+
+2026Q3's primary, model-level hypotheses: W9's six challenger signal
+families, the Cboe feature layer, the CFTC feature layer, and Phase D's three
+baselines. **Eleven**, not 180. The eight non-Phase-D hypotheses were all
+measured negative, so they enter at p ≈ 1.
+
+| deflated against | survivors at α=0.10 |
+|---|---|
+| 3 (Phase D alone) | regime_conditional, regularized_linear |
+| **11 (all Q3 model-level hypotheses)** | **regime_conditional, regularized_linear** |
+| 180 (cell level — the §6.12 figure) | none |
+
+Step-up detail at m=11: rank 1 `p=0.0135` vs `1/11·0.10 = 0.0091` fails on its
+own, but rank 2 `p=0.0142` vs `2/11·0.10 = 0.0182` passes, and BH being a
+step-up procedure rejects ranks 1 and 2 together.
+
+**So two of the three Phase D baselines survive multiple-testing correction
+at the level their p-values were computed at.** §6.12's "none survive" is
+superseded; the 180-cell denominator remains correct for a *cell-level*
+claim, and there is no cell-level claim here.
+
+### What this does and does not license
+
+It does **not** mean regime_conditional has an edge. Two things still stand
+between it and that word.
+
+**This is retrospective evidence, not confirmatory.** The moving-block
+bootstrap was built *after* the positive 20/20 result was seen, on the same
+data. It is a better analysis of an existing dataset — which is why it
+replaced the sign test — but choosing a better test after seeing the outcome
+is not the same as pre-registering it. `p = 0.0135` should be read as **robust
+retrospective evidence**, and the number that matters has not been produced
+yet: the same hypothesis, method frozen, on data that did not exist when the
+method was chosen.
+
+**And it is a forecast result, not an economic one.** §6.10 measured how
+violently the EV stage amplifies forecast differences; a 1.4% CRPS
+improvement says nothing about net EV after spread, financing, issuer margin
+and knock-out asymmetry.
+
+### The economic test must be split in two
+
+External review, 2026-09-26, and it corrects the framing of §6.10 as well.
+
+Master Spec rule 18 forbids back-historizing current products, and the reason
+is not bureaucratic: underlying history does not tell you which turbos existed
+in 2014, what the issuer actually quoted, what financing level applied, or
+what the spread was. The product base is BNP, gettex and Citi, and Citi
+carries no live quotes at all. A "historical turbo net EV" computed on
+reconstructed products would look more precise than the product data permits
+— which is exactly the error §6.10's first run made in miniature, when a
+0.63% spot mismatch produced 365 false positives through leverage.
+
+So the economic question splits into two tests that must not be conflated:
+
+**(1) Historical synthetic.** Null vs `regime_conditional` on *standardised*
+turbos — identical barrier distance, identical cost assumptions, identical
+payoff structure across arms, no claim that these products existed. Answers:
+does the better distribution carry economic information at all? Runnable now,
+on the full underlying history.
+
+**(2) Forward real-product.** Null vs Phase D vs product selection on the
+actual ISINs and quotes recorded going forward. Answers: is the edge
+tradeable? Requires forward data that starts accumulating from 2026-09-13 —
+`product_snapshots` currently spans 4 distinct days locally, ~9-13 in
+production.
+
+§6.10 is neither of these cleanly: it used real products at one real decision
+point, which makes it a sensitivity analysis of the EV stage rather than an
+economic measurement. Its finding — that the gate amplifies a 0.23pp forecast
+difference into 365 candidates — stands as such, and should not be read as
+either test.
+
+### Rule going forward
+
+Every research trial pre-registers **exactly one primary hypothesis** and
+produces **exactly one primary p-value**, stated before the data is seen:
+
+    H0: ΔCRPS_aggregate >= 0
+
+Per-cell results are stability analysis, reported alongside and never
+deflated as if they were independent primary tests. Multiple-testing
+correction runs over the pre-registered primary hypotheses of the quarter.
+This is stricter than the old 20/20 win-count framing and looser than the
+180-cell penalty, and unlike either it states the unit of correction before
+the result exists rather than after.

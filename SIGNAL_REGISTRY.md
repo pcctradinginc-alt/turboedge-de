@@ -181,11 +181,25 @@ unconditional empirical distribution (`NullModel`, unchanged), (b)
 `RegimeConditionalEmpiricalModel`, (c) `RegularizedLinearLocationModel`, (d)
 `RobustLocationScaleModel`.
 
-| model_id / signal_family | class | scope measured | CRPS vs. null | Brier vs. null | status |
+**The 2026-09-19 figures below were superseded on 2026-09-26.** They were a
+win count with no p-value, no bootstrap and no deflation, and the re-run did
+not reproduce them (`docs/measured_results.md` §6.11-§6.13).
+
+| model_id / signal_family | class | 2026-09-19 (as reported) | 2026-09-26 re-run | block-bootstrap p | status |
 |---|---|---|---|---|---|
-| `regime_conditional_empirical_v1` (`regime_conditional_empirical`) | `RegimeConditionalEmpiricalModel` | 4 underlyings × 5 horizons (20/20) | better in 20/20 cells (mean -3.22%) | better in 3/20 | measured, not promoted |
-| `regularized_linear_location_v1` (`regularized_linear_location`) | `RegularizedLinearLocationModel` | 4 underlyings × 5 horizons (20/20) | better in 20/20 cells (mean -3.45%) | better in 8/20 | measured, not promoted |
-| `robust_location_scale_t_v1` (`robust_location_scale_t`) | `RobustLocationScaleModel` | 4 underlyings × 5 horizons (20/20) | better in 20/20 cells (mean -2.47%) | better in 9/20 | measured, not promoted |
+| `regime_conditional_empirical_v1` | `RegimeConditionalEmpiricalModel` | 20/20, mean -3.22% | **18/20, mean -1.40%** | **0.0135** | measured, not promoted |
+| `regularized_linear_location_v1` | `RegularizedLinearLocationModel` | 20/20, mean -3.45% | **15/20, mean -1.54%** | **0.0142** | measured, not promoted |
+| `robust_location_scale_t_v1` | `RobustLocationScaleModel` | 20/20, mean -2.47% | **14/20, mean -0.78%** | 0.1050 | measured, not promoted |
+
+The first two survive Benjamini-Hochberg at α=0.10 against the quarter's
+eleven model-level hypotheses (§6.13). That is **robust retrospective
+evidence, not confirmatory**: the bootstrap was chosen after the original
+result was seen, on the same data. The confirmatory test — method frozen,
+new out-of-sample data — has not been run.
+
+Brier-vs-null figures from the original run (better in 3/20, 8/20 and 9/20
+respectively) are left as recorded; they were never the basis of any claim
+here, and the re-run measured CRPS.
 
 **Not promoted, and not added to the live scan ensemble** (they are wired
 only into the `turboedge backtest` measurement path). Per this section's

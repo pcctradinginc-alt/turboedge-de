@@ -371,9 +371,31 @@ worth **12,324** independent ones. At h=14d, nine in ten are redundant.
 deflated result**, and the models stay out of the live ensemble on those
 grounds as well as on the missing net-EV test.
 
-**Required from here:** deflation denominators are cumulative across all
-cells measured on overlapping data in the same quarter, not per wave. A new
-wave states the running total it deflated against.
+**Corrected 2026-09-26 (see `docs/measured_results.md` §6.13): the unit of
+correction is the level the p-value was computed at.** The 180-cell figure is
+the right denominator for a *cell-level* claim. Deflating an aggregate,
+model-level bootstrap p-value against it mixes levels and over-penalises: at
+2026Q3's eleven model-level hypotheses (W9's six families, Cboe, CFTC, Phase
+D's three), `regime_conditional` and `regularized_linear` both survive BH at
+α=0.10, where against 180 neither did.
+
+**Required from here — one primary hypothesis per trial.** Every research
+trial pre-registers exactly one primary hypothesis and produces exactly one
+primary p-value, stated before the data is seen, e.g.
+
+    H0: ΔCRPS_aggregate >= 0
+
+Per-cell results are stability analysis: reported alongside, never deflated as
+if they were independent primary tests. Multiple-testing correction runs over
+the quarter's pre-registered primary hypotheses. A trial that does not state
+its primary hypothesis in advance has no valid denominator, and its result is
+recorded as retrospective evidence rather than a test.
+
+**Retrospective vs confirmatory.** A test chosen after seeing the result is
+not confirmatory, however much better it is than the one it replaced. The
+Phase D bootstrap is exactly this case and is labelled accordingly in §6.13.
+Confirmatory evidence requires the frozen method on data that did not exist
+when the method was chosen.
 
 ### 11.3 Ladder Rule applied — no promotions
 
@@ -411,7 +433,7 @@ Muster verstärken, negative Muster nicht löschen" / Rule 31): these
 entries are retained, not deleted, so none of the six is blindly retried
 next quarter without a documented regime-change justification.
 
-### 11.5 Phase D distributional baselines — attributed to 2026Q4
+### 11.5 Phase D distributional baselines — attributed to 2026Q4 (withdrawn; see below)
 
 Phase D (`docs/measured_results.md` §6) built and measured **three new
 model families** on the normalized horizon target: the
@@ -431,14 +453,23 @@ budget-free because none was promoted would understate `N_effective` in
 every later deflation, which is the specific failure mode §3 is built to
 prevent.
 
-**Why 2026Q4 and not 2026Q3.** The 2026Q3 adaptation budget was already
-fully consumed (6/6) by W9 before Phase D began (§11.1). The honest
-options were to attribute the three trials to the next quarter, or to
-raise the budget. **The budget was not raised** — §1.2's limit of 6 per
-quarter is unchanged, and no exception was granted. Attribution to
-2026Q4 is therefore the conservative reading: it counts the trials in
-full, and it does so in the first quarter that actually has room for
-them.
+**Why 2026Q4 and not 2026Q3 — WITHDRAWN (2026-09-26).** This section
+previously argued that attributing the three trials to 2026Q4 was "the
+conservative reading", because 2026Q3 was already 6/6 and the budget was not
+raised.
+
+That was wrong, and §11.1 now records the correction. The trials were opened
+on 2026-09-19, which is Q3. Charging Q3 work to Q4's budget does not count
+them conservatively; it understates the quarter in which the hypotheses were
+actually tested and pre-spends a quarter that has not begun. It is the mirror
+image of the Cboe/CFTC override this document also had to withdraw — one
+error moved trials out of an exhausted quarter, the other moved them in on
+invalid grounds, and both made a full quarter look less spent than it was.
+
+**2026Q3 stands at 11 of 6.** The trial ids keep their `2026Q4` label,
+because renaming them would rewrite the audit trail to match the correction
+rather than record it. The label is wrong and documented as wrong; that is
+the honest state.
 
 **What this does not mean.** None of the three is promoted, none is in
 the live scan ensemble (`models.forecast.build_default_models` is

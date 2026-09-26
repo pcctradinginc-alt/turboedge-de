@@ -62,9 +62,20 @@ respects both the overlapping label windows and the cross-cell correlation
 **within their own wave**, but nothing survives the cumulative 180-cell
 denominator, whose rank-1 BH threshold is 5.56e-04.
 
-`regime_conditional` is therefore the best-supported model here and the first
-candidate for a narrow, pre-registered test in a quarter with budget — not a
-promotion. Separately, no downstream turbo net-EV test has been run, and
+**Corrected 2026-09-26 (§6.13):** deflating an aggregate model-level p-value
+against 180 *cell-level* tests mixed levels and over-penalised. At the
+quarter's eleven model-level hypotheses, `regime_conditional` and
+`regularized_linear` both survive BH at α=0.10.
+
+That is **robust retrospective evidence, not confirmatory** — the bootstrap
+was chosen after the original result was seen, on the same data.
+`regime_conditional` is the best-supported model here and the first candidate
+for a narrow, pre-registered Q4 test with the method frozen — not a
+promotion.
+
+**Rule now in force (GOVERNANCE.md §11.2):** one pre-registered primary
+hypothesis and one primary p-value per trial; per-cell results are stability
+analysis, never deflated as independent primary tests. Separately, no downstream turbo net-EV test has been run, and
 §6.10 shows the EV stage amplifies forecast differences enough that its
 outcome cannot be assumed either way. A better
 predicted return distribution is not an economic edge until the same

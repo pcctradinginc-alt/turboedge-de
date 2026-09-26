@@ -1156,60 +1156,64 @@ rather than a result.**
 
 1,847 real products (960 DAX, 887 NDX) reconstructed as `ProductTerms` from
 `forward_ledger` joined to `instruments` at one real decision point
-(2026-09-14, h=3d). `financing_spread` and `ref_rate` held at 0.02 across all
+(2026-09-14), across all five horizons. `financing_spread` and `ref_rate` held at 0.02 across all
 arms — they cancel in the comparison. 2,000 paths, seed 42, identical across
 arms.
 
-### Result
+### Result — 40 (model, underlying, horizon) combinations
 
-| model | forecast mean | sigma | best `lcb_ev` | products with `lcb_ev` > 0 |
-|---|---|---|---|---|
-| **DAX** | | | | |
-| null | +0.00076 | 0.0189 | -0.004516 | 0 / 960 |
-| regime_conditional | -0.00087 | 0.0139 | -0.005290 | 0 / 960 |
-| regularized_linear | +0.00111 | 0.0129 | -0.002597 | 0 / 960 |
-| robust_location_scale | +0.00077 | 0.0144 | -0.003057 | 0 / 960 |
-| **NDX** | | | | |
-| null | +0.00228 | 0.0235 | -0.003024 | 0 / 887 |
-| regime_conditional | +0.00050 | 0.0178 | -0.008440 | 0 / 887 |
-| regularized_linear | +0.00218 | 0.0181 | -0.002746 | 0 / 887 |
-| **robust_location_scale** | **+0.00463** | 0.0187 | **+0.091553** | **365 / 887** |
+**The gate holds in 36 of 40. It breaks in 4, all NDX, all one model.**
 
-The first seven rows sit in the regime every previous measurement found: best
-`lcb_ev` between -0.003 and -0.008, against a production record of -0.00682,
-nothing anywhere near the gate.
+DAX: every model at every horizon gives **0 of 960** products with
+`lcb_ev` > 0. Best `lcb_ev` ranges from -0.0026 (h=3d) to -0.0180 (h=14d).
+No arm comes close.
 
-The eighth does not. `robust_location_scale` predicts +0.463% over three days
-for NDX where the null predicts +0.228% — a difference of **0.23 percentage
-points** — and that moves the system's output from "no tradeable candidate
-anywhere" to **365 of 887 products clearing the LCB gate**.
+NDX, products with `lcb_ev` > 0 out of 887:
+
+| model | h=3d | h=5d | h=7d | h=10d | h=14d |
+|---|---|---|---|---|---|
+| null | 0 | 0 | 0 | 0 | 0 |
+| regime_conditional | 0 | 0 | 0 | 0 | 0 |
+| regularized_linear | 0 | 0 | 0 | 0 | 0 |
+| **robust_location_scale** | **365** | **131** | 0 | **1** | **1** |
+
+At NDX h=3d `robust_location_scale` predicts +0.463% over three days where
+the null predicts +0.228% — a difference of **0.23 percentage points** — and
+that moves the system from no tradeable candidate anywhere to 365 of 887
+clearing the gate. Best `lcb_ev` goes from -0.003024 to +0.091553.
 
 ### What this means
 
-**The EV/gate stage amplifies small forecast differences enormously.** A model
-whose CRPS is 2.47% better is not a marginal refinement downstream; at this
-cell it is the difference between silence and 365 trade candidates. Turbo
-leverage is the mechanism: these products run 20-40x, so a 0.23pp difference
-in the predicted mean is a 5-9pp difference in the product's expected return,
-and the LCB gate sits well inside that range.
+**The EV/gate stage amplifies small forecast differences enormously**, but
+not uniformly. Turbo leverage is the mechanism: at 20-40x, 0.23pp in the
+predicted mean becomes 5-9pp in the product's expected return, and the gate
+sits inside that range. Everywhere the gate held, it held by 3 to 18 basis
+points.
 
-Two consequences follow, and they point in opposite directions:
+**The 365 / 131 / 0 / 1 / 1 pattern across horizons is itself evidence.** A
+real directional signal would not appear at 3 and 5 days, vanish entirely at
+7, and return as a single product at 10 and 14. That is what a noisy mean
+estimate looks like when it is amplified through leverage — and it is the
+strongest argument in this test against promoting the model that produced it.
+
+Two consequences, pointing in opposite directions:
 
 1. **CRPS improvement is nowhere near sufficient grounds to promote these
    models.** The repository already declined to promote them on the reasoning
-   that a better likelihood is not an edge; this quantifies why that instinct
-   was right. If `robust_location_scale`'s mean is a noisy estimate rather
-   than a real signal, promoting it would produce hundreds of false ACTIONABLE
-   candidates on a single scan.
-2. **The LCB gate is doing less protective work than its record suggests.** It
-   has held at "no trade" for every scan so far, but it held by 3 to 8 basis
-   points, and one forecast arm broke it wide open. "No ACTIONABLE output ever"
-   has been read as evidence of a conservative system; it is better read as
-   evidence that every forecast tried so far has had a mean close to the null's.
+   that a better likelihood is not an edge; this quantifies why. Promoting
+   `robust_location_scale` on its -2.47% CRPS would have produced 365
+   candidate ACTIONABLE signals on a single NDX scan, from a mean estimate
+   whose own horizon profile says it is unstable.
+2. **The LCB gate is doing less protective work than its record suggests.**
+   "No ACTIONABLE output ever" has been read here as a conservative system
+   working as designed. It held by 3 to 18 basis points, and one of four
+   forecast arms broke it at three horizons out of five. It is better read as
+   evidence that every forecast tried so far has had a mean close to the
+   null's — which is a statement about the forecasts, not about the gate.
 
 ### Limits of this test
 
-One decision date, one horizon, two underlyings, reconstructed terms with
+One decision date, two underlyings, reconstructed terms with
 `financing_spread`/`ref_rate` held fixed, and `spot0` taken as the median spot
 implied by the products themselves. That last point is not cosmetic: the first
 run of this comparison used the last stored bar close instead, which differed
@@ -1224,4 +1228,4 @@ right now carries far more weight than a -2.47% CRPS number does.
 
 **Next:** per-cell significance for Phase D (§6 reports win counts, no
 p-values, no bootstrap, no BH, no DSR — see GOVERNANCE.md §11.2), and the same
-sensitivity run across all five horizons rather than h=3d alone.
+run at more than one decision date once the forward ledger spans several.

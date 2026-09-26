@@ -51,7 +51,19 @@ Konkretisierungen (z.B. Anpassungsbudget, Ruin-Grenzen) stehen versioniert in GO
 
 ---
 
-## Current Milestone: Full Pipeline Implemented — No Measured Edge Yet
+## Current Milestone: One Measured Improvement, No Measured Edge
+
+**The single most important open question in this repository** (2026-09-26):
+the Phase D distributional baselines improve CRPS in 20/20 cells per family
+(regime-conditional -3.22%, regularized-linear -3.45%, robust location-scale
+-2.47%) — but **no downstream turbo net-EV test has been run**. A better
+predicted return distribution is not an economic edge until the same
+historical decisions have been pushed through the full payoff / KO / cost
+machine against the null. Until that test exists, these models stay out of
+the live ensemble and "better in 20/20 cells" is a within-wave forecast
+result, deflated against 60 cells rather than the quarter's cumulative 180
+(GOVERNANCE.md §11.2).
+
 
 Everything through the learning loop and reporting is implemented and
 wired into the scheduled pipeline (`.github/workflows/pipeline.yml`):
@@ -76,6 +88,8 @@ missing feature — see the roadmap in README.md.
 **Data sources**
 - Product sources: BNP Paribas issuer API (live bid/ask), Citi issuer API (master data + closing reference prices only, partial coverage), gettex, CSV import (optional, manual)
 - Börse Stuttgart and Börse Frankfurt/Deutsche Börse: NOT implemented — blocked (Cloudflare bot management / anti-bot signature headers). Never bypass access protection; see docs/data_sources.md
+- External research sources (measured, NOT promoted): Cboe volatility indices (`adapters/cboe.py`, 83,723 obs) and CFTC Traders in Financial Futures (`adapters/cftc.py`, 10,128 obs). Both worse than the own-history base in 20/20 cells — see `docs/measured_results.md` §6.7/§6.8. Do not re-open either without a new data source, a new regime, or substantially different methodology (§9 retest rules).
+- Euwax: blocked (HTTP 403 including for robots.txt). Eurex: attempted, abandoned at effective sample ~357 (4% of nominal).
 
 **Pricing / Cost Engine**
 - Intrinsic value (Long/Short), financing spread inference, gap premium estimation, issuer margin decomposition, cross-issuer comparison, integrity checks (bid ≤ ask, ratio > 0, barrier valid, etc.)

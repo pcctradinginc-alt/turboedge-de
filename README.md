@@ -108,6 +108,10 @@ signal beat null this month" is a valid, expected output);
 | | Citi/CitiFirst — master data and financing levels only | No live quotes (`referencePriceMethod = "Closing Price"`, `ask = 0.0` observed during market hours); bid/ask set to `None` |
 | | gettex (BNP Paribas, UniCredit, Goldman Sachs, HSBC observed) | Working; ratio derived + independently verified (`docs/measured_results.md` §4) |
 | Underlyings/rates | yfinance (daily OHLC), ECB €STR (SDMX-JSON) | Working |
+| Research (external) | Cboe daily volatility indices — VIX, VIX9D, VIX3M, VVIX, OVX, GVZ (83,723 observations, from 1990) | Working; **measured, DO NOT PROMOTE** (`docs/measured_results.md` §6.7) |
+| | CFTC Traders in Financial Futures (10,128 observations, 844 weeks, 16.2 years) | Working; **measured, DO NOT PROMOTE** (§6.8) |
+| | Euwax sentiment | Blocked — HTTP 403 including for `robots.txt`; never bypassed |
+| | Eurex positioning | Attempted and abandoned: effective sample ~357 (4% of nominal), too thin to interpret |
 | Manual | CSV import from `state/imports/products/` | Working |
 | Not implemented | Börse Stuttgart, Börse Frankfurt | Blocked (Cloudflare bot management / salted-hash JS headers); neither bypassed; `enabled: false` docs-only entries in `configs/sources.yaml` |
 
@@ -503,7 +507,13 @@ chflags -R nohidden /Users/cc/Desktop/TURBO\ EDGE/turboedge-de/.venv
 | Done | Monthly/weekly reports, encrypted state, `pipeline.yml` scheduler |
 | Done | CLI wiring for `scan-all`/`label`/`learn`/`position reevaluate`/`report monthly`/`research tournament`/`forecast`/`backtest` |
 | Not started | A model clearing the `GOVERNANCE.md` §2 ladder on genuinely new OOS data — required before ACTIONABLE output is expected in practice |
-| Not started | Additional data sources (Eurex, Euwax, Cboe, FRED, CFTC) |
+| Done, measured negative | Cboe volatility state (VIX, VIX9D, VIX3M, VVIX, OVX, GVZ; 83,723 observations) — CRPS and Brier worse in 20/20 cells, 6 significantly worse after BH; DO NOT PROMOTE |
+| Done, measured negative | CFTC positioning (Traders in Financial Futures, 10,128 observations, 844 weeks) — CRPS/pinball/Brier worse in 20/20 cells, intervals overconfident; DO NOT PROMOTE |
+| Measured, not promoted | Phase D distributional baselines — CRPS better in 20/20 cells per family (regime-conditional -3.22%, regularized-linear -3.45%, robust location-scale -2.47%). **No downstream turbo net-EV test has been run**, so this is a better predicted distribution, not a measured edge |
+| Built, not measurable yet | MAE/MFE excursion prediction (`models/excursion.py`, `backtest/excursion_eval.py`) — effective sample is 1.00 across 2,672 labelled entries (all one prediction date); the harness returns `INSUFFICIENT_SAMPLE` and will for months |
+| Shadow only | Meta layer — Phase 1 decision controller (abstains on every horizon today), Phase 2 research queue over a 14-question catalog |
+| Blocked | Euwax sentiment — source returns HTTP 403 including for `robots.txt`; access protection is never bypassed |
+| Not started | Eurex positioning (attempted, abandoned at Neff~357 = 4% of nominal), FRED/ALFRED, ECB/Bundesbank |
 
 No delivery dates are committed for unstarted items.
 

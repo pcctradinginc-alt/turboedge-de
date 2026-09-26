@@ -17,7 +17,21 @@ Every research change—feature variant, threshold adjustment, model hyperparame
 
 **Max changes per quarter: 6**
 
-Each promotion from experimental to live increments the effective number of tested hypotheses, triggering multiple-testing inflation penalties.
+Each **test** increments the effective number of tested hypotheses,
+triggering multiple-testing inflation penalties. Not each promotion.
+
+This sentence previously read "each promotion from experimental to live",
+and that was wrong in a way that had consequences (corrected 2026-09-26
+after external review). Whether a hypothesis is later promoted is
+irrelevant to multiple testing: the inflation is created the moment a
+hypothesis is tested and its result is seen. Counting only the promoted
+ones would permit running arbitrarily many experiments and charging the
+budget for none of them, which is precisely the researcher-degrees-of-
+freedom this budget exists to bound.
+
+A trial is therefore charged to the quarter in which it is **opened and
+measured**, regardless of its outcome and regardless of which quarter's
+budget has room.
 
 ### 1.3 Tracking
 
@@ -265,19 +279,69 @@ in 2026 Q3. Full numbers: `docs/measured_results.md`; per-signal detail:
   (§6.3 / Master Spec §23) or explicit governance review to raise the
   budget.
 
+  **Corrected 2026Q3 standing: 11 of 6 (2026-09-26, after external
+  review).** Two separate accounting errors, in opposite directions:
+
+  | Trial | Opened | Charged to | Correct |
+  |---|---|---|---|
+  | `W9-2026Q3-001..006` | 2026-09-13 | 2026Q3 | yes |
+  | `PD-2026Q4-001..003` | 2026-09-19 | 2026**Q4** | no — Q3 work |
+  | `TR-2026Q3-abd750` (Cboe) | 2026-09-25 | 2026Q3, override | charged, but on invalid grounds |
+  | `TR-2026Q3-31e266` (CFTC) | 2026-09-25 | 2026Q3, override | same |
+
+  The Cboe/CFTC overrides were logged "on the grounds that a measurement
+  which promotes nothing does not inflate the multiple-testing count".
+  §1.2 now states why that is wrong.
+
+  The Phase D trials are the same error mirrored: opened 2026-09-19, which
+  is Q3, but labelled and charged to Q4 — pre-spending a future quarter for
+  work already done, and understating Q3. An external review read this as
+  the correct handling; it is not, and the trial ids record the opening
+  date that shows it.
+
+  All five were genuinely opened and measured in Q3, so all five count in
+  Q3. The honest record is that the quarter ran to **11 of 6**. The trial
+  ids are left unchanged — renaming them now would rewrite the audit trail
+  to make the books look tidy, which is the opposite of what this section
+  is for.
+
+  **Q3 is closed to new trials.** The next research question — including
+  the approved `RO-MAE-PREDICTION` / `RO-MFE-PREDICTION` — opens against
+  the 2026Q4 budget on 2026-10-01, with Q4 starting at 0 of 6, not 3.
+
 ### 11.2 Effective number of hypotheses tested (for deflation)
 
-For Benjamini-Hochberg and DSR purposes, the **effective trial count for
-2026Q3 research is 80** — the actual number of (family, underlying,
-horizon) cells measured in W9 (not the 6 trial_ids, and not the 110
-originally pre-registered cells; §3.1's own convention is "the actual
+The unit is the (family, underlying, horizon) **cell actually measured** —
+not the trial_id count, and not the pre-registered count (§3.1: "the actual
 count measured, which may be smaller than what was pre-registered").
-`turboedge.backtest.significance.benjamini_hochberg` was applied
-separately to the 80 Brier-diff and 80 return-diff p-values;
-`turboedge.backtest.significance.deflated_sharpe_ratio` was computed per
-family with `n_trials=80`. This is the honest deflation denominator; using
-the smaller 6-trial_id count instead would understate the multiple-testing
-penalty.
+
+**Cumulative 2026Q3 research universe: 180 cells.**
+
+| Wave | Cells | Deflated against |
+|---|---|---|
+| W9 challenger signals | 80 | 80 (own wave) |
+| W12-A Cboe volatility state | 20 | 20 (own wave) |
+| W12-D CFTC positioning | 20 | 20 (own wave) |
+| Phase D distributional baselines | 60 | 60 (own wave) |
+| **Total tested on overlapping data** | **180** | — |
+
+**Each wave was deflated only within itself, and that understates the
+penalty** (recorded 2026-09-26 after external review). These waves run over
+the same underlyings and largely the same sample period, so the research
+universe a later result must survive is the cumulative 180, not the 20 or 60
+of its own wave. No conclusion in `docs/measured_results.md` changes as a
+result — every W9, W12-A and W12-D cell failed against the *smaller*
+denominator, and a larger one only makes them fail harder.
+
+The one place it does matter is the Phase D distributional baselines, the
+only measured improvement in the repository (CRPS better in 20/20 cells per
+family). Their deflation used `n_trials=60`. Against the cumulative 180 the
+penalty is larger, and **their DSR has not been recomputed on that basis**.
+Until it is, "better in 20/20 cells" should be read as a within-wave result.
+
+**Required from here:** deflation denominators are cumulative across all
+cells measured on overlapping data in the same quarter, not per wave. A new
+wave states the running total it deflated against.
 
 ### 11.3 Ladder Rule applied — no promotions
 

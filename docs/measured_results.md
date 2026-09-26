@@ -1050,3 +1050,87 @@ model is promoted, in order to manufacture trade suggestions where none
 are supported by measurement. See `SIGNAL_REGISTRY.md` for the per-model
 registry entries and `GOVERNANCE.md` for how these trials count against
 the quarterly adaptation budget and multiple-testing deflation.
+
+---
+
+## 6.9 MAE/MFE excursion prediction: not measurable yet (2026-09-26)
+
+**Queue entries:** `RO-MAE-PREDICTION`, `RO-MFE-PREDICTION`, approved through
+the Phase 2 §8 gate on 2026-09-26. **No trial id registered** — 2026Q3 is
+closed at 11 of 6 (GOVERNANCE.md §11.1) and no measurement exists to charge
+against it.
+
+**Question:** can a model conditioning on entry-time features forecast a
+turbo's MAE/MFE better than the unconditional empirical distribution?
+
+**Answer: unanswerable today. `INSUFFICIENT_SAMPLE`, and it is not close.**
+
+### The number
+
+The forward ledger holds 2,672 labelled entries. Their **effective sample is
+1.00.**
+
+Every entry shares one prediction date (2026-09-14) and one horizon (3d), so
+every label window is identical; average uniqueness (Lopez de Prado ch. 4)
+gives each row 1/2672 and they sum to a single independent observation.
+Computed twice — once by hand from `average_uniqueness`, once by
+`build_excursion_dataset` — agreeing exactly. No rows were dropped for any
+reason (no ambiguous paths, no missing features, no expired-no-data exits).
+
+This is not an artefact of a stale local database. The pipeline has been
+running since 2026-09-13 — 13 calendar days, about 9 trading days — so
+production's ~23,900 labels span at most 9 distinct prediction dates.
+
+### How long until it can be answered
+
+At one entry per day per (underlying, horizon) cell, with the label window
+equal to the horizon:
+
+| Horizon | Neff after 1 year | Trading days for Neff=100 | ≈ months |
+|---|---|---|---|
+| 3d | 63.8 | 395 | 19 |
+| 5d | 42.8 | 588 | 28 |
+| 7d | 32.4 | 778 | 37 |
+| 10d | 23.8 | 1058 | 50 |
+| 14d | 17.7 | 1421 | 68 |
+
+Pooling four underlyings divides these by four only under cross-sectional
+independence, which for DAX against NDX is not credible. The honest
+projection is months for the shortest horizon and years for the longest.
+
+### What was built
+
+`models/excursion.py` and `backtest/excursion_eval.py`. The null —
+unconditional weighted empirical quantiles — is a first-class model sharing
+the same quantile estimator and the same uniqueness weights as the
+conditional one, so a win cannot come from the estimator. Verified on
+synthetic data: 34.8% better total pinball where genuine signal exists,
+0.0014% on pure noise.
+
+`evaluate_excursion` refuses to present any comparison figure below the
+sample floors (Neff >= 100, >= 30 distinct dates). A CRPS gap computed on one
+independent observation is not a weak result; it is not a result.
+
+`_MIN_RELATIVE_IMPROVEMENT = 0.05` was added after a pure-noise dataset
+reached `CANDIDATE`: a sub-0.1% CRPS difference landed on the improving side
+of zero and a paired-fold bootstrap called it significant at exactly the rate
+α=0.10 implies. Confirmed load-bearing — setting the floor to 0 makes the
+anti-triviality test fail.
+
+### Known limitation, carried deliberately
+
+`FEATURE_NAMES` omits `p_ko`, `predicted_return` and `uncertainty`, which are
+legitimate entry-time columns and are the pipeline's own estimates of adverse
+path risk and dispersion. Their absence biases toward a **false negative**.
+They must be added before any negative result here is treated as settled.
+
+### The same defect, found elsewhere
+
+The effective-sample collapse measured here is not confined to this question.
+The weekly research tournament counted `n` as a row count: its 2026-09-26
+report showed three "signal families" as Benjamini-Hochberg significant whose
+entries were all same-day positions from a single scan run. That has been
+partly corrected (a run identifier is no longer treated as a family), but the
+tournament still computes PSR and DSR from row counts rather than effective
+sample size. It produces no false positive today only because the pooled mean
+return is negative.

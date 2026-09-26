@@ -1,0 +1,158 @@
+{
+  "as_of": "2026-09-26T12:41:13.081397Z",
+  "champion_model_id": null,
+  "demotions": [],
+  "families": [
+    {
+      "bh_rejected": null,
+      "brier": null,
+      "dsr": null,
+      "ece": null,
+      "evidence_source": "forward_ledger",
+      "mean_regret": null,
+      "mean_return": null,
+      "n": 0,
+      "n_effective": 0.0,
+      "notes": [
+        "Keine Forward-Ledger- oder Walk-Forward-Backtest-Daten."
+      ],
+      "p_value": null,
+      "protected": false,
+      "psr": null,
+      "reliable": false,
+      "sharpe": null,
+      "signal_family": "logit",
+      "z_score": null
+    },
+    {
+      "bh_rejected": null,
+      "brier": null,
+      "dsr": null,
+      "ece": null,
+      "evidence_source": "forward_ledger",
+      "mean_regret": null,
+      "mean_return": null,
+      "n": 0,
+      "n_effective": 0.0,
+      "notes": [
+        "Keine Forward-Ledger- oder Walk-Forward-Backtest-Daten."
+      ],
+      "p_value": null,
+      "protected": false,
+      "psr": null,
+      "reliable": false,
+      "sharpe": null,
+      "signal_family": "null",
+      "z_score": null
+    },
+    {
+      "bh_rejected": null,
+      "brier": null,
+      "dsr": null,
+      "ece": null,
+      "evidence_source": "forward_ledger",
+      "mean_regret": null,
+      "mean_return": null,
+      "n": 0,
+      "n_effective": 0.0,
+      "notes": [
+        "Keine Forward-Ledger- oder Walk-Forward-Backtest-Daten."
+      ],
+      "p_value": null,
+      "protected": true,
+      "psr": null,
+      "reliable": false,
+      "sharpe": null,
+      "signal_family": "tsmom",
+      "z_score": null
+    },
+    {
+      "bh_rejected": false,
+      "brier": 0.2595402609468563,
+      "dsr": 7.334233671134878e-40,
+      "ece": 0.16265737275449096,
+      "evidence_source": "forward_ledger",
+      "mean_regret": null,
+      "mean_return": -0.003074433912942035,
+      "n": 2672,
+      "n_effective": 2.0,
+      "notes": [],
+      "p_value": 0.999995655116732,
+      "protected": false,
+      "psr": 4.726053624911535e-34,
+      "reliable": true,
+      "sharpe": -0.7900913548472464,
+      "signal_family": "unresolved",
+      "z_score": -4.447445082499362
+    }
+  ],
+  "fdr_alpha": 0.1,
+  "generated_at": "2026-09-26T12:41:13.105110Z",
+  "notes": [
+    "Vergleich nutzt Forward-Ledger-Daten, wo verfügbar; Walk-Forward-Backtest-Ergebnisse als Fallback (nicht im Store persistiert), wenn Forward-Ledger leer (Spec §29). Fenster: 2026-07-28..2026-09-26.",
+    "Kein Modell mit status=champion im Registry gefunden."
+  ],
+  "promotions": [
+    {
+      "challenger_model_id": "logistic_direction_v1",
+      "challenger_signal_family": "logit",
+      "champion_model_id": null,
+      "ev_improvement": null,
+      "passes_ladder": false,
+      "reasons": [
+        "reliable_sample: failed",
+        "bh_rejected: failed",
+        "z_score>=threshold: failed",
+        "dsr>=threshold: failed",
+        "psr>=threshold: failed",
+        "ev_improvement>=threshold: failed",
+        "winrate_improvement>=threshold: failed"
+      ],
+      "trial_id": null,
+      "winrate_improvement": null
+    },
+    {
+      "challenger_model_id": "null_v1",
+      "challenger_signal_family": "null",
+      "champion_model_id": null,
+      "ev_improvement": null,
+      "passes_ladder": false,
+      "reasons": [
+        "reliable_sample: failed",
+        "bh_rejected: failed",
+        "z_score>=threshold: failed",
+        "dsr>=threshold: failed",
+        "psr>=threshold: failed",
+        "ev_improvement>=threshold: failed",
+        "winrate_improvement>=threshold: failed"
+      ],
+      "trial_id": null,
+      "winrate_improvement": null
+    }
+  ],
+  "weight_preview": [
+    {
+      "current_weight": 1.0,
+      "delta": -0.6666666666666667,
+      "model_id": "logistic_direction_v1",
+      "previewed_weight": 0.3333333333333333,
+      "signal_family": "logit"
+    },
+    {
+      "current_weight": 1.0,
+      "delta": -0.6666666666666667,
+      "model_id": "null_v1",
+      "previewed_weight": 0.3333333333333333,
+      "signal_family": "null"
+    },
+    {
+      "current_weight": 1.0,
+      "delta": -0.6666666666666667,
+      "model_id": "tsmom_forecast_v1",
+      "previewed_weight": 0.3333333333333333,
+      "signal_family": "tsmom"
+    }
+  ],
+  "window_end": "2026-09-26",
+  "window_start": "2026-07-28"
+}

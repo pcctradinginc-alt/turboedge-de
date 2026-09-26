@@ -64,3 +64,8 @@ coverage.xml
 .idea/
 .vscode/
 *.swp
+
+# Half-written files from in-flight subagents must never reach a commit via
+# `git add -A`; that broke CI twice on 2026-09-26. Nothing is ignored here
+# permanently -- entries are added while an agent is writing and removed when
+# its work is verified.

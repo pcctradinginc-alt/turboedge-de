@@ -2397,6 +2397,34 @@ def _pick_alternatives(
     return same_group[:limit]
 
 
+def _financing_cost_for_horizon(priced: _PricedProduct, horizon_days: int, isin: str) -> float:
+    """Financing cost for this horizon, or a loud failure.
+
+    This number goes into the cost breakdown of a trade-proposal email. A
+    silent `.get(..., 0.0)` default -- which is what this replaced -- would
+    print a financing cost of zero in a recommendation whenever the horizon
+    was missing from the dict, understating the cost of the trade at exactly
+    the moment it matters most. CLAUDE.md rule 29: never silently impute data
+    that is critical for pricing.
+
+    `financing_cost_pct` is populated for every horizon in `_VALID_HORIZONS`,
+    and `ProductHorizonEvaluation` validates its own `horizon_days` against
+    the same tuple, so a miss cannot happen today. It becomes possible the
+    moment those two lists drift apart, and the failure mode would be a
+    plausible-looking email with a wrong cost line rather than anything
+    visibly broken.
+    """
+    key = f"{horizon_days}d"
+    value = priced.financing_cost_pct.get(key)
+    if value is None:
+        raise KeyError(
+            f"no financing cost for horizon {key} on {isin} "
+            f"(have: {sorted(priced.financing_cost_pct)}); refusing to report "
+            "a trade proposal with an imputed zero financing cost"
+        )
+    return value
+
+
 def _maybe_send_trade_proposals(
     *,
     store: Store,
@@ -2455,7 +2483,7 @@ def _maybe_send_trade_proposals(
             p_ko=ev.p_ko,
             es95=ev.es95,
             spread_cost_pct=p.costs.spread_pct,
-            financing_cost_pct=p.financing_cost_pct.get(f"{ev.horizon_days}d", 0.0),
+            financing_cost_pct=_financing_cost_for_horizon(p, ev.horizon_days, candidate.isin),
             gap_premium_pct=p.costs.gap_premium_pct,
             issuer_margin_pct=p.costs.issuer_margin_pct,
             suggested_position_fraction=ev.suggested_position_fraction,

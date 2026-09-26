@@ -51,9 +51,25 @@ Konkretisierungen (z.B. Anpassungsbudget, Ruin-Grenzen) stehen versioniert in GO
 
 ---
 
-## Current Milestone: One Measured Improvement, No Measured Edge
+## Current Milestone: The One Candidate Was Tested and Failed
 
-**State of the only positive result** (re-measured 2026-09-26): the Phase D
+**Settled 2026-09-26.** Pre-registered trial `TR-2026Q3-3c4899` put
+`regime_conditional` -- the only model with a real measured forecast
+improvement -- through the full payoff/KO/cost machine against the null on
+standardised turbos. **mean ΔLCB_NetEV = -0.020547, FAIL**, negative in every
+underlying, horizon and barrier distance, 29.8% of 607,596 cells positive,
+sign stable under a halved and doubled spread (`docs/measured_results.md`
+§6.15). The improvement is statistically real and economically inert-to-
+harmful on these terms. Do not re-open it without a new data source, a new
+regime, or substantially different methodology (§9 retest rules).
+
+Still open, and the only route left for these models: the EV pipeline feels a
+forecast through its mean and its `uncertainty` only, never through the
+predictive width CRPS measures, because `simulate_paths` has no volatility
+parameter (§6.14). Answering the width question needs a change to the
+production path engine and is a separate trial.
+
+**Forecast history below.** **State of the only positive result** (re-measured 2026-09-26): the Phase D
 distributional baselines were reported as improving CRPS in 20/20 cells. On
 re-run with §6's own parameters it is 18/20, 15/20 and 14/20 at about half the
 effect size (`docs/measured_results.md` §6.11). Under a block bootstrap that

@@ -1565,3 +1565,83 @@ registered, so the meta layer cannot score them at all. That is correct today
 structurally blind to the only models with any measured improvement. Recorded,
 not changed: registering them would imply a promotion decision that §6.11-§6.13
 does not support.
+
+---
+
+## 6.15 RESULT — pre-registered trial 2026Q4-001: FAIL (2026-09-26)
+
+**Trial:** `TR-2026Q3-3c4899`, charged to 2026Q3 as the 12th of 6 with a
+written override (`docs/preregistration_2026Q4_001.md` Amendment C).
+**Specification frozen before the run**, including the decision rule and this
+section's own verdict labels.
+
+### Primary result
+
+    H0:  LCB_NetEV(regime_conditional) - LCB_NetEV(null)  <=  0
+
+| | |
+|---|---|
+| mean ΔLCB_NetEV | **-0.020547** |
+| p (one-sided, moving-block bootstrap over dates) | **1.0000** |
+| α | 0.10 |
+| dates | 3,360 · block length 21 · 20,000 resamples |
+| null arm aggregate | -0.071179 |
+| regime_conditional arm aggregate | -0.091726 |
+
+**Verdict: FAIL_NULL_RESULT** (§5 row 2). The pre-committed prior in §8 was
+FAIL, and this is that.
+
+Data provenance, as §4 requires and as §6 failed to record: yfinance via
+`adapters/fallback_prices.py`, `lookback_days=4000`, fetched 2026-09-26, bars
+after the OHLC filter DAX 3,995 / NDX 4,000 / EURUSD 3,882 (108 skipped) /
+XAU 3,309.
+
+### The secondary analysis says something stronger than the verdict label
+
+`p = 1.0000` is not "no signal". The test is one-sided for *improvement*, and
+the difference is decisively in the other direction, which a one-sided test
+can only express as 1.0. That is a limitation of the pre-registration, and it
+is recorded rather than corrected: the verdict stays FAIL_NULL_RESULT because
+that is what the frozen rule returns.
+
+The stability analysis, which is not deflated and not primary, is unambiguous:
+
+| cut | ΔLCB_NetEV |
+|---|---|
+| DAX / NDX / EURUSD / XAU | -0.0229 / -0.0276 / -0.0089 / -0.0197 |
+| horizon 3d → 14d | -0.0129 / -0.0173 / -0.0205 / -0.0230 / -0.0258 |
+| barrier distance 2% → 20% | -0.0419 / -0.0248 / -0.0148 / -0.0102 / -0.0077 |
+| cells with Δ > 0 | **29.8%** of 607,596 |
+| spread probe 0.0025 / 0.01 | -0.0206 / -0.0205, sign stable |
+
+Negative in every underlying, every horizon, every barrier distance, and
+robust to halving or doubling the spread. Two monotone patterns: the damage
+grows with horizon and shrinks with barrier distance — consistent with
+leverage amplifying a drift difference, since a nearer barrier means more
+leverage. The mechanism is not established here and is not claimed.
+
+### What this settles
+
+**The one measured forecast improvement in this repository does not carry
+economic value on standardised turbo terms, and appears to carry negative
+value.** §6.11-§6.13 established that `regime_conditional`'s CRPS improvement
+is real within its own wave (p ≈ 0.0135 after an honest dependence
+treatment). §6.14 showed the EV pipeline feels a forecast only through its
+mean and its uncertainty, not through the predictive width CRPS scores. This
+closes the loop: the part of the forecast the EV stage *can* feel makes the
+economics worse, not better.
+
+Recorded in `state/registry/failed_hypotheses.json` as
+`regime_conditional_economic_value`, `incremental_net_ev = -0.020547`,
+status `dormant`.
+
+### What it does not settle
+
+The width question. `simulate_paths` still has no volatility parameter, so
+the distributional improvement CRPS measures never reaches the payoff
+simulation (§6.14, Amendment B). A trial that could answer it needs a change
+to the production path engine and is not this one.
+
+And it is a synthetic-terms result: no claim is made that these products
+existed or were quotable. The forward real-product arm of §6.13's two-part
+design remains unrun and needs forward data accumulating since 2026-09-13.

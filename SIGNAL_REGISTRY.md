@@ -191,6 +191,14 @@ not reproduce them (`docs/measured_results.md` §6.11-§6.13).
 | `regularized_linear_location_v1` | `RegularizedLinearLocationModel` | 20/20, mean -3.45% | **15/20, mean -1.54%** | **0.0142** | measured, not promoted |
 | `robust_location_scale_t_v1` | `RobustLocationScaleModel` | 20/20, mean -2.47% | **14/20, mean -0.78%** | 0.1050 | measured, not promoted |
 
+**Economic value tested and rejected (2026-09-26).** Pre-registered trial
+`TR-2026Q3-3c4899` ran `regime_conditional` against the null through the full
+payoff / knock-out / cost machine on standardised turbos: mean ΔLCB_NetEV =
+**-0.020547**, negative in every underlying, every horizon and every barrier
+distance, with only 29.8% of 607,596 cells positive and the sign stable under
+a halved and doubled spread. Recorded in `failed_hypotheses.json` as
+`regime_conditional_economic_value`. See `docs/measured_results.md` §6.15.
+
 The first two survive Benjamini-Hochberg at α=0.10 against the quarter's
 eleven model-level hypotheses (§6.13). That is **robust retrospective
 evidence, not confirmatory**: the bootstrap was chosen after the original

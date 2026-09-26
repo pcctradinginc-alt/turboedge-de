@@ -94,5 +94,21 @@
     "regime_change_note": null,
     "status": "dormant",
     "trial_id": "W9-2026Q3-001"
+  },
+  {
+    "effective_sample": 3360,
+    "feature": "regime_conditional_economic_value",
+    "horizons": [
+      "3d",
+      "5d",
+      "7d",
+      "10d",
+      "14d"
+    ],
+    "incremental_net_ev": -0.020547,
+    "recorded_at": "2026-09-26T20:44:06.965855Z",
+    "regime_change_note": null,
+    "status": "dormant",
+    "trial_id": "TR-2026Q3-3c4899"
   }
 ]

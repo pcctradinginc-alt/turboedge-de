@@ -413,6 +413,32 @@ jobs:
           allow_fresh_state: ${{ inputs.allow_fresh_state }}
           github_token: ${{ github.token }}
 
+      # Walk-forward measurement. This ran in no workflow at all until
+      # 2026-09-26, so `walkforward_results` was empty in every environment
+      # -- which is precisely why the Phase 1 meta-controller abstains on
+      # every horizon: it reads that table for `historical_oos_quality` and
+      # `calibration_quality`, found neither, and recorded both as unmeasured
+      # rather than inventing a neutral value (docs/measured_results.md,
+      # meta/trust.py). The tournament also prefers this table when present.
+      #
+      # It runs BEFORE the tournament so the same run's numbers are the ones
+      # reported. ~20 minutes: it refits every model over the full history
+      # per (underlying, horizon) cell.
+      - name: Refresh walk-forward measurements
+        run: uv run turboedge --log-format json backtest
+
+      # Read-only measurements, reported but never acted on. Both are
+      # expected to report "not enough data" for months (§6.9): the excursion
+      # harness needs an effective sample in the hundreds and currently has
+      # 1.00. Running them weekly is what makes the day they stop saying that
+      # visible without anyone remembering to check.
+      - name: Measure MAE/MFE excursion prediction
+        continue-on-error: true
+        run: uv run turboedge --log-format json research excursion --json-out reports/weekly/excursion.json
+
+      - name: Re-score the research queue
+        run: uv run turboedge --log-format json research queue --limit 14
+
       - name: Run weekly research tournament
         env:
           GMAIL_USER: ${{ secrets.GMAIL_USER }}

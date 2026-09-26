@@ -138,3 +138,29 @@ CFTC. A 1.4% CRPS improvement is small against a spread of 50bp plus financing
 and knock-out asymmetry. If this passes, the first question to ask is whether
 the cost assumptions in §4 are too generous, not whether an edge has been
 found.
+
+---
+
+## 9. Amendment A (2026-09-26, before any measurement)
+
+Recorded as an amendment rather than an edit, because a frozen document that
+is quietly revised is not frozen. **No measurement of the primary hypothesis
+had been run when this was written.**
+
+**`financing_level = barrier` is a simplification, and it is the conservative
+one.** Measured against the 2,672 real ledger entries: the two are exactly
+equal in 2,251 of them (84%), with a mean relative gap of 0.25% in the rest.
+Real turbos commonly carry a small stop-loss buffer between the financing
+level and the barrier, so a knock-out leaves a residual payout.
+
+Setting them equal removes that buffer, which means a knock-out pays zero.
+That is *worse* than a real turbo, so the simplification biases against
+finding an edge rather than toward it. It stays as specified in §4.
+
+It is recorded here because §3 already states this universe makes no claim
+these products existed — and a reader should be able to see exactly which way
+each idealisation cuts, rather than having to trust that they average out.
+
+**`theoretical_fair_value` lives in `pricing/fair_value.py`, not
+`pricing/intrinsic.py`** as §4 implies. No behavioural change; the named
+function is the one intended.

@@ -1126,14 +1126,30 @@ They must be added before any negative result here is treated as settled.
 
 ### The same defect, found elsewhere
 
-The effective-sample collapse measured here is not confined to this question.
-The weekly research tournament counted `n` as a row count: its 2026-09-26
-report showed three "signal families" as Benjamini-Hochberg significant whose
-entries were all same-day positions from a single scan run. That has been
-partly corrected (a run identifier is no longer treated as a family), but the
-tournament still computes PSR and DSR from row counts rather than effective
-sample size. It produces no false positive today only because the pooled mean
-return is negative.
+The effective-sample collapse measured here was not confined to this
+question. The weekly research tournament counted `n` as a row count: its
+2026-09-26 report showed three "signal families" as Benjamini-Hochberg
+significant, with Sharpe ratios of 9.6-10.5, whose entries were all same-day
+positions from a single scan run.
+
+**Both halves are now fixed** (2026-09-26). A run identifier is no longer
+treated as a signal family, and `n_effective` — average uniqueness over each
+family's own label windows, computed per underlying — is what reaches the
+t-test, PSR and DSR. `probabilistic_sharpe_ratio` and `deflated_sharpe_ratio`
+took an explicit `n_effective` parameter for this; the first implementation
+faked it by resizing the returns array, which was conservative (measured:
++5.4% dispersion at n_eff=100, +105% at n_eff=5) but distorted exactly the
+dispersion the skew/kurtosis correction reads.
+
+Below 100 effective observations, PSR and DSR are withheld entirely rather
+than reported weakly, with the number that withheld them stated in `notes`.
+The Sharpe is now the unannualized per-trade ratio: scaling by sqrt(252)
+assumed these overlapping 3-14 day positions tile a calendar year
+independently, which is the same fiction the effective sample disproves.
+
+Re-run against the labelled ledger: `n=2672`, **`n_effective=2.00`**,
+Sharpe -0.080 (was 10.49), PSR/DSR/`bh_rejected` all `None`, zero families
+tested. The false positive cannot recur; a test pins that exact scenario.
 
 ---
 

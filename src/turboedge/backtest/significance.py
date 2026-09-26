@@ -67,7 +67,10 @@ def _has_usable_dispersion(r: npt.NDArray[np.float64]) -> bool:
 
 
 def probabilistic_sharpe_ratio(
-    returns: npt.NDArray[np.float64], benchmark_sr: float = 0.0
+    returns: npt.NDArray[np.float64],
+    benchmark_sr: float = 0.0,
+    *,
+    n_effective: float | None = None,
 ) -> float:
     """P(true Sharpe ratio > benchmark_sr), correcting for skew/kurtosis of ``returns``.
 
@@ -82,7 +85,15 @@ def probabilistic_sharpe_ratio(
     ``Phi((SR_hat - SR*) * sqrt(T-1))``.
     """
     r = np.asarray(returns, dtype=np.float64)
-    n = r.shape[0]
+    # `n_effective` overrides the row count as T. Overlapping label windows
+    # mean a row count is not an observation count: the forward ledger's 2,672
+    # entries are worth 1.00 independent observations under average uniqueness
+    # (docs/measured_results.md §6.9), and feeding 2,672 into sqrt(T-1) is what
+    # let the 2026-09-26 tournament report same-day positions as significant.
+    # Callers that know the effective sample pass it here rather than reshaping
+    # the returns array to fake a length, which distorts the dispersion the
+    # skew/kurtosis correction reads.
+    n = r.shape[0] if n_effective is None else n_effective
     if n < 3:
         raise ValueError(f"returns must have at least 3 observations, got {n}")
     if not _has_usable_dispersion(r):
@@ -113,6 +124,7 @@ def deflated_sharpe_ratio(
     *,
     skew: float | None = None,
     kurtosis: float | None = None,
+    n_effective: float | None = None,
 ) -> float:
     """Probabilistic Sharpe Ratio benchmarked against the expected max Sharpe of ``n_trials`` runs.
 
@@ -131,7 +143,9 @@ def deflated_sharpe_ratio(
     if n_trials < 1:
         raise ValueError(f"n_trials must be >= 1, got {n_trials!r}")
     r = np.asarray(returns, dtype=np.float64)
-    n = r.shape[0]
+    # See `probabilistic_sharpe_ratio` -- a row count is not an
+    # observation count when label windows overlap.
+    n = r.shape[0] if n_effective is None else n_effective
     if n < 3:
         raise ValueError(f"returns must have at least 3 observations, got {n}")
     if not _has_usable_dispersion(r):
@@ -154,7 +168,7 @@ def deflated_sharpe_ratio(
         z1 = float(stats.norm.ppf(1.0 - 1.0 / n_trials))
         z2 = float(stats.norm.ppf(1.0 - 1.0 / (n_trials * np.e)))
         sr0 = sr_std * ((1.0 - _EULER_MASCHERONI) * z1 + _EULER_MASCHERONI * z2)
-    return probabilistic_sharpe_ratio(r, benchmark_sr=sr0)
+    return probabilistic_sharpe_ratio(r, benchmark_sr=sr0, n_effective=n_effective)
 
 
 def benjamini_hochberg(

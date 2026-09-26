@@ -44,10 +44,10 @@ from turboedge.backtest.significance import (
 from turboedge.learning.ensemble_weights import update_weights as _compute_weights_preview
 from turboedge.learning.ledger import ForwardLedger
 from turboedge.reporting._common import (
-    average_uniqueness_weights,
-    holding_days,
+    family_average_uniqueness_weights,
     registry_hash_map,
     signal_family_for,
+    weighted_mean_return,
 )
 from turboedge.storage.duckdb import Store
 from turboedge.storage.schemas import (
@@ -57,7 +57,25 @@ from turboedge.storage.schemas import (
     ModelStatus,
 )
 
-_TRADING_DAYS_PER_YEAR = 252.0
+#: Below this effective sample, a family's PSR/DSR are withheld entirely
+#: (set to ``None``, never computed and shown as if meaningful) -- the same
+#: "no comparison number below the floor" discipline as
+#: ``backtest/excursion_eval.py``'s ``MIN_EFFECTIVE_SAMPLE``/``INSUFFICIENT_SAMPLE``.
+#:
+#: GOVERNANCE.md §6.1 ("Promotion (Experimental -> Live)") already lists
+#: "Effective sample >= 100 distinct outcomes" as a promotion criterion --
+#: this reuses that exact, already-governance-approved number rather than
+#: inventing a second threshold, and applies it one step earlier: PSR/DSR
+#: computed on fewer effective observations than promotion itself requires
+#: are not just insufficient to promote on, they are not a measurement at
+#: all (a probability statement computed from ~1 independent draw, as the
+#: 2,672-row/n_eff=1.00 case in docs/measured_results.md §6.9 is, has no
+#: content). This is also exactly the mechanism that produced the
+#: 2026-09-26 false-positive tournament report: n=68 same-day rows (from one
+#: scan run) reported Sharpe 9.6-10.5 and "bh_rejected=True" only because
+#: their row count, not their effective sample (~1), was fed to PSR/DSR/the
+#: t-test.
+_MIN_EFFECTIVE_SAMPLE_FOR_SIGNIFICANCE = 100.0
 
 
 class WeeklyTournamentConfig(BaseModel):
@@ -83,7 +101,24 @@ class WeeklyTournamentConfig(BaseModel):
 
 
 class FamilyResult(BaseModel):
-    """One signal family's in-window performance from forward-ledger or walk-forward backtest."""
+    """One signal family's in-window performance from forward-ledger or walk-forward backtest.
+
+    ``n`` is a row count; ``n_effective`` is the average-uniqueness-weighted
+    effective sample (``family_average_uniqueness_weights``,
+    ``backtest.purged_cv.average_uniqueness``) -- the two are shown side by
+    side deliberately (docs/measured_results.md §6.9/§6.11): a family whose
+    2,672 rows share one label window has ``n=2672`` and ``n_effective=1.00``,
+    and reading the first number as the sample size is exactly the
+    2026-09-26 false-positive tournament bug. ``mean_return`` is the
+    ``n_effective``-weighted mean (see ``weighted_mean_return``), not the
+    plain row mean, for the same reason. ``sharpe`` is the *per-trade*,
+    **not annualized** Sharpe ratio (see ``run_research_tournament`` for
+    why). ``psr``/``dsr`` are computed from ``n_effective`` rather than
+    ``n`` (average uniqueness over overlapping label windows) and are ``None`` --
+    never a number -- whenever ``n_effective`` is below
+    ``_MIN_EFFECTIVE_SAMPLE_FOR_SIGNIFICANCE``; ``notes`` says why in that
+    case.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -94,7 +129,7 @@ class FamilyResult(BaseModel):
     reliable: bool
     evidence_source: str = "forward_ledger"  # "forward_ledger" or "walkforward_backtest"
     mean_return: float | None = None
-    sharpe: float | None = None
+    sharpe: float | None = None  # per-trade, NOT annualized -- see run_research_tournament
     psr: float | None = None
     dsr: float | None = None
     z_score: float | None = None
@@ -219,7 +254,6 @@ def run_research_tournament(
 
     registry_entries = store.list_model_registry_entries()
     hash_map = registry_hash_map(registry_entries)
-    weight_map = average_uniqueness_weights(matured)
 
     by_family: dict[str, list[tuple[LedgerEntry, LedgerLabel]]] = defaultdict(list)
     for e, lbl in matured:
@@ -240,7 +274,12 @@ def run_research_tournament(
     for family in sorted(families_present):
         pairs = by_family.get(family, [])
         n = len(pairs)
-        n_eff = float(sum(weight_map.get(e.entry_id, 1.0) for e, _l in pairs))
+        # Per-family, NOT pooled across families (family_average_uniqueness_weights'
+        # docstring explains why that distinction matters): family A's own
+        # significance must not be diluted by family B's trades on the same
+        # underlying/day.
+        family_weights = family_average_uniqueness_weights(pairs)
+        n_eff = float(sum(family_weights.values()))
         reliable = n >= cfg.min_trades_for_comparison
         protected = family == cfg.protected_signal_family
         notes: list[str] = []
@@ -259,7 +298,11 @@ def run_research_tournament(
         if n > 0:
             # Prefer forward-ledger data when available
             returns = np.array([lbl.realized_selected_pnl for _e, lbl in pairs], dtype=np.float64)
-            mean_return = float(np.mean(returns))
+            # Uniqueness-weighted, not the plain row mean: 2,672 rows sharing
+            # one label window must not move the reported mean 2,672x as much
+            # as one independent observation would (docs/measured_results.md
+            # §6.9/§6.11; see weighted_mean_return's docstring).
+            mean_return = weighted_mean_return(pairs, family_weights)
             p_arr = np.array([e.p_profit for e, _l in pairs], dtype=np.float64)
             y_arr = np.array(
                 [
@@ -281,22 +324,78 @@ def run_research_tournament(
 
         if reliable and n >= 3:
             std = float(np.std(returns, ddof=1))
-            if std > 0.0:
-                t_stat = (
-                    float(mean_return / (std / math.sqrt(n))) if mean_return is not None else 0.0
-                )
-                p_value = float(1.0 - stats.t.cdf(t_stat, df=n - 1))
+            if std > 0.0 and n_eff >= 3.0 and mean_return is not None:
+                # Standard error and degrees of freedom use n_eff, not n: a
+                # t-test's validity comes from the number of *independent*
+                # draws, and row count overstates that whenever labels
+                # overlap (docs/measured_results.md §6.9/§6.11). scipy's t
+                # distribution takes a continuous df, so no rounding is
+                # needed here (contrast the PSR/DSR path below,
+                # which must round because an array's length is an int).
+                t_stat = float(mean_return / (std / math.sqrt(n_eff)))
+                p_value = float(1.0 - stats.t.cdf(t_stat, df=n_eff - 1.0))
                 p_value = min(max(p_value, 1e-12), 1.0 - 1e-12)
                 z_score = float(stats.norm.ppf(1.0 - p_value))
+            elif std > 0.0 and n_eff < 3.0:
+                # n_eff collapses below what a t-test can even use (e.g. the
+                # §6.9 case: 2,672 same-window rows -> n_eff=1.00) -- no
+                # z-/p-value, and this family is excluded from the BH set
+                # below rather than silently defaulted to "not significant"
+                # (which would be a different, also-wrong number).
+                notes.append(
+                    f"n_effective={n_eff:.2f} < 3: kein z-/p-Wert trotz n={n} Zeilen -- "
+                    "Average-Uniqueness-Gewichte kollabieren auf zu wenige unabhaengige "
+                    "Label-Fenster fuer einen t-Test (docs/measured_results.md §6.9/§6.11)."
+                )
             else:
                 p_value = 0.5
                 z_score = 0.0
-            mean_holding = max(1.0, statistics.mean(holding_days(e, lbl) for e, lbl in pairs))
-            periods_per_year = _TRADING_DAYS_PER_YEAR / mean_holding
-            sharpe_val = sharpe(returns, periods_per_year=periods_per_year)
-            psr_val = probabilistic_sharpe_ratio(returns)
-            dsr_val = deflated_sharpe_ratio(returns, max(1, len(families_present)))
-            if not protected:
+
+            if mean_return is not None:
+                # Sharpe: per-trade, deliberately NOT annualized (Master
+                # Spec's "Sharpe" here always meant this ratio, never a
+                # calendar-year one). The tournament's positions are held
+                # 3-14 days and overlap heavily (the whole reason n_eff
+                # exists); scaling by sqrt(any assumed periods-per-year) --
+                # metrics.sharpe's default of sqrt(252), or a per-family
+                # sqrt(252/mean_holding_days) -- manufactures a large
+                # annualized number from a modest per-trade effect precisely
+                # because it pretends these trades tile a calendar year
+                # independently, which the effective-sample computation
+                # above has just shown they do not (docs/measured_results.md
+                # §6.9/§6.11: "a per-trade Sharpe of 0.66 is reported as
+                # 10.49"). Reporting the unannualized per-trade ratio avoids
+                # inventing a trading-frequency assumption this repository
+                # has never measured. The array is re-centered on the
+                # weighted mean_return (a location shift -- std/skew/
+                # kurtosis are unaffected) so Sharpe's implied mean matches
+                # the mean_return actually reported alongside it.
+                returns_for_mean = returns - float(np.mean(returns)) + mean_return
+                sharpe_val = sharpe(returns_for_mean, periods_per_year=1.0)
+
+                # PSR/DSR read the effective sample as T directly. This
+                # previously went through a length-`round(n_eff)` surrogate
+                # array built by quantile interpolation, because these
+                # functions took T only from `returns.shape[0]`; they now
+                # accept `n_effective`. The surrogate was conservative
+                # (measured: +5.4% dispersion at n_eff=100, +105% at n_eff=5,
+                # which lowers the Sharpe and so the PSR) but it distorted
+                # exactly the dispersion the skew/kurtosis correction reads,
+                # and an approximation has no place inside a significance
+                # calculation when an exact parameter will do.
+                # Guarded by the sample floor rather than computed and then
+                # discarded: PSR raises below three observations, and at
+                # n_eff < 100 the answer is withheld anyway (see the notes
+                # block further down). Computing it first only to throw it
+                # away would crash on exactly the same-day families this
+                # whole change exists to catch, where n_eff is 1.00.
+                if n_eff >= _MIN_EFFECTIVE_SAMPLE_FOR_SIGNIFICANCE:
+                    psr_val = probabilistic_sharpe_ratio(returns_for_mean, n_effective=n_eff)
+                    dsr_val = deflated_sharpe_ratio(
+                        returns_for_mean, max(1, len(families_present)), n_effective=n_eff
+                    )
+
+            if not protected and p_value is not None:
                 p_values[family] = p_value
         elif n == 0 and family in wf_by_family:
             # Fallback: use walk-forward results if no forward-ledger data
@@ -328,6 +427,31 @@ def run_research_tournament(
                 )
             elif n == 0 and family not in wf_by_family:
                 notes.append("Keine Forward-Ledger- oder Walk-Forward-Backtest-Daten.")
+
+        # Sample floor for PSR/DSR specifically, applied uniformly regardless
+        # of evidence_source (forward-ledger computed above, or a stored
+        # walk-forward n_effective): "the family's PSR/DSR must not be
+        # presented as numbers at all" below the floor, the same way
+        # backtest/excursion_eval.py returns INSUFFICIENT_SAMPLE instead of a
+        # comparison figure -- a probability statement computed from an
+        # effective sample under _MIN_EFFECTIVE_SAMPLE_FOR_SIGNIFICANCE is
+        # not a weak result, it is not a result (docs/measured_results.md
+        # §6.9).
+        # The note is emitted whenever the floor bites, not only when there
+        # was a value to discard. The forward-ledger branch now declines to
+        # compute PSR/DSR below the floor in the first place, and a silent
+        # `None` would read as "not applicable" rather than "withheld, and
+        # here is the number that withheld it".
+        has_evidence = n > 0 or family in wf_by_family
+        if n_eff < _MIN_EFFECTIVE_SAMPLE_FOR_SIGNIFICANCE and has_evidence:
+            notes.append(
+                f"n_effective={n_eff:.2f} < {_MIN_EFFECTIVE_SAMPLE_FOR_SIGNIFICANCE:.0f}: "
+                "PSR/DSR nicht ausgewiesen (GOVERNANCE.md §6.1 Promotion-Kriterium "
+                "'Effective sample >= 100 distinct outcomes' -- angewendet, bevor statt "
+                "erst bei der Promotion selbst; docs/measured_results.md §6.9/§6.11)."
+            )
+            psr_val = None
+            dsr_val = None
 
         results[family] = FamilyResult(
             signal_family=family,

@@ -3,8 +3,14 @@ protected-baseline visibility, promotion/demotion suggestions."""
 
 from __future__ import annotations
 
+import math
 from datetime import UTC, date, datetime, timedelta
 
+import numpy as np
+import pytest
+from scipy import stats
+
+from turboedge.backtest.significance import probabilistic_sharpe_ratio
 from turboedge.learning.registry import ModelRegistry
 from turboedge.reporting.weekly import WeeklyTournamentConfig, run_research_tournament
 from turboedge.storage.schemas import Category, ModelStatus
@@ -245,7 +251,13 @@ def test_walkforward_fallback_when_no_forward_ledger(store) -> None:
     family_result = families["test_family"]
     assert family_result.evidence_source == "walkforward_backtest"
     assert family_result.mean_return == 0.0025
-    assert family_result.psr == 0.72
+    # n_effective=42.5 is below the 100-effective-sample promotion floor
+    # (GOVERNANCE.md §6.1) that now applies uniformly to PSR/DSR regardless
+    # of evidence_source -- the stored walk-forward psr=0.72 must NOT be
+    # surfaced as a number here, the same as a forward-ledger family below
+    # the floor (see test_psr_dsr_withheld_below_effective_sample_floor).
+    assert family_result.psr is None
+    assert any("n_effective=42.50" in note and "100" in note for note in family_result.notes)
     assert any("Walk-Forward-Backtest" in note for note in family_result.notes)
     assert any("keine automatische Promotion" in note for note in family_result.notes)
 
@@ -379,3 +391,223 @@ def test_backtest_evidence_blocks_promotion(
     promo = promo_by_model["challenger_backtest_only"]
     assert promo.passes_ladder is False
     assert any("backtest_only: failed" in r for r in promo.reasons)
+
+
+def test_same_day_family_with_positive_mean_is_not_manufactured_significant(
+    store, make_ledger_entry, make_ledger_label, record_labeled
+) -> None:
+    """MANDATORY anti-triviality pin: the exact 2026-09-26 false-positive
+    tournament bug (docs/measured_results.md §6.9/§6.11).
+
+    68-ish same-day positions from a single scan run were reported as
+    Benjamini-Hochberg significant with Sharpe 9.6-10.5, purely because the
+    tournament fed PSR/DSR/the t-test a row count (n=68) instead of the
+    effective sample (~1, since every row shares one label window). This
+    builds exactly that shape -- 70 rows, one prediction date, one horizon,
+    a *positive* mean return with real (non-flat) dispersion large enough
+    that the old row-count path calls it significant -- and pins that the
+    new path does not.
+    """
+    _register(store, "tsmom_horizon_norm_v1", "hash-tsmom", "tsmom", ModelStatus.PROTECTED)
+    _register(store, "champion_v1", "hash-champ", "champ_family", ModelStatus.CHAMPION)
+    _register(
+        store,
+        "same_day_v1",
+        "hash-sameday",
+        "same_day_family",
+        ModelStatus.CHALLENGER,
+        trial_id="TR-2026Q3-sameday",
+    )
+
+    pred = datetime(2026, 8, 15, 8, 0, tzinfo=UTC)
+    exit_due = date(2026, 8, 18)
+    n_rows = 70
+    # Alternating, never-flat, always-positive returns (never a constant
+    # series -- see backtest/significance.py's _MIN_RELATIVE_DISPERSION
+    # docstring for why that distinction matters).
+    bids = [5.05, 5.15]
+    for i in range(n_rows):
+        bid = bids[i % 2]
+        record_labeled(
+            entry_overrides=dict(
+                candidate_id=f"sameday-{i}",
+                category=Category.ACTIONABLE,
+                model_hash="hash-sameday",
+                signal_id="same_day_family_v1",
+                prediction_time=pred,
+                exit_due=exit_due,
+                horizon_days=3,
+            ),
+            label_overrides=dict(exit_bid=bid, realized_selected_pnl=bid / 4.86 - 1),
+        )
+
+    cfg = WeeklyTournamentConfig(lookback_days=30, min_trades_for_comparison=10)
+    report = run_research_tournament(store, as_of=_AS_OF, cfg=cfg)
+    families = {f.signal_family: f for f in report.families}
+    result = families["same_day_family"]
+
+    # -- BEFORE: what the old row-count-as-sample-size path reports --
+    returns = np.array([bids[i % 2] / 4.86 - 1 for i in range(n_rows)], dtype=np.float64)
+    old_mean = float(np.mean(returns))
+    old_std = float(np.std(returns, ddof=1))
+    old_t_stat = old_mean / (old_std / math.sqrt(n_rows))
+    old_p_value = float(1.0 - stats.t.cdf(old_t_stat, df=n_rows - 1))
+    old_psr = probabilistic_sharpe_ratio(returns)
+    assert old_p_value < 0.01  # old path: comfortably "significant"
+    assert old_psr > cfg.ladder_min_psr  # old path: comfortably clears the PSR>=0.95 ladder gate
+
+    # -- AFTER: the actual report --
+    assert result.n == n_rows
+    # All 70 rows share one 4-day label window -> exactly one independent
+    # observation, regardless of n.
+    assert result.n_effective == pytest.approx(1.0, abs=1e-6)
+    assert result.psr is None
+    assert result.dsr is None
+    assert result.z_score is None
+    assert result.p_value is None
+    assert result.bh_rejected is None
+    assert any("n_effective=" in note for note in result.notes)
+
+    promo = next(p for p in report.promotions if p.challenger_model_id == "same_day_v1")
+    assert promo.passes_ladder is False
+    assert any("psr>=threshold: failed" in r for r in promo.reasons)
+    assert any("dsr>=threshold: failed" in r for r in promo.reasons)
+    assert any("bh_rejected: failed" in r for r in promo.reasons)
+
+
+def test_psr_dsr_withheld_below_effective_sample_floor(
+    store, make_ledger_entry, make_ledger_label, record_labeled
+) -> None:
+    """A family with a *genuinely* well-separated, non-degenerate n_effective
+    that is still below the 100-effective-sample promotion floor
+    (GOVERNANCE.md §6.1) must show PSR/DSR as ``None`` with a stated reason
+    -- distinct from the anti-triviality case above (which collapses to
+    n_effective~1): here n_effective is meaningfully large (~15) but simply
+    not enough to clear the floor."""
+    _register(store, "tsmom_horizon_norm_v1", "hash-tsmom", "tsmom", ModelStatus.PROTECTED)
+    n_rows = 15
+    bids = [5.00, 5.10]
+    for i in range(n_rows):
+        pred_date = date(2026, 1, 1) + timedelta(days=5 * i)
+        pred = datetime(pred_date.year, pred_date.month, pred_date.day, 8, 0, tzinfo=UTC)
+        exit_due = pred_date + timedelta(days=2)
+        record_labeled(
+            entry_overrides=dict(
+                candidate_id=f"floor-{i}",
+                category=Category.ACTIONABLE,
+                model_hash="hash-floor",
+                signal_id="floor_family_v1",
+                prediction_time=pred,
+                exit_due=exit_due,
+                horizon_days=2,
+            ),
+            label_overrides=dict(
+                exit_bid=bids[i % 2], realized_selected_pnl=bids[i % 2] / 4.86 - 1
+            ),
+        )
+    as_of = datetime(2026, 4, 1, 6, 0, tzinfo=UTC)
+    cfg = WeeklyTournamentConfig(lookback_days=120, min_trades_for_comparison=10)
+    report = run_research_tournament(store, as_of=as_of, cfg=cfg)
+    families = {f.signal_family: f for f in report.families}
+    result = families["floor_family"]
+
+    assert result.n == n_rows
+    # Well-separated windows -> effective sample ~= row count, i.e. this is
+    # a real, non-degenerate n_effective -- just below the floor.
+    assert result.n_effective == pytest.approx(float(n_rows), rel=1e-6)
+    assert result.n_effective < 100.0
+    assert result.psr is None
+    assert result.dsr is None
+    assert any(
+        "n_effective=" in note and "100" in note and "PSR/DSR" in note for note in result.notes
+    )
+
+
+def test_psr_dsr_computed_once_effective_sample_clears_the_floor(
+    store, make_ledger_entry, make_ledger_label, record_labeled
+) -> None:
+    """Positive control for the floor: once n_effective genuinely clears
+    GOVERNANCE.md §6.1's 100-distinct-outcomes bar, PSR/DSR are computed
+    (not withheld), sourced from the effective sample rather than the row
+    count (which happen to coincide here, since every window is
+    well-separated)."""
+    n_rows = 110
+    bids = [5.00, 5.05]
+    for i in range(n_rows):
+        pred_date = date(2026, 1, 1) + timedelta(days=2 * i)
+        pred = datetime(pred_date.year, pred_date.month, pred_date.day, 8, 0, tzinfo=UTC)
+        exit_due = pred_date + timedelta(days=1)
+        record_labeled(
+            entry_overrides=dict(
+                candidate_id=f"indep-{i}",
+                category=Category.ACTIONABLE,
+                model_hash="hash-indep",
+                signal_id="indep_family_v1",
+                prediction_time=pred,
+                exit_due=exit_due,
+                horizon_days=1,
+            ),
+            label_overrides=dict(
+                exit_bid=bids[i % 2], realized_selected_pnl=bids[i % 2] / 4.86 - 1
+            ),
+        )
+    as_of = datetime(2026, 1, 1, 6, 0, tzinfo=UTC) + timedelta(days=2 * n_rows + 10)
+    cfg = WeeklyTournamentConfig(lookback_days=2 * n_rows + 20, min_trades_for_comparison=10)
+    report = run_research_tournament(store, as_of=as_of, cfg=cfg)
+    families = {f.signal_family: f for f in report.families}
+    result = families["indep_family"]
+
+    assert result.n == n_rows
+    assert result.n_effective == pytest.approx(float(n_rows), rel=1e-6)
+    assert result.psr is not None
+    assert result.dsr is not None
+    assert 0.0 <= result.psr <= 1.0
+    assert 0.0 <= result.dsr <= 1.0
+
+
+def test_sharpe_is_per_trade_and_not_annualized(
+    store, make_ledger_entry, make_ledger_label, record_labeled
+) -> None:
+    """docs/measured_results.md §6.9/§6.11: annualizing per-trade returns
+    held 3-14 days manufactures a large number from a modest effect (a
+    per-trade Sharpe of 0.66 was reported as 10.49, a sqrt(252)x inflation).
+    ``FamilyResult.sharpe`` must be the plain per-trade ratio, not scaled by
+    any periods-per-year assumption.
+    """
+    _register(store, "tsmom_horizon_norm_v1", "hash-tsmom", "tsmom", ModelStatus.PROTECTED)
+    bids = [5.00, 5.30, 4.90, 5.10, 5.20, 4.95, 5.05, 5.25, 4.85, 5.15]
+    for i, bid in enumerate(bids):
+        # 5-day spacing with a 3-day horizon -> non-overlapping windows, so
+        # weighted mean == plain mean and this admits an exact comparison.
+        pred_date = date(2026, 8, 1) + timedelta(days=5 * i)
+        pred = datetime(pred_date.year, pred_date.month, pred_date.day, 8, 0, tzinfo=UTC)
+        exit_due = pred_date + timedelta(days=3)
+        record_labeled(
+            entry_overrides=dict(
+                candidate_id=f"sh-{i}",
+                category=Category.ACTIONABLE,
+                model_hash="hash-sh",
+                signal_id="sharpe_family_v1",
+                prediction_time=pred,
+                exit_due=exit_due,
+                horizon_days=3,
+            ),
+            label_overrides=dict(exit_bid=bid, realized_selected_pnl=bid / 4.86 - 1),
+        )
+    as_of = datetime(2026, 10, 1, 6, 0, tzinfo=UTC)
+    report = run_research_tournament(
+        store,
+        as_of=as_of,
+        cfg=WeeklyTournamentConfig(lookback_days=70, min_trades_for_comparison=10),
+    )
+    families = {f.signal_family: f for f in report.families}
+    result = families["sharpe_family"]
+
+    returns = np.array([bid / 4.86 - 1 for bid in bids], dtype=np.float64)
+    plain_sharpe = float(np.mean(returns) / np.std(returns, ddof=1))
+    assert result.sharpe is not None
+    assert result.sharpe == pytest.approx(plain_sharpe, abs=1e-6)
+    # The old sqrt(252)-annualized (or sqrt(252/holding_days)-annualized)
+    # convention would put this at ~9-16x plain_sharpe; a bound well below
+    # that pins the regression.
+    assert abs(result.sharpe) < 5.0

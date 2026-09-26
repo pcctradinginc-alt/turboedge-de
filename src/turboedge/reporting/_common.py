@@ -8,6 +8,13 @@ apply it identically (Master Spec §9.3, §27.4; CLAUDE.md rules 8/25/26):
 - Wilson score confidence intervals for a success rate.
 - Average-uniqueness sample weights for overlapping forward-ledger labels
   (Lopez de Prado-style concurrency discount), grouped by underlying.
+- Per-family average-uniqueness weights/effective-sample and a
+  uniqueness-weighted mean return (``family_average_uniqueness_weights``,
+  ``weighted_mean_return``), and a way to hand that effective sample to
+  ``backtest.significance``'s PSR/DSR, which derive their observation count
+  those functions' docstrings; this is the fix for
+  docs/measured_results.md §6.9/§6.11's "the tournament still computes PSR
+  and DSR from row counts rather than effective sample size".
 - Empirical Expected Shortfall.
 - Signal-family resolution for a ``LedgerEntry`` (the entry itself only
   carries ``signal_id``/``model_hash``; the family is looked up via the
@@ -21,7 +28,7 @@ from __future__ import annotations
 import math
 import re
 from collections import defaultdict
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
@@ -29,6 +36,7 @@ import numpy as np
 import numpy.typing as npt
 from scipy import stats
 
+from turboedge.backtest.purged_cv import average_uniqueness
 from turboedge.storage.schemas import LedgerEntry, LedgerLabel, ModelRegistryEntry
 
 _SIGNAL_ID_VERSION_RE = re.compile(r"^(?P<family>.+)_v\d+$")
@@ -115,6 +123,86 @@ def average_uniqueness_weights(
                 continue
             weights[entry_id] = float(np.mean([1.0 / concurrency[d] for d in days]))
     return weights
+
+
+def family_average_uniqueness_weights(
+    pairs: Sequence[tuple[LedgerEntry, LedgerLabel]],
+) -> dict[str, float]:
+    """Average-uniqueness weight per ``entry_id``, scoped to **one signal
+    family's own** ``(entry, label)`` pairs (Lopez de Prado ch. 4, via the
+    canonical :func:`turboedge.backtest.purged_cv.average_uniqueness`).
+
+    This is deliberately *not* :func:`average_uniqueness_weights` restricted
+    to a family after the fact: that function pools *every* family's entries
+    together before computing concurrency, so family A's weights would be
+    diluted by family B's trades on the same underlying/day even though A's
+    own Sharpe/PSR/DSR only care whether A's *own* observations are mutually
+    independent. Whether family A's result is statistically meaningful does
+    not depend on how many unrelated strategies also scanned that day.
+
+    Grouped by ``underlying`` first, matching ``average_uniqueness_weights``:
+    a DAX position and an NDX position opened the same day do not share a
+    label window and are independent bets; only overlapping windows on the
+    *same* underlying reduce each other's weight. Within each underlying
+    group, ``prediction_time.date()``/``exit_due`` become integer day
+    indices relative to the family's own earliest ``prediction_time`` (a
+    pure index shift -- it does not change which windows overlap, only their
+    numbering) and are handed to ``purged_cv.average_uniqueness``.
+
+    ``sum(result.values())`` is this family's effective sample size
+    (docs/measured_results.md §6.9/§6.11, Master Spec §9.3/§28) -- what
+    `reporting/weekly.py` reports as ``FamilyResult.n_effective`` and what
+    must be used in place of ``len(returns)``/``n`` when judging whether a
+    family's Sharpe/PSR/DSR mean anything.
+    """
+    weights: dict[str, float] = {}
+    if not pairs:
+        return weights
+    earliest = min(entry.prediction_time.date() for entry, _label in pairs)
+    by_underlying: dict[str, list[tuple[str, int, int]]] = defaultdict(list)
+    for entry, _label in pairs:
+        t0 = (entry.prediction_time.date() - earliest).days
+        t1 = (entry.exit_due - earliest).days
+        by_underlying[entry.underlying].append((entry.entry_id, t0, t1))
+    for spans in by_underlying.values():
+        entry_ids = [s[0] for s in spans]
+        t0_arr = np.array([s[1] for s in spans], dtype=np.int64)
+        t1_arr = np.array([s[2] for s in spans], dtype=np.int64)
+        for entry_id, weight in zip(entry_ids, average_uniqueness(t0_arr, t1_arr), strict=True):
+            weights[entry_id] = float(weight)
+    return weights
+
+
+def weighted_mean_return(
+    pairs: Sequence[tuple[LedgerEntry, LedgerLabel]],
+    weights: Mapping[str, float],
+) -> float | None:
+    """Average-uniqueness-weighted mean of ``realized_selected_pnl``.
+
+    The *plain* arithmetic mean silently overweights concurrent, non-
+    independent entries in exact proportion to how many of them share a
+    label window -- the same distortion ``n_effective`` corrects for the
+    *count*, applied here to the *point estimate*: 2,672 same-window rows
+    should not move a family's reported mean return 2,672 times as much as
+    one independent observation would (docs/measured_results.md §6.9/§6.11).
+    Weighting each entry's return by its own ``family_average_uniqueness_weights``
+    weight before averaging is the same correction.
+
+    ``None`` for an empty ``pairs`` or an all-zero-weight edge case --
+    never silently defaulted to ``0.0`` (CLAUDE.md rule 29).
+    """
+    numerator = 0.0
+    denominator = 0.0
+    for entry, label in pairs:
+        r = label.realized_selected_pnl
+        if r is None:
+            continue
+        w = weights.get(entry.entry_id, 1.0)
+        numerator += w * r
+        denominator += w
+    if denominator <= 0.0:
+        return None
+    return numerator / denominator
 
 
 def expected_shortfall(returns: npt.NDArray[np.float64], alpha: float = 0.05) -> float | None:
@@ -252,6 +340,7 @@ __all__ = [
     "WilsonInterval",
     "average_uniqueness_weights",
     "expected_shortfall",
+    "family_average_uniqueness_weights",
     "financing_drag_pct",
     "holding_days",
     "last_day_of_month",
@@ -259,5 +348,6 @@ __all__ = [
     "quarter_label",
     "registry_hash_map",
     "signal_family_for",
+    "weighted_mean_return",
     "wilson_interval",
 ]

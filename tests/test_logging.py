@@ -114,3 +114,35 @@ def test_configure_logging_with_redaction_enabled_does_not_raise() -> None:
     configure_logging("json")
     logger = structlog.get_logger("test")
     logger.info("scan_candidate", isin="DE000ABC1234", bid=4.80, ask=4.86)
+
+
+def test_logging_survives_the_stream_it_was_configured_with_being_closed() -> None:
+    """A closed capture buffer must not poison logging for the whole process.
+
+    `typer.testing.CliRunner` replaces `sys.stderr` with a buffer and closes it
+    when the invocation ends. structlog's stock `PrintLoggerFactory` keeps the
+    stream object it was given, so the next log call from anywhere -- an
+    `init_schema()` migration in an unrelated test, for instance -- raised
+    "I/O operation on closed file". The suite only stayed green because
+    collection order kept the affected tests apart, which is not a property to
+    rely on.
+    """
+    import io
+    import sys
+
+    import structlog
+
+    original = sys.stderr
+    buffer = io.StringIO()
+    try:
+        sys.stderr = buffer
+        configure_logging("json")
+        structlog.get_logger().info("while_captured")
+        assert "while_captured" in buffer.getvalue()
+    finally:
+        sys.stderr = original
+        buffer.close()
+
+    # The buffer is now closed and `configure_logging` has NOT been called
+    # again -- exactly the state a finished CliRunner invocation leaves behind.
+    structlog.get_logger().info("after_the_buffer_closed")

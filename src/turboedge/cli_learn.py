@@ -44,7 +44,8 @@ from turboedge.learning.ledger import ForwardLedger
 from turboedge.learning.posterior import StrategyPosterior
 from turboedge.learning.registry import ModelRegistry
 from turboedge.learning.trials import backfill_w9_trials
-from turboedge.meta import IllegalTransition, ResearchQueue, render_research_queue
+from turboedge.meta import render_research_queue
+from turboedge.meta.research_queue import IllegalTransition, ResearchQueue
 from turboedge.models.baselines import (
     RegimeConditionalEmpiricalModel,
     RegularizedLinearLocationModel,

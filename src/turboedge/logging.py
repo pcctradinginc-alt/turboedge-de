@@ -91,6 +91,21 @@ def _resolve_format(fmt: LogFormat | None) -> LogFormat:
     return "console"
 
 
+class _LiveStderrLoggerFactory:
+    """Bind each logger to the *current* `sys.stderr`, not a captured one.
+
+    structlog's own `PrintLoggerFactory` keeps the stream object it is
+    constructed with. That is fine for a single CLI process, and wrong for
+    anything that replaces `sys.stderr` after configuration -- a test runner
+    capturing output, or any embedding. Resolving it per call costs one thin
+    object per log event and removes a whole class of "I/O operation on closed
+    file" failures that only show up in some test orderings.
+    """
+
+    def __call__(self, *args: Any) -> structlog.PrintLogger:
+        return structlog.PrintLogger(file=sys.stderr)
+
+
 def configure_logging(fmt: LogFormat | None = None, *, level: str | None = None) -> None:
     """Configure structlog (and stdlib logging as its backend) for the process.
 
@@ -128,7 +143,20 @@ def configure_logging(fmt: LogFormat | None = None, *, level: str | None = None)
     structlog.configure(
         processors=[*shared_processors, renderer],
         wrapper_class=structlog.make_filtering_bound_logger(log_level),
-        logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
+        logger_factory=_LiveStderrLoggerFactory(),
+        # `_LiveStderrLoggerFactory` rather than
+        # `structlog.PrintLoggerFactory(file=sys.stderr)`: the stock factory
+        # stores the `sys.stderr` *object* handed to it here, so it keeps
+        # writing to whatever stream was live when `configure_logging()` last
+        # ran. `cache_logger_on_first_use=False` below fixes only the other
+        # half of that problem (per-logger caching), which is why the closed
+        # stream survived it: under `typer.testing.CliRunner`, `sys.stderr` is
+        # a buffer that is closed when the invocation ends, and the next log
+        # call from anywhere in the process -- an `init_schema()` migration in
+        # an unrelated test, say -- then raised "I/O operation on closed
+        # file". The suite only stayed green because collection order happened
+        # to keep those tests apart.
+        #
         # `cache_logger_on_first_use=True` would freeze each module-level
         # logger's underlying PrintLogger -- and the `sys.stderr` object
         # reference baked into it -- at whatever it was the FIRST time that

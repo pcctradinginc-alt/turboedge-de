@@ -333,11 +333,30 @@ of its own wave. No conclusion in `docs/measured_results.md` changes as a
 result — every W9, W12-A and W12-D cell failed against the *smaller*
 denominator, and a larger one only makes them fail harder.
 
-The one place it does matter is the Phase D distributional baselines, the
-only measured improvement in the repository (CRPS better in 20/20 cells per
-family). Their deflation used `n_trials=60`. Against the cumulative 180 the
-penalty is larger, and **their DSR has not been recomputed on that basis**.
-Until it is, "better in 20/20 cells" should be read as a within-wave result.
+The one place it matters is the Phase D distributional baselines, the only
+measured improvement in the repository (CRPS better in 20/20 cells per
+family).
+
+**Correction (2026-09-26): this section previously said their deflation used
+`n_trials=60`. That was wrong. No deflation was applied to Phase D at all.**
+§6 of `docs/measured_results.md` reports win counts and mean relative CRPS
+improvements; it contains no p-values, no bootstrap, no Benjamini-Hochberg
+and no DSR. "Better in 20/20 cells" is a win count, not a significance test,
+and it was never corrected for the 180-cell research universe or for anything
+else.
+
+The win count is also weaker evidence than it looks. The 20 cells are 4
+underlyings x 5 horizons on overlapping windows; DAX and NDX are strongly
+correlated and the five horizons share bars, so they are nowhere near 20
+independent trials. A sign test treating them as independent would give
+p ~ 1e-6; at a plausible 2-4 effectively independent cells it gives p between
+0.06 and 0.25. Neither number is a measurement -- they bracket how much the
+"20/20" framing can carry.
+
+Until Phase D is re-measured with per-cell significance against the
+cumulative universe, **"better in 20/20 cells" is a consistent directional
+observation, not a deflated result**, and the models stay out of the live
+ensemble on those grounds as well as on the missing net-EV test.
 
 **Required from here:** deflation denominators are cumulative across all
 cells measured on overlapping data in the same quarter, not per wave. A new

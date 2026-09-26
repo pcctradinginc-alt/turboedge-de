@@ -1305,3 +1305,99 @@ best one in this repository. It says the claim "better in 20/20 cells" carried
 more weight than the evidence supports, and that the next step for these
 models is a proper effective-sample treatment — not promotion, and not a
 downstream EV test built on top of an unestablished forecast improvement.
+
+---
+
+## 6.12 Phase D with an honest dependence treatment (2026-09-26)
+
+§6.11 used a sign test over the 20 cells and flagged its own weakness: the
+cells are not independent. This replaces it.
+
+### Reproducibility record (what §6 failed to keep)
+
+`min_train=750`, `step=21`, `embargo=horizon_days`. Underlyings DAX, NDX,
+EURUSD, XAU via `adapters/fallback_prices.py::YFinancePriceAdapter`,
+`lookback_days=4000`, fetched 2026-09-26. Bars per underlying after the
+adapter's OHLC-consistency filter: DAX 3,880, NDX 3,881, EURUSD 3,882 (108
+rows skipped as inconsistent), XAU 3,309. Horizons 3/5/7/10/14. Block
+bootstrap seed 20260926, 20,000 resamples, block length 21. Scripts are
+throwaway; the numbers below are what they produced.
+
+### Within-cell dependence: the overlap tax
+
+Average uniqueness (`backtest/purged_cv.py::average_uniqueness`) on each
+cell's own label windows:
+
+| horizon | observations/cell | effective | share |
+|---|---|---|---|
+| 3d | ~3,240 | ~1,160 | 36% |
+| 5d | ~3,240 | ~780 | 24% |
+| 7d | ~3,240 | ~585 | 18% |
+| 10d | ~3,235 | ~425 | 13% |
+| 14d | ~3,230 | ~312 | 10% |
+
+**Across all 20 cells: 60,774 observations are worth 12,324 independent
+ones.** The h-day forward windows overlap, and at 14 days nine of every ten
+observations are redundant. This tax alone was never reported in §6.
+
+### Cross-cell dependence: moving-block bootstrap
+
+The 20 cells are 4 underlyings x 5 horizons on shared bars. A moving-block
+bootstrap over **dates** (block length 21 >= the longest horizon) preserves
+serial dependence within a cell and cross-sectional dependence between cells
+at once, which is exactly what a per-cell sign test discards. Per date, the
+CRPS difference is averaged across cells; the series of daily averages is
+resampled in blocks under a centred null.
+
+**Absolute** CRPS differences, not relative ones: `(a-b)/b` per observation is
+dominated by observations where the null's CRPS is tiny, and then measures
+those days rather than the model. A first run of this analysis made that
+mistake and reported all three models as *worse* (+0.71%, +1.06%, +3.79%),
+contradicting §6.11 — the contradiction is what exposed it.
+
+| family | mean ΔCRPS | cells won | sign-test p (§6.11) | **block-bootstrap p** |
+|---|---|---|---|---|
+| regime_conditional | -1.40% | 18/20 | 4.02e-04 | **0.0135** |
+| regularized_linear | -1.54% | 15/20 | 4.14e-02 | **0.0142** |
+| robust_location_scale | -0.78% | 14/20 | 1.15e-01 | **0.1050** |
+
+Stable across seeds (0.0123-0.0138, 0.0138-0.0144, 0.1035-0.1080).
+
+**The sign test overstated significance by a factor of ~35** for
+`regime_conditional` (4.02e-04 vs 0.0135). That factor is the price of
+pretending 20 correlated cells are 20 independent trials.
+
+### Deflation
+
+| deflated against | survivors at α=0.10 |
+|---|---|
+| 3 hypotheses (own wave) | `regime_conditional`, `regularized_linear` |
+| **180 (cumulative 2026Q3, GOVERNANCE.md §11.2)** | **none** — rank-1 threshold is 5.56e-04, the best p is 0.0135 |
+
+### Verdict
+
+**DO NOT PROMOTE.** But the finding is more nuanced than §6.11's crude
+bracket suggested, and that bracket should be read as superseded.
+
+`regime_conditional` and `regularized_linear` produce a CRPS improvement that
+**is** statistically real within their own wave under a dependence-respecting
+test — p ≈ 0.014, not the 0.125-0.50 range §6.11 guessed at from an assumed
+effective cell count. That guess was too pessimistic; this measurement
+replaces it.
+
+What kills them is the cumulative research universe, not the dependence
+structure: 180 cells have been tested on overlapping data this quarter, and
+at that denominator a p of 0.0135 is an order of magnitude short.
+
+Two things follow. First, these are the best-supported models in the
+repository and the only ones whose improvement survives its own wave —
+`regime_conditional` should be the first candidate if a future quarter opens
+with budget for a properly pre-registered, narrow test rather than a sweep.
+Second, the 180-cell denominator is the binding constraint on everything now,
+which is an argument for fewer and more targeted experiments rather than
+more.
+
+The economic question (§6.10) remains separate and unanswered: a real
+distributional improvement of 1.4% still says nothing about net EV after
+turbo costs, and §6.10 shows the EV stage amplifies forecast differences
+enough that this cannot be assumed either way.

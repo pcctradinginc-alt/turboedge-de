@@ -76,6 +76,14 @@ class _RowSpec:
             "spread_pct": 0.001,
         }
     )
+    # Entry-time forecast/gate columns added to FEATURE_NAMES alongside
+    # feature_snapshot: overridable per-row (default matching the old
+    # hardcoded _make_entry literals) so tests can exercise column order
+    # and NULL-handling for these specifically.
+    predicted_return: float = 0.0
+    p_profit: float = 0.5
+    p_ko: float = 0.05
+    uncertainty: float = 0.02
     label: bool = True
     exit_reason: ExitReason = ExitReason.HORIZON
     ambiguous_path: bool = False
@@ -117,12 +125,12 @@ def _make_entry(idx: int, spec: _RowSpec, base_date: date) -> LedgerEntry:
         barrier_entry=spec.barrier_entry,
         ratio=spec.ratio,
         fx=spec.fx,
-        predicted_return=0.0,
-        p_profit=0.5,
-        p_ko=0.05,
+        predicted_return=spec.predicted_return,
+        p_profit=spec.p_profit,
+        p_ko=spec.p_ko,
         expected_shortfall=-0.1,
         lcb_ev=0.0,
-        uncertainty=0.02,
+        uncertainty=spec.uncertainty,
         shrinkage_intensity=0.5,
         is_shadow=spec.is_shadow,
         shadow_stratum=None,
@@ -303,6 +311,54 @@ def test_t0_sorted_ascending_regardless_of_insertion_order(store: Store) -> None
     assert ds.t0.tolist() == [0, 10, 20]
 
 
+def test_new_entry_time_features_reach_matrix_in_column_order() -> None:
+    """p_ko/predicted_return/p_profit/uncertainty must land at exactly their
+    :data:`FEATURE_NAMES` index, not be dropped, reordered, or conflated with
+    each other -- the whole point of the fix is that these four specific
+    columns reach ``x``.
+    """
+    assert FEATURE_NAMES[-4:] == ("p_ko", "predicted_return", "p_profit", "uncertainty")
+
+    spec = _RowSpec(
+        day_offset=0, p_ko=0.37, predicted_return=0.021, p_profit=0.64, uncertainty=0.09
+    )
+    entry = _make_entry(0, spec, date(2026, 1, 1))
+
+    row = excursion_eval._row_features(entry)
+
+    assert row.shape == (len(FEATURE_NAMES),)
+    assert row[FEATURE_NAMES.index("p_ko")] == pytest.approx(0.37)
+    assert row[FEATURE_NAMES.index("predicted_return")] == pytest.approx(0.021)
+    assert row[FEATURE_NAMES.index("p_profit")] == pytest.approx(0.64)
+    assert row[FEATURE_NAMES.index("uncertainty")] == pytest.approx(0.09)
+
+
+def test_null_new_feature_counted_in_dropped_rows_not_imputed(store: Store) -> None:
+    """A non-finite value in one of the new columns must be dropped
+    (``null_feature``), never silently imputed (Master Spec rule 29).
+
+    ``predicted_return`` is a plain, unconstrained ``float`` on
+    ``LedgerEntry`` (unlike ``p_ko``/``p_profit``, which are ``UnitFloat``,
+    or ``uncertainty``, which has ``Field(ge=0)`` -- both reject ``NaN``
+    via their own range validators before a row could ever reach this far).
+    It is therefore the one new column that can carry a non-finite value
+    into ``_row_features`` if the ``DOUBLE NOT NULL`` database constraint
+    were ever violated, and this test exercises exactly that path.
+    """
+    specs = [
+        _RowSpec(day_offset=0),
+        _RowSpec(day_offset=1, predicted_return=float("nan")),
+        _RowSpec(day_offset=2),
+    ]
+    _populate(store, specs)
+
+    ds = build_excursion_dataset(store, as_of=_FAR_FUTURE)
+
+    assert ds.dropped_rows["null_feature"] == 1
+    assert ds.x.shape[0] == 2
+    assert np.all(np.isfinite(ds.x))
+
+
 # --------------------------------------------------------------------------
 # Sample-size gate
 # --------------------------------------------------------------------------
@@ -338,6 +394,13 @@ def test_insufficient_sample_on_one_distinct_date(store: Store) -> None:
     assert any("effective_sample" in r for r in result.verdict_reasons)
     assert any("n_distinct_dates" in r for r in result.verdict_reasons)
 
+    # Same-day dataset -> effective_sample collapses to ~1.0 (average
+    # uniqueness) -> feature_sample_ratio is necessarily far past the thin
+    # bar, and that must show up in verdict_reasons, not just the field.
+    expected_ratio = len(FEATURE_NAMES) / ds.effective_sample
+    assert result.feature_sample_ratio == pytest.approx(expected_ratio)
+    assert any("feature_sample_ratio" in r for r in result.verdict_reasons)
+
 
 def test_multi_date_dataset_produces_a_real_comparison(store: Store) -> None:
     specs = _signal_specs(200, seed=5, mae_mode="signal", mfe_mode="signal")
@@ -361,6 +424,10 @@ def test_multi_date_dataset_produces_a_real_comparison(store: Store) -> None:
         assert 0.0 <= target_result.coverage_conditional <= 1.0
     assert result.selective_abstention  # non-empty: 0.05 is in DEFAULT_QUANTILES
 
+    expected_ratio = len(FEATURE_NAMES) / ds.effective_sample
+    assert result.feature_sample_ratio == pytest.approx(expected_ratio)
+    assert np.isfinite(result.feature_sample_ratio)
+
 
 # --------------------------------------------------------------------------
 # Average-uniqueness weights reach both models
@@ -369,7 +436,12 @@ def test_multi_date_dataset_produces_a_real_comparison(store: Store) -> None:
 
 def test_uniqueness_weights_applied_to_both_models(monkeypatch: pytest.MonkeyPatch) -> None:
     rng = np.random.default_rng(7)
-    n = 100
+    # n=150/train=130 (not the old 100/80): ConditionalExcursionModel's own
+    # per-tau sample floor is (n_features + 1) * 10 = 120 with 11 features
+    # (up from 80 at 7), so the train split must clear that or fitting
+    # raises and the fold is silently dropped by `_evaluate_target`'s
+    # try/except, leaving nothing recorded.
+    n = 150
     x = rng.normal(size=(n, len(FEATURE_NAMES)))
     t0 = np.arange(n, dtype=np.int64)
     t1 = t0 + 3  # 1-day spacing, 4-day windows -> genuine overlap, weights << 1
@@ -392,8 +464,8 @@ def test_uniqueness_weights_applied_to_both_models(monkeypatch: pytest.MonkeyPat
         underlying=None,
         as_of=_FAR_FUTURE,
     )
-    train_idx = np.arange(0, 80, dtype=np.int64)
-    test_idx = np.arange(80, 100, dtype=np.int64)
+    train_idx = np.arange(0, 130, dtype=np.int64)
+    test_idx = np.arange(130, 150, dtype=np.int64)
 
     recorded: dict[str, list[np.ndarray]] = {"null": [], "conditional": []}
 

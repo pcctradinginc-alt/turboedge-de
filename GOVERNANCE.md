@@ -353,12 +353,19 @@ p ~ 1e-6; at a plausible 2-4 effectively independent cells it gives p between
 0.06 and 0.25. Neither number is a measurement -- they bracket how much the
 "20/20" framing can carry.
 
-**Re-measured 2026-09-26 — see `docs/measured_results.md` §6.11.** With §6's
-own documented parameters the result is 18/20, 15/20 and 14/20, not 20/20, at
-roughly half the effect size. Treating the 20 cells as independent, only
-`regime_conditional` survives BH against the cumulative 180 (p=4.02e-04 vs a
-5.6e-04 threshold). At a plausible 2-4 effectively independent cells, nothing
-survives any deflation.
+**Re-measured 2026-09-26 — see `docs/measured_results.md` §6.11 and §6.12.**
+With §6's own documented parameters the result is 18/20, 15/20 and 14/20, not
+20/20, at roughly half the effect size.
+
+Under a moving-block bootstrap over dates (§6.12), which respects both the
+overlapping label windows within a cell and the correlation between cells,
+`regime_conditional` and `regularized_linear` reach p ≈ 0.014 — a real
+improvement **within their own wave**, and a factor ~35 weaker than the sign
+test claimed. Against the cumulative 180-cell denominator, nothing survives:
+the rank-1 BH threshold is 5.56e-04.
+
+Also measured there: 60,774 walk-forward observations across the 20 cells are
+worth **12,324** independent ones. At h=14d, nine in ten are redundant.
 
 **"Better in 20/20 cells" is therefore a directional observation, not a
 deflated result**, and the models stay out of the live ensemble on those

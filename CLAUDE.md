@@ -56,9 +56,17 @@ Konkretisierungen (z.B. Anpassungsbudget, Ruin-Grenzen) stehen versioniert in GO
 **State of the only positive result** (re-measured 2026-09-26): the Phase D
 distributional baselines were reported as improving CRPS in 20/20 cells. On
 re-run with §6's own parameters it is 18/20, 15/20 and 14/20 at about half the
-effect size, and **nothing survives deflation once the 20 correlated cells are
-not counted as 20 independent trials** (`docs/measured_results.md` §6.11).
-Separately, no downstream turbo net-EV test has been run. A better
+effect size (`docs/measured_results.md` §6.11). Under a block bootstrap that
+respects both the overlapping label windows and the cross-cell correlation
+(§6.12), `regime_conditional` and `regularized_linear` reach p ≈ 0.014 — real
+**within their own wave**, but nothing survives the cumulative 180-cell
+denominator, whose rank-1 BH threshold is 5.56e-04.
+
+`regime_conditional` is therefore the best-supported model here and the first
+candidate for a narrow, pre-registered test in a quarter with budget — not a
+promotion. Separately, no downstream turbo net-EV test has been run, and
+§6.10 shows the EV stage amplifies forecast differences enough that its
+outcome cannot be assumed either way. A better
 predicted return distribution is not an economic edge until the same
 historical decisions have been pushed through the full payoff / KO / cost
 machine against the null. Until that test exists, these models stay out of

@@ -67,16 +67,48 @@ __all__ = [
 
 #: Entry-time features fed to both excursion models.
 #:
-#: Deliberately NOT the whole entry-time column list ``MAEMFE_CONTRACT.md``'s
-#: Data section names as verified/available (``predicted_return``, ``p_ko``,
-#: ``p_profit``, ``uncertainty``, ``lcb_ev``, ``ratio``, ``horizon_days``,
-#: ...) -- only what the contract's "What to build" section actually asks
-#: for: the five ``feature_snapshot`` keys, a derived barrier-distance
-#: feature, and direction. Keeping this list short also keeps
-#: ``ConditionalExcursionModel``'s own per-tau sample floor
-#: (``(n_features + 1) * 10``) low, which matters a great deal on a
-#: research question the codebase's own track record says will usually
-#: fail the sample-size gate before it ever reaches a model comparison.
+#: Extends the original seven-feature list (the five ``feature_snapshot``
+#: keys, a derived barrier-distance feature, and direction) with four more
+#: legitimate entry-time ``forward_ledger`` columns: ``p_ko``,
+#: ``predicted_return``, ``p_profit`` and ``uncertainty``. These were
+#: previously withheld on the theory that only ``MAEMFE_CONTRACT.md``'s
+#: "What to build" section's named inputs belonged here -- but withholding
+#: them biased the research question toward a false negative rather than a
+#: clean one (``docs/measured_results.md`` Sec 6.9): ``p_ko`` in particular
+#: is the pipeline's own estimate of adverse-path probability, which is
+#: close to a direct prior on MAE -- exactly the quantity this module asks
+#: a model to predict. Concluding "entry-time features cannot predict MAE"
+#: while withholding the pipeline's own adverse-path estimate would not
+#: have been an honest negative result, it would have been an uninformative
+#: one. All four are ``DOUBLE NOT NULL`` in ``forward_ledger``
+#: (``storage/duckdb.py``'s schema) and measured 0/2,672 NULL in the real
+#: labelled database at the time of this change, so adding them cannot
+#: mass-drop rows the way a genuinely-nullable column could.
+#:
+#: ``lcb_ev`` was considered and deliberately left OUT. It is the
+#: pipeline's post-shrinkage, post-pessimism lower confidence bound on EV
+#: (``ranking/ev.py::lower_confidence_bound``, fed by ``mean_net_return``
+#: (~``predicted_return``), ``pessimistic_mean``, ``mc_standard_error``
+#: (~``uncertainty``) and the shrunk group mean) -- a *derived* gate
+#: quantity computed from siblings of the other four, not an independent
+#: forecast. Including it alongside the raw inputs it is built from would
+#: mostly let the (linear) conditional model re-express a combination it
+#: can already form from what is already in this list, at the cost of a
+#: 12th feature raising the sample floor further without adding new
+#: information. A future reader who wants to test whether the gate's own
+#: nonlinear combination carries information the parts don't should do
+#: that as a deliberate, separate ablation, not fold it in here by default.
+#:
+#: Keeping this list no longer than the research question honestly
+#: requires still matters: it sets ``ConditionalExcursionModel``'s own
+#: per-tau sample floor (``(n_features + 1) * 10``) -- 120 with these 11
+#: features, up from 80 at 7 -- and this codebase's own W12-D experience is
+#: that a feature count too large relative to the effective sample
+#: overstates apparent signal/damage (54 features against ~380 independent
+#: weeks, a 1:7 ratio, overstated effect size by ~2x; retreating to 18
+#: features, 1:21, was the fix). See ``ExcursionEvalResult.feature_sample_ratio``,
+#: which reports exactly this ratio for every run of this module so a
+#: reader does not have to take the sample size on faith.
 #:
 #: ``regime_bucket`` is excluded on purpose, not by oversight: it is
 #: frequently NULL (100% NULL in the local 2,672-row sample; not verified
@@ -96,6 +128,10 @@ FEATURE_NAMES: tuple[str, ...] = (
     "spread_pct",
     "barrier_distance",
     "direction_sign",
+    "p_ko",
+    "predicted_return",
+    "p_profit",
+    "uncertainty",
 )
 
 
@@ -204,7 +240,20 @@ def _barrier_distance(entry: LedgerEntry) -> float:
 
 
 def _row_features(entry: LedgerEntry) -> npt.NDArray[np.float64]:
-    """One row of ``x``, in :data:`FEATURE_NAMES` order; may contain ``nan``."""
+    """One row of ``x``, in :data:`FEATURE_NAMES` order; may contain ``nan``.
+
+    ``p_ko``/``predicted_return``/``p_profit``/``uncertainty`` are typed
+    ``DOUBLE NOT NULL`` on ``forward_ledger`` (``storage/duckdb.py``) --
+    unlike the ``feature_snapshot`` keys and ``barrier_distance`` above,
+    there is no missing-key/NULL-input case to guard here. They still flow
+    through the same ``np.isfinite`` check in
+    :func:`build_excursion_dataset` as every other column (belt-and-braces
+    against e.g. a stored ``NaN`` slipping past the NOT NULL constraint),
+    so a row with a non-finite value in any of them is still counted under
+    ``dropped_rows["null_feature"]`` rather than silently imputed --
+    exactly the same guarantee the rest of this function already gives the
+    columns that genuinely can be missing.
+    """
     snapshot = entry.feature_snapshot
     values = {
         "cost_rank_score": snapshot.get("cost_rank_score", float("nan")),
@@ -214,6 +263,10 @@ def _row_features(entry: LedgerEntry) -> npt.NDArray[np.float64]:
         "spread_pct": snapshot.get("spread_pct", float("nan")),
         "barrier_distance": _barrier_distance(entry),
         "direction_sign": 1.0 if entry.direction is Direction.LONG else -1.0,
+        "p_ko": entry.p_ko,
+        "predicted_return": entry.predicted_return,
+        "p_profit": entry.p_profit,
+        "uncertainty": entry.uncertainty,
     }
     return np.array([values[name] for name in FEATURE_NAMES], dtype=np.float64)
 
@@ -378,6 +431,21 @@ MIN_EFFECTIVE_SAMPLE = 100.0
 #: over a handful of dates without spanning enough of them.)
 MIN_DISTINCT_DATES = 30
 
+#: Bar below which this module's own feature-count-to-effective-sample
+#: ratio (:data:`ExcursionEvalResult.feature_sample_ratio`) is flagged as
+#: thin in ``verdict_reasons``. Not a hard gate like
+#: :data:`MIN_EFFECTIVE_SAMPLE`/:data:`MIN_DISTINCT_DATES` -- a thin ratio
+#: does not itself invalidate a result -- but a reader comparing target
+#: verdicts needs to see the overfitting risk rather than infer it.
+#: Reuses this codebase's own W12-D finding as the number: a 54-feature/
+#: ~380-independent-week ratio (1:7, ~0.143) overstated apparent
+#: signal/damage by roughly 2x, and the fix was to restrict to 18 features
+#: (1:21, ~0.048) on hypothesis grounds. With :data:`FEATURE_NAMES` now 11
+#: long, ``effective_sample`` needs to clear roughly 11 / (1/21) ~= 231 --
+#: "several hundred" -- before a ratio at least as conservative as that
+#: precedent is reached.
+_THIN_FEATURE_SAMPLE_RATIO = 1.0 / 21.0
+
 #: Two-sided bootstrap-hypothesis-test significance bar for the paired-fold
 #: CRPS-improvement check, matching GOVERNANCE.md §3.1's own FDR alpha
 #: (0.10) rather than inventing a separate threshold for this one overlay.
@@ -496,6 +564,15 @@ class ExcursionEvalResult(BaseModel):
     selective_abstention: dict[str, float]
     verdict: str
     verdict_reasons: list[str]
+    #: ``len(FEATURE_NAMES) / effective_sample`` -- lets a reader judge
+    #: overfitting risk directly rather than re-deriving it from
+    #: ``dropped_rows``/``effective_sample`` and the feature count
+    #: themselves. ``inf`` if ``effective_sample <= 0`` (should not occur
+    #: past the ``INSUFFICIENT_SAMPLE`` gate, but this field is also
+    #: populated on that early-return path, where it can). See
+    #: :data:`_THIN_FEATURE_SAMPLE_RATIO` for the bar above which this
+    #: shows up in ``verdict_reasons`` too.
+    feature_sample_ratio: float
 
 
 def _fold_predictions(
@@ -781,6 +858,23 @@ def _target_verdict(result: ExcursionTargetResult) -> tuple[str, list[str]]:
     return "IMPROVEMENT_NOT_SIGNIFICANT", reasons
 
 
+def _feature_sample_ratio(n_features: int, effective_sample: float) -> tuple[float, str | None]:
+    """``n_features / effective_sample``, plus a ``verdict_reasons`` line iff it's thin.
+
+    Returns ``(ratio, reason_or_None)`` -- see :data:`_THIN_FEATURE_SAMPLE_RATIO`.
+    """
+    ratio = float(n_features) / effective_sample if effective_sample > 0.0 else float("inf")
+    if ratio > _THIN_FEATURE_SAMPLE_RATIO:
+        reason = (
+            f"feature_sample_ratio={ratio:.4f} ({n_features} features / "
+            f"{effective_sample:.2f} effective_sample) is thinner than this codebase's own "
+            f"W12-D bar of {_THIN_FEATURE_SAMPLE_RATIO:.4f} (1:21) -- treat any comparison here "
+            "as more overfitting-prone than the headline CRPS/pinball numbers alone suggest"
+        )
+        return ratio, reason
+    return ratio, None
+
+
 def _decide_verdict(results: list[ExcursionTargetResult]) -> tuple[str, list[str]]:
     best = "NO_IMPROVEMENT"
     all_reasons: list[str] = []
@@ -846,6 +940,11 @@ def evaluate_excursion(
             f"n_distinct_dates={dataset.n_distinct_dates} < MIN_DISTINCT_DATES={MIN_DISTINCT_DATES}"
         )
         insufficient = True
+    ratio, ratio_reason = _feature_sample_ratio(
+        len(dataset.feature_names), dataset.effective_sample
+    )
+    if ratio_reason:
+        reasons.append(ratio_reason)
     if insufficient:
         return ExcursionEvalResult(
             underlying=dataset.underlying,
@@ -857,6 +956,7 @@ def evaluate_excursion(
             selective_abstention={},
             verdict="INSUFFICIENT_SAMPLE",
             verdict_reasons=reasons,
+            feature_sample_ratio=ratio,
         )
 
     folds_idx = list(splitter.split(dataset.t0, dataset.t1))
@@ -880,6 +980,8 @@ def evaluate_excursion(
     ]
     abstention = _selective_abstention(dataset, folds_idx, levels)
     verdict, verdict_reasons = _decide_verdict(results)
+    if ratio_reason:
+        verdict_reasons.append(ratio_reason)
     return ExcursionEvalResult(
         underlying=dataset.underlying,
         as_of=dataset.as_of,
@@ -890,4 +992,5 @@ def evaluate_excursion(
         selective_abstention=abstention,
         verdict=verdict,
         verdict_reasons=verdict_reasons,
+        feature_sample_ratio=ratio,
     )

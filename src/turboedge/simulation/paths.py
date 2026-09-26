@@ -65,6 +65,7 @@ blocker.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -112,6 +113,17 @@ class PathSet:
     close (or from ``spot0`` for day 0). ``weekend_before[d]`` is True iff
     the gap immediately before day ``d`` spans a weekend/holiday (see
     ``simulate_paths`` calendar docs).
+
+    ``realized_sigma``/``target_sigma``/``target_sigma_met`` (measured_results.md
+    §6.14/§6.15): the realised standard deviation, across ``n_paths``, of the
+    TOTAL horizon log return ``ln(close[:, -1] / spot0)``; the ``target_sigma``
+    that :func:`simulate_paths` was asked to hit (``None`` if the caller never
+    passed one); and whether it was actually hit (``None`` when no target was
+    requested, so "not applicable" is distinguishable from "requested and
+    missed"). All three default to ``None`` so hand-built ``PathSet``s in other
+    tests/modules that predate this field keep working unchanged -- only
+    :func:`simulate_paths` itself populates them. See
+    :func:`_apply_volatility_scaling` for why a target can be unreachable.
     """
 
     underlying_id: str
@@ -123,6 +135,9 @@ class PathSet:
     close: npt.NDArray[np.float64]
     weekend_before: npt.NDArray[np.bool_]
     method: str
+    realized_sigma: float | None = None
+    target_sigma: float | None = None
+    target_sigma_met: bool | None = None
 
 
 def _next_business_day(d: date) -> date:
@@ -254,6 +269,140 @@ def _apply_drift_tilt(draws: DailyDraws, drift_log_return: float | None) -> Dail
     return DailyDraws(gap=draws.gap, intraday=intraday, hi=hi, lo=lo)
 
 
+def _apply_volatility_scaling(
+    draws: DailyDraws, target_sigma: float | None
+) -> tuple[DailyDraws, float, bool | None]:
+    """Multiplicative per-day rescaling of ``intraday``/``hi``/``lo`` so the
+    realized standard deviation (across paths) of the TOTAL horizon log
+    return ``sum(gap + intraday, axis=1)`` matches ``target_sigma``
+    (measured_results.md §6.14: today, no forecast's predictive *width* -- the
+    thing CRPS scores -- ever reaches the payoff simulation; this is the knob
+    that lets it). ``target_sigma=None`` is a strict no-op (the input
+    ``draws`` object is returned unchanged, not merely equal-valued) so that
+    ``simulate_paths(..., target_sigma=None)`` stays bit-for-bit identical to
+    the pre-existing behaviour every measurement in this repo depends on.
+
+    Mirrors :func:`_apply_drift_tilt` but along the orthogonal axis: that
+    function shifts the mean additively and leaves dispersion untouched; this
+    one scales dispersion multiplicatively and leaves the mean untouched.
+    Scaling is applied to ``intraday``/``hi``/``lo`` around each day's own
+    *cross-path* mean (``draws.intraday.mean(axis=0)`` etc.), i.e. day ``d``'s
+    values become ``mean_d + f * (value - mean_d)``. Two consequences worth
+    stating explicitly:
+
+    - It preserves the mean: the per-day cross-path mean is added back
+      unchanged, so the ensemble's mean total log return is exactly what it
+      was before scaling (verified by a dedicated test). This is why scaling
+      must run *before* :func:`_apply_drift_tilt` -- the tilt then sets the
+      final mean on top of dispersion that is already fixed, rather than the
+      tilt's additive shift being partially undone or re-derived against a
+      moving dispersion target.
+    - ``hi``/``lo`` are scaled by the *same* factor ``f`` as ``intraday`` (not
+      independently refit), which is exactly what preserves each day's range
+      *shape* (high/low as a proportion of that day's intraday move) -- only
+      its size changes.
+
+    ``gap`` is never scaled, for the same reason :func:`_apply_drift_tilt`
+    never shifts it (CLAUDE.md rule 16): it is genuine overnight/weekend jump
+    risk calibrated from historical data, not a forecast view, and a
+    dispersion opinion must not corrupt it any more than a directional one
+    may.
+
+    Because ``gap`` is untouched, the achievable range of the total-horizon
+    sigma is bounded below. Writing ``x`` = per-path total gap, ``y`` =
+    per-path total intraday (both already realized from the bootstrap draw),
+    the scaled total is ``x + mean(y) + f*(y - mean(y))``, whose variance as
+    a function of the scalar ``f`` is the *exact* (no independence
+    assumption -- ``bootstrap.py`` deliberately preserves whatever historical
+    gap/intraday co-movement exists) quadratic
+    ``var(x) + 2*f*cov(x,y) + f**2*var(y)``. This has a minimum over
+    ``f >= 0`` (scaling by a negative factor would flip the sign of each
+    day's deviation from its own mean, an unphysical "anti-scaling" this
+    function does not offer) of ``var(x)`` at ``f=0`` if the unconstrained
+    vertex falls at a negative ``f``, or the unconstrained minimum otherwise.
+    If ``target_sigma**2`` is below that floor, no ``f>=0`` reaches it.
+
+    **Decision on unreachable targets: clamp to the closest achievable ``f``
+    (never raise), and report it.** A scan runs across many
+    products/underlyings/horizons unattended (``scan-all``, CLAUDE.md's "no
+    trade" default); raising would either crash the whole batch or force
+    callers into blanket exception handling that swallows the very signal
+    being reported. Instead -- matching this codebase's existing pattern of
+    explicit degradation flags rather than exceptions (e.g.
+    ``meta/trust.py``'s ``missing_factors``) -- this function always returns
+    the realized sigma it actually achieved and a ``target_sigma_met`` flag,
+    so a caller that asked for 0.03 and got 0.05 because gaps dominate can
+    see exactly that, and decide what to do about it themselves. Returning a
+    silently different dispersion with no way to detect it would be the
+    failure mode to avoid.
+
+    Returns:
+        ``(scaled_draws, realized_sigma, target_sigma_met)`` where
+        ``realized_sigma`` is the standard deviation (population, ``ddof=0``,
+        across paths) of the total horizon log return after scaling, and
+        ``target_sigma_met`` is ``None`` iff ``target_sigma is None``,
+        otherwise ``True``/``False``.
+    """
+    gap_total = draws.gap.sum(axis=1)
+    intraday_total = draws.intraday.sum(axis=1)
+
+    if target_sigma is None:
+        realized_sigma = float(np.std(gap_total + intraday_total))
+        return draws, realized_sigma, None
+
+    mu_g = float(gap_total.mean())
+    mu_i = float(intraday_total.mean())
+    var_gap = float(np.mean((gap_total - mu_g) ** 2))
+    var_intraday = float(np.mean((intraday_total - mu_i) ** 2))
+    cov_gi = float(np.mean((gap_total - mu_g) * (intraday_total - mu_i)))
+
+    target_var = target_sigma**2
+    if var_intraday <= 0.0:
+        # Nothing to scale (e.g. n_paths == 1, or a degenerate constant
+        # intraday sample): every day's deviation from its own mean is
+        # already zero, so multiplying it by any f changes nothing.
+        scale = 1.0
+        target_met = math.isclose(var_gap, target_var, rel_tol=1e-9, abs_tol=1e-12)
+    else:
+        a, b, c = var_intraday, 2.0 * cov_gi, var_gap - target_var
+        disc = b * b - 4.0 * a * c
+        if disc >= 0.0:
+            sqrt_disc = math.sqrt(disc)
+            roots = [(-b + sqrt_disc) / (2.0 * a), (-b - sqrt_disc) / (2.0 * a)]
+            nonneg_roots = [r for r in roots if r >= 0.0]
+        else:
+            nonneg_roots = []
+
+        if nonneg_roots:
+            # Both roots (when both are non-negative) give the exact target
+            # variance; prefer the one closest to a no-op scaling.
+            scale = min(nonneg_roots, key=lambda r: abs(r - 1.0))
+            target_met = True
+        else:
+            # Unreachable with f >= 0: clamp to the best achievable point,
+            # i.e. the minimizer of var(f) restricted to f >= 0. The
+            # unconstrained vertex is at f* = -cov_gi/var_intraday; if it is
+            # already >= 0 that is the constrained minimizer too, otherwise
+            # the (upward, since var_intraday > 0) parabola is increasing
+            # throughout f >= 0 and the minimizer is the boundary f=0.
+            f_star = -cov_gi / var_intraday
+            scale = f_star if f_star >= 0.0 else 0.0
+            target_met = False
+
+    mean_intraday = draws.intraday.mean(axis=0, keepdims=True)
+    mean_hi = draws.hi.mean(axis=0, keepdims=True)
+    mean_lo = draws.lo.mean(axis=0, keepdims=True)
+
+    intraday = mean_intraday + scale * (draws.intraday - mean_intraday)
+    hi = mean_hi + scale * (draws.hi - mean_hi)
+    lo = mean_lo + scale * (draws.lo - mean_lo)
+    hi = np.maximum(hi, np.maximum(intraday, 0.0))
+    lo = np.minimum(lo, np.minimum(intraday, 0.0))
+
+    realized_sigma = float(np.std(gap_total + intraday.sum(axis=1)))
+    return DailyDraws(gap=draws.gap, intraday=intraday, hi=hi, lo=lo), realized_sigma, target_met
+
+
 def _draws_to_pathset(
     draws: DailyDraws,
     underlying_id: str,
@@ -261,6 +410,9 @@ def _draws_to_pathset(
     start: datetime,
     weekend_before: npt.NDArray[np.bool_],
     method: str,
+    realized_sigma: float | None,
+    target_sigma: float | None,
+    target_sigma_met: bool | None,
 ) -> PathSet:
     day_total = draws.gap + draws.intraday
     log_close_cum = np.cumsum(day_total, axis=1)
@@ -284,6 +436,9 @@ def _draws_to_pathset(
         close=close,
         weekend_before=weekend_before,
         method=method,
+        realized_sigma=realized_sigma,
+        target_sigma=target_sigma,
+        target_sigma_met=target_sigma_met,
     )
 
 
@@ -296,6 +451,7 @@ def simulate_paths(
     n_paths: int,
     rng: np.random.Generator,
     drift_log_return: float | None = None,
+    target_sigma: float | None = None,
     method: SimulationMethod = "vol_scaled_bootstrap",
     block_size: int = _DEFAULT_BLOCK_SIZE,
     lookback_days: int = _DEFAULT_LOOKBACK_DAYS,
@@ -312,6 +468,21 @@ def simulate_paths(
     whole horizon (``None`` => the unconditional empirical drift of the
     resampled distribution is removed, i.e. zero drift) -- see
     :func:`_apply_drift_tilt`.
+
+    ``target_sigma`` is the target standard deviation, across paths, of that
+    same TOTAL horizon log return (``None`` => today's behaviour exactly,
+    bit-for-bit: dispersion comes entirely from ``bars`` as before, and every
+    existing measurement in this repo depends on that not changing). This is
+    the one channel through which a forecast's predictive *width* -- distinct
+    from its mean, and the thing CRPS scores -- can reach the payoff
+    simulation at all (measured_results.md §6.14/§6.15). Volatility scaling
+    runs *before* the drift tilt (see :func:`_apply_volatility_scaling` for
+    why) and never touches ``gap`` (CLAUDE.md rule 16). The target may be
+    unreachable (e.g. below the dispersion contributed by gaps alone); see
+    :func:`_apply_volatility_scaling` for the clamp-and-report policy. The
+    achieved sigma and whether the target was met are reported on the
+    returned :class:`PathSet` as ``realized_sigma``/``target_sigma``/
+    ``target_sigma_met``.
 
     Raises:
         ValueError: if ``spot0 <= 0``, ``horizon_days <= 0``, ``n_paths <=
@@ -342,10 +513,26 @@ def simulate_paths(
     else:
         raise ValueError(f"unknown method {method!r}")
 
+    # Volatility scaling before the drift tilt: scaling recenters on (and
+    # preserves) the *current* mean of intraday around its own per-day
+    # average, so it must run first -- otherwise the tilt's carefully
+    # computed additive shift would be scaled along with everything else and
+    # no longer land on `drift_log_return`.
+    draws, realized_sigma, target_sigma_met = _apply_volatility_scaling(draws, target_sigma)
     draws = _apply_drift_tilt(draws, drift_log_return)
 
     underlying_id = bars[0].underlying_id if bars else "UNKNOWN"
-    return _draws_to_pathset(draws, underlying_id, spot0, start, weekend_before, method)
+    return _draws_to_pathset(
+        draws,
+        underlying_id,
+        spot0,
+        start,
+        weekend_before,
+        method,
+        realized_sigma=realized_sigma,
+        target_sigma=target_sigma,
+        target_sigma_met=target_sigma_met,
+    )
 
 
 __all__ = ["PathSet", "SimulationMethod", "simulate_paths"]

@@ -5,6 +5,7 @@ pipeline, without influencing it. See `controller.decide`.
 """
 
 from turboedge.meta.controller import decide
+from turboedge.meta.report import render_meta_decision, render_summary
 from turboedge.meta.schemas import (
     DecisionConfidence,
     MetaDecision,
@@ -18,4 +19,6 @@ __all__ = [
     "MetaDecisionKind",
     "ModelTrust",
     "decide",
+    "render_meta_decision",
+    "render_summary",
 ]

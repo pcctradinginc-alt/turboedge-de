@@ -1645,3 +1645,74 @@ to the production path engine and is not this one.
 And it is a synthetic-terms result: no claim is made that these products
 existed or were quotable. The forward real-product arm of §6.13's two-part
 design remains unrun and needs forward data accumulating since 2026-09-13.
+
+---
+
+## 6.16 The narrower forecast is sharper, not overconfident (2026-09-26)
+
+Measured while assessing whether the width question of §6.14 is worth a trial
+at all. It is, and this is why.
+
+### Sharpness
+
+`regime_conditional` predicts total-horizon sigmas **26-38% smaller** than the
+null, consistently:
+
+| underlying | h | sigma null | sigma regime_conditional | ratio |
+|---|---|---|---|---|
+| DAX | 3d | 0.01885 | 0.01392 | 0.74× |
+| DAX | 7d | 0.02818 | 0.02042 | 0.72× |
+| DAX | 14d | 0.03899 | 0.02892 | 0.74× |
+| NDX | 3d | 0.02347 | 0.01778 | 0.76× |
+| NDX | 7d | 0.03376 | 0.02078 | 0.62× |
+| NDX | 14d | 0.04853 | 0.03026 | 0.62× |
+
+**None of this reaches the payoff simulation today** (§6.14): `simulate_paths`
+has no volatility parameter, so both arms of trial `TR-2026Q3-3c4899` simulated
+identical dispersion and the trial could only ever test the mean.
+
+### Why that looked like a trap, and is not
+
+A narrower predicted distribution lowers knock-out probability mechanically, so
+any model predicting narrower widths would score better on EV whether or not the
+narrowness is justified. Feeding an *overconfident* forecast into the path engine
+would understate KO risk — which is the dangerous direction for a knock-out
+product.
+
+Interval coverage is the direct check. Out-of-sample, averaged over all 20 cells:
+
+| family | coverage_90 (nominal 0.90) | coverage_50 (nominal 0.50) |
+|---|---|---|
+| `logit` | **0.726** | **0.366** |
+| `null` | 0.870 | 0.473 |
+| **`regime_conditional_empirical`** | **0.879** | **0.490** |
+| `regularized_linear_location` | 0.877 | 0.487 |
+| `robust_location_scale_t` | 0.922 | 0.521 |
+| `tsmom` | 0.887 | 0.494 |
+
+`regime_conditional` predicts intervals about three-quarters as wide as the null
+and covers *better* on both levels. That combination is only possible if the
+intervals are better placed, which is what a genuinely better distributional
+forecast is. It is not overconfidence being laundered.
+
+For contrast, `logit` at 0.726/0.366 is what overconfidence looks like, and
+`robust_location_scale_t` at 0.922/0.521 is over-wide — the one of the three
+Phase D baselines whose CRPS gain was weakest (p = 0.105) and the one that broke
+the LCB gate in §6.10's sensitivity run.
+
+### Consequence
+
+This is the strongest evidence in this repository that `regime_conditional` is a
+real improvement, and it is the first result here that raises a prior rather
+than lowering one. Both its CRPS advantage (§6.12, p ≈ 0.0135) and its coverage
+sit on the right side, and the property the EV stage cannot currently feel is
+precisely the property that is best supported.
+
+It does not follow that the economics work. §6.15 measured the mean channel as
+inert-to-harmful (ΔLCB_NetEV = -0.0205), and costs do not care how well
+calibrated a forecast is. But it does mean the width channel is worth wiring up
+and testing, rather than assumed dead by analogy to the mean.
+
+Work in progress: an optional `target_sigma` on `simulate_paths`, additive and
+defaulting to today's behaviour so no existing measurement moves. A trial can be
+pre-registered once that exists and is validated — not before.

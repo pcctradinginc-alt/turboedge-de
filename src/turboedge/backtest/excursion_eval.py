@@ -393,6 +393,23 @@ _BOOTSTRAP_RESAMPLES = 2000
 #: Fixed so a re-run reproduces byte-for-byte (Master Spec rule 33).
 _BOOTSTRAP_SEED = 20260926
 
+#: Minimum *relative* CRPS/mean-pinball reduction the conditional model must
+#: show before it counts as beating the null at all -- a directional "win"
+#: alone is not enough (GOVERNANCE.md §2.2 requires a minimum effect size on
+#: top of significance for exactly this reason: "small improvements... remain
+#: experimental"). Without this floor, two models scoring within noise of each
+#: other on held-out data (a sub-0.1% CRPS difference, measured on a
+#: pure-noise synthetic dataset in this module's own test suite --
+#: ``test_pure_noise_dataset_does_not_yield_candidate``) can still land on the
+#: "improving" side of zero by chance, and with only a handful of
+#: walk-forward folds a paired bootstrap can occasionally call that
+#: direction "significant" too (exactly the false-positive rate
+#: ``_SIGNIFICANCE_ALPHA`` implies it will, some fraction of the time). 5% is
+#: a conservative floor -- far above plausible noise-level differences, far
+#: below what a real, useful predictive relationship produces (an 80%+
+#: relative CRPS reduction in this module's own signal-dependent test).
+_MIN_RELATIVE_IMPROVEMENT = 0.05
+
 #: Rank quantile used by the selective-abstention overlay (see
 #: :func:`_selective_abstention`): the model's predicted 5th-percentile MAE,
 #: i.e. its belief about the tail-downside outcome.
@@ -702,40 +719,64 @@ def _selective_abstention(
 
 
 def _target_verdict(result: ExcursionTargetResult) -> tuple[str, list[str]]:
+    """Per-target verdict. See :func:`evaluate_excursion`'s docstring for the exact ladder.
+
+    Three tiers, checked in order:
+
+    1. ``NO_IMPROVEMENT`` -- the conditional model does not beat the null by
+       at least :data:`_MIN_RELATIVE_IMPROVEMENT` on *both* CRPS and mean
+       pinball. A directional "win" alone is not enough (see that constant's
+       docstring for why a relative-margin floor is needed even before
+       significance is checked).
+    2. ``IMPROVEMENT_NOT_SIGNIFICANT`` -- clears that margin on both, but
+       either interval coverage is worse than the null's, or the paired-fold
+       bootstrap does not reject "no true CRPS difference" at
+       ``_SIGNIFICANCE_ALPHA``.
+    3. ``CANDIDATE`` -- clears the margin on both, coverage is no worse, and
+       the significance check passes. Never means promoted.
+    """
     reasons: list[str] = []
-    crps_improves = result.crps_conditional < result.crps_null
-    pinball_improves = result.mean_pinball_conditional < result.mean_pinball_null
+    crps_improves = result.crps_conditional <= result.crps_null * (1.0 - _MIN_RELATIVE_IMPROVEMENT)
+    pinball_improves = result.mean_pinball_conditional <= result.mean_pinball_null * (
+        1.0 - _MIN_RELATIVE_IMPROVEMENT
+    )
     coverage_no_worse = abs(result.coverage_conditional - result.nominal_coverage) <= abs(
         result.coverage_null - result.nominal_coverage
     )
     reasons.append(
         f"{result.target.value}: crps conditional={result.crps_conditional:.6f} "
-        f"vs null={result.crps_null:.6f}"
+        f"vs null={result.crps_null:.6f} (needs <= {1.0 - _MIN_RELATIVE_IMPROVEMENT:.0%} of null "
+        f"to count as improving)"
     )
     reasons.append(
         f"{result.target.value}: mean pinball conditional={result.mean_pinball_conditional:.6f} "
         f"vs null={result.mean_pinball_null:.6f}"
     )
+    if not (crps_improves and pinball_improves):
+        reasons.append(
+            f"{result.target.value}: fails the minimum {_MIN_RELATIVE_IMPROVEMENT:.0%} "
+            "relative CRPS+pinball improvement over the null"
+        )
+        return "NO_IMPROVEMENT", reasons
+
     reasons.append(
         f"{result.target.value}: coverage conditional={result.coverage_conditional:.4f} "
         f"vs null={result.coverage_null:.4f} (nominal={result.nominal_coverage:.2f})"
     )
-    if not (crps_improves and pinball_improves and coverage_no_worse):
-        reasons.append(f"{result.target.value}: fails the CRPS+pinball+coverage improvement test")
-        return "NO_IMPROVEMENT", reasons
-
     reasons.append(
         f"{result.target.value}: significance p={result.significance_p_value:.4f} over "
         f"{result.n_significance_folds} folds (alpha={_SIGNIFICANCE_ALPHA})"
     )
     if (
-        result.n_significance_folds >= _MIN_SIGNIFICANCE_FOLDS
+        coverage_no_worse
+        and result.n_significance_folds >= _MIN_SIGNIFICANCE_FOLDS
         and result.significance_p_value < _SIGNIFICANCE_ALPHA
     ):
         return "CANDIDATE", reasons
     reasons.append(
-        f"{result.target.value}: improvement not significant at alpha={_SIGNIFICANCE_ALPHA} "
-        f"(or fewer than {_MIN_SIGNIFICANCE_FOLDS} significance folds)"
+        f"{result.target.value}: improvement present but not a CANDIDATE -- needs coverage no "
+        f"worse than the null AND significance at alpha={_SIGNIFICANCE_ALPHA} over "
+        f">= {_MIN_SIGNIFICANCE_FOLDS} folds"
     )
     return "IMPROVEMENT_NOT_SIGNIFICANT", reasons
 
@@ -774,10 +815,14 @@ def evaluate_excursion(
     Per-fold metrics are aggregated weighted by test-fold size.
 
     A target's verdict is ``"CANDIDATE"`` only if the conditional model
-    beats the null on CRPS *and* on mean pinball across ``quantile_levels``
-    *and* is no worse on ``[q_min, q_max]`` interval coverage, *and* a
-    paired-fold bootstrap test (:data:`_MIN_SIGNIFICANCE_FOLDS` folds
-    minimum) rejects "no true CRPS difference" at ``alpha=_SIGNIFICANCE_ALPHA``.
+    beats the null by at least :data:`_MIN_RELATIVE_IMPROVEMENT` on CRPS
+    *and* on mean pinball across ``quantile_levels`` (a directional win
+    alone is not enough -- see that constant's docstring), *and* is no
+    worse on ``[q_min, q_max]`` interval coverage, *and* a paired-fold
+    bootstrap test (:data:`_MIN_SIGNIFICANCE_FOLDS` folds minimum) rejects
+    "no true CRPS difference" at ``alpha=_SIGNIFICANCE_ALPHA``. Clearing the
+    CRPS/pinball margin without the coverage/significance requirements gives
+    ``"IMPROVEMENT_NOT_SIGNIFICANT"`` instead of ``"NO_IMPROVEMENT"``.
     The top-level ``verdict`` is the strongest of the two targets' verdicts
     (RO-MAE-PREDICTION and RO-MFE-PREDICTION are separate research
     questions bundled into one evaluation run); ``verdict_reasons`` names

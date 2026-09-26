@@ -164,3 +164,86 @@ each idealisation cuts, rather than having to trust that they average out.
 **`theoretical_fair_value` lives in `pricing/fair_value.py`, not
 `pricing/intrinsic.py`** as §4 implies. No behavioural change; the named
 function is the one intended.
+
+---
+
+## 10. Amendment B (2026-09-26, before any measurement) — §1 as written cannot be tested
+
+Found while building the harness, before any measurement of the primary
+hypothesis. Verified directly in the code, not taken on report.
+
+### The finding
+
+**No statistic the current EV pipeline produces is driven by the
+distributional width that CRPS measures.**
+
+- `ranking/ev.py::_drift_for_scenario` maps a forecast to a scenario drift
+  using `forecast.mean` (central) and `forecast.uncertainty` (pessimistic /
+  optimistic). `forecast.sigma` is passed only into a diagnostic record.
+- `simulation/paths.py::simulate_paths` takes `drift_log_return` and has **no
+  volatility parameter at all**. Path dispersion is derived entirely from
+  `bars`, which are identical across both arms of this trial.
+
+So the paths in both arms have the same dispersion, the same gap structure and
+the same knock-out geometry; the only difference is a shifted mean drift. The
+trial as specified therefore tests *"does `regime_conditional`'s **mean**
+forecast differ from `NullModel`'s enough to move NetEV"* — not *"does the
+improved distribution carry economic value"*, which is what §1 claims.
+
+This matters because §6 of `docs/measured_results.md` attributes the CRPS
+improvement primarily to the models widening and narrowing their intervals
+with current volatility. If the gain lives in the width, this trial cannot see
+it, and would return a null result for a reason that has nothing to do with
+the hypothesis.
+
+### Consequence for §1
+
+**§1's primary hypothesis is withdrawn and replaced.** The new primary
+statistic is `lcb_net_return` — the lower-confidence-bound net return — rather
+than `mean_net_return`:
+
+    H0:  LCB_NetEV(regime_conditional) - LCB_NetEV(null)  <=  0
+
+Reasons, stated before the result:
+
+1. It is the quantity the ACTIONABLE gate actually uses. Whatever else is
+   true, this is the number that decides whether a trade happens.
+2. It reads `forecast.uncertainty` as well as `forecast.mean`, so it feels
+   more of the forecast than the mean alone.
+3. It is honest about scope: `uncertainty` is the standard error of the mean
+   estimate, **not** the predictive width CRPS scores. This test still cannot
+   answer the width question.
+
+**The width question requires extending `simulate_paths` to accept a forecast
+volatility.** That is a change to the production path engine affecting every
+existing measurement, so it is a separate, later trial and not a patch to this
+one. Recorded as the open question it is.
+
+Everything else in §4-§8 is unchanged, including the decision rule, the
+stability analysis and the pre-committed FAIL prior.
+
+### Entry-side cost: §4 was too generous
+
+Second finding, same origin. `simulation/payoff.py` computes every net return
+from `terms.entry_ask` and **never reads `terms.entry_bid`**. §4 set
+`entry_ask` = theoretical fair value, so the synthetic universe bought every
+product at fair value with **zero entry-side friction**, and no value of
+`spread` could change any result — making §6's spread-sensitivity check a
+provable no-op.
+
+That cuts the opposite way from Amendment A's barrier simplification: it made
+the test more generous, not less. Corrected, before any measurement:
+
+    entry_ask = fair_value * (1 + spread / 2)
+    entry_bid = fair_value * (1 - spread / 2)
+
+which is how a real two-sided quote straddles fair value. `spread` now
+genuinely affects NetEV and §6's sensitivity check becomes meaningful.
+
+### Why this is an amendment and not a fresh document
+
+No measurement of the primary hypothesis has been run. Both findings are about
+what the machinery can and cannot feel, discovered by reading it rather than by
+looking at a result. Fixing a test before it runs is the entire purpose of
+writing the specification first; the failure mode this document guards against
+is changing it *after*.

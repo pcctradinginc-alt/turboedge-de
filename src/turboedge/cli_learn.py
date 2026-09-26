@@ -34,7 +34,9 @@ from turboedge.adapters.registry import (
     build_product_adapters,
     build_reference_healthchecks,
 )
+from turboedge.backtest.excursion_eval import build_excursion_dataset, evaluate_excursion
 from turboedge.backtest.ko_calibration import KoCalibrationMetrics, run_ko_calibration
+from turboedge.backtest.purged_cv import PurgedWalkForwardSplit
 from turboedge.backtest.walkforward import walk_forward_evaluate
 from turboedge.config import config_hash
 from turboedge.learning.drift import PageHinkley, PageHinkleyConfig, record_drift_event
@@ -493,6 +495,87 @@ def report_monthly_cmd(
     _print_counts("report monthly", counts)
     console.print(f"Wrote {json_path} / {html_path}")
     _write_summary("report_monthly", counts, month=target_month.isoformat())
+
+
+def research_excursion_cmd(
+    ctx: typer.Context,
+    underlying: str | None = typer.Option(
+        None, "--underlying", help="Restrict to one underlying (default: all pooled)"
+    ),
+    horizon: int = typer.Option(3, "--horizon", help="Label horizon in days, for purge/embargo"),
+    min_train: int = typer.Option(200, "--min-train", help="Walk-forward initial training size"),
+    step: int = typer.Option(100, "--step", help="Walk-forward test block size"),
+    json_out: str = typer.Option(None, "--json-out", help="Write the full result JSON to PATH"),
+) -> None:
+    """Measure MAE/MFE prediction against its unconditional null (queue RO-MAE/MFE-PREDICTION).
+
+    Read-only: it changes no model weight, no gate and no threshold, and
+    promotes nothing. It answers one question -- does a model conditioning on
+    entry-time features beat the unconditional excursion distribution
+    out-of-sample -- and is allowed to answer "there is not enough data to
+    tell", which is the expected outcome until the forward ledger spans
+    enough independent label windows.
+    """
+    app_ctx = ctx.obj
+    now = datetime.now(UTC)
+
+    with Store(app_ctx.db_path) as store:
+        store.init_schema()
+        try:
+            dataset = build_excursion_dataset(store, underlying=underlying, as_of=now)
+        except ValueError as exc:
+            # No usable rows is a legitimate answer here, not a crash: it means
+            # the forward ledger has nothing matured and labelled yet. Report
+            # it as the finding it is, and exit non-zero so a pipeline step
+            # does not read silence as a measured result.
+            console.print(f"EXCURSION NO_DATA  ({underlying or 'all underlyings'})")
+            console.print(f"  {exc}", markup=False, highlight=False)
+            _write_summary("research_excursion", {"rows": 0}, verdict="NO_DATA")
+            raise typer.Exit(code=1) from exc
+        result = evaluate_excursion(
+            dataset,
+            splitter=PurgedWalkForwardSplit(
+                horizon=horizon, embargo=horizon, min_train=min_train, step=step
+            ),
+        )
+
+    console.print(f"EXCURSION {result.verdict}  ({underlying or 'all underlyings'})")
+    console.print(
+        f"  rows {len(dataset.y_mae)}  distinct dates {result.n_distinct_dates}  "
+        f"effective sample {result.effective_sample:.2f}"
+    )
+    dropped = {k: v for k, v in result.dropped_rows.items() if v}
+    console.print(f"  dropped: {dropped or 'none'}")
+    for reason in result.verdict_reasons:
+        console.print(f"  - {reason}", markup=False, highlight=False)
+    for target_result in result.results:
+        mean_null = sum(target_result.pinball_by_tau_null.values()) / len(
+            target_result.pinball_by_tau_null
+        )
+        mean_cond = sum(target_result.pinball_by_tau_conditional.values()) / len(
+            target_result.pinball_by_tau_conditional
+        )
+        console.print(
+            f"  {target_result.target.value}: CRPS null {target_result.crps_null:.6f} vs "
+            f"conditional {target_result.crps_conditional:.6f} | "
+            f"mean pinball {mean_null:.6f} vs {mean_cond:.6f} | "
+            f"coverage {target_result.coverage_null:.2f} vs "
+            f"{target_result.coverage_conditional:.2f} | "
+            f"crossing {target_result.quantile_crossing_rate:.2%}"
+        )
+
+    if json_out:
+        json_path = Path(json_out)
+        json_path.parent.mkdir(parents=True, exist_ok=True)
+        json_path.write_text(result.model_dump_json(indent=2), encoding="utf-8")
+        console.print(f"Wrote {json_path}")
+
+    _write_summary(
+        "research_excursion",
+        {"distinct_dates": result.n_distinct_dates, "rows": len(dataset.y_mae)},
+        verdict=result.verdict,
+        effective_sample=result.effective_sample,
+    )
 
 
 def research_queue_cmd(
@@ -1138,6 +1221,7 @@ def register_learn_commands(app: typer.Typer, position_app: typer.Typer) -> None
 
     research_app = typer.Typer(help="Research governance")
     research_app.command("queue")(research_queue_cmd)
+    research_app.command("excursion")(research_excursion_cmd)
     research_app.command("approve")(research_approve_cmd)
     research_app.command("tournament")(research_tournament_cmd)
     research_app.command("backfill-trials")(research_backfill_trials_cmd)

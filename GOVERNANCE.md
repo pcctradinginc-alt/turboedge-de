@@ -314,8 +314,10 @@ in 2026 Q3. Full numbers: `docs/measured_results.md`; per-signal detail:
 | # | hypothesis | document | trial id | status |
 |---|---|---|---|---|
 | 1 | `LCB_NetEV(regime_conditional) - LCB_NetEV(null) > 0` on standardised turbos | [`docs/preregistration_2026Q4_001.md`](../docs/preregistration_2026Q4_001.md) | see below | **run 2026-09-26, charged to 2026Q3 as 12 of 6** (Amendment C) |
+| 2 | the same, with **each arm's path dispersion set to its own forecast sigma** | [`docs/preregistration_2026Q4_002.md`](../docs/preregistration_2026Q4_002.md) | assigned on the run date | **registered, not run** — opens 2026-10-01 |
 
-**2026Q4 primary hypotheses: 0 of 6.** The one trial listed here was brought
+**2026Q4 primary hypotheses: 1 of 6 reserved** (2026Q4-002, the width channel).
+2026Q4-001 was brought
 forward to 2026-09-26 (Amendment C) and is charged to Q3, as the 12th of 6.
 Charging it to Q4 would repeat the `PD-2026Q4-001..003` error exactly.
 

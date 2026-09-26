@@ -43,6 +43,7 @@ def test_init_schema_creates_all_tables_empty(store: Store) -> None:
         "product_snapshots",
         "underlying_prices",
         "external_observations",
+        "meta_decisions",
         "signals",
         "candidate_sets",
         "source_health",

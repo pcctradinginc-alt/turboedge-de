@@ -25,6 +25,12 @@ from typing import Any, Self
 import duckdb
 import structlog
 
+from turboedge.meta.schemas import (
+    DecisionConfidence,
+    MetaDecision,
+    MetaDecisionKind,
+    ModelTrust,
+)
 from turboedge.storage.schemas import (
     CandidateEvaluation,
     Category,
@@ -199,6 +205,37 @@ _DDL_STATEMENTS: tuple[str, ...] = (
         is_stale BOOLEAN NOT NULL,
         quality_score DOUBLE NOT NULL,
         PRIMARY KEY (source, series_id, observation_time, available_at)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS meta_decisions (
+        run_id VARCHAR NOT NULL,
+        underlying_id VARCHAR NOT NULL,
+        horizon_days INTEGER NOT NULL,
+        prediction_time TIMESTAMPTZ NOT NULL,
+        decided_at TIMESTAMPTZ NOT NULL,
+        volatility_regime VARCHAR NOT NULL,
+        trend_regime VARCHAR NOT NULL,
+        regime_observation_count INTEGER NOT NULL,
+        available_models VARCHAR NOT NULL,
+        selected_models VARCHAR NOT NULL,
+        model_weights VARCHAR NOT NULL,
+        model_trust VARCHAR NOT NULL,
+        epistemic_uncertainty DOUBLE NOT NULL,
+        data_uncertainty DOUBLE NOT NULL,
+        regime_uncertainty DOUBLE NOT NULL,
+        model_disagreement DOUBLE NOT NULL,
+        calibration_uncertainty DOUBLE NOT NULL,
+        product_data_uncertainty DOUBLE NOT NULL,
+        abstain_score DOUBLE NOT NULL,
+        final_confidence DOUBLE NOT NULL,
+        decision VARCHAR NOT NULL,
+        reasons VARCHAR NOT NULL,
+        shadow_mode BOOLEAN NOT NULL,
+        config_hash VARCHAR NOT NULL,
+        git_commit VARCHAR,
+        schema_version VARCHAR NOT NULL,
+        PRIMARY KEY (run_id, underlying_id, horizon_days)
     )
     """,
     """
@@ -574,6 +611,7 @@ _ALL_TABLES: tuple[str, ...] = (
     "product_snapshots",
     "underlying_prices",
     "external_observations",
+    "meta_decisions",
     "signals",
     "candidate_sets",
     "source_health",
@@ -998,6 +1036,36 @@ class Store:
             params,
         ).fetchall()
         return [_row_to_external_observation(r) for r in rows]
+
+    # -- meta decisions (shadow layer) -------------------------------------
+
+    def append_meta_decisions(self, decisions: Sequence[MetaDecision]) -> int:
+        """Persist shadow meta decisions.
+
+        Nested structures (trust per model, weights, reasons) are stored as
+        JSON rather than normalised into child tables: nothing queries them
+        relationally, and one row per decision keeps the shadow-vs-production
+        comparison -- the entire purpose of this table -- a single join away.
+        """
+        if not decisions:
+            return 0
+        rows = [_meta_decision_row(d) for d in decisions]
+        self._conn.executemany(
+            f"INSERT OR REPLACE INTO meta_decisions ({', '.join(_META_DECISION_COLUMNS)}) "
+            f"VALUES ({', '.join(['?'] * len(_META_DECISION_COLUMNS))})",
+            rows,
+        )
+        return len(rows)
+
+    def list_meta_decisions(self, run_id: str | None = None) -> list[MetaDecision]:
+        where = "WHERE run_id = ?" if run_id is not None else ""
+        params = [run_id] if run_id is not None else []
+        rows = self._conn.execute(
+            f"SELECT {', '.join(_META_DECISION_COLUMNS)} FROM meta_decisions {where} "
+            "ORDER BY prediction_time ASC, underlying_id ASC, horizon_days ASC",
+            params,
+        ).fetchall()
+        return [_row_to_meta_decision(r) for r in rows]
 
     def append_underlying_bars(self, bars: Sequence[UnderlyingBar]) -> int:
         if not bars:
@@ -3060,4 +3128,99 @@ def _row_to_external_observation(row: tuple[Any, ...]) -> ExternalObservation:
         parser_version=row[11],
         is_stale=row[12],
         quality_score=row[13],
+    )
+
+
+_META_DECISION_COLUMNS: tuple[str, ...] = (
+    "run_id",
+    "underlying_id",
+    "horizon_days",
+    "prediction_time",
+    "decided_at",
+    "volatility_regime",
+    "trend_regime",
+    "regime_observation_count",
+    "available_models",
+    "selected_models",
+    "model_weights",
+    "model_trust",
+    "epistemic_uncertainty",
+    "data_uncertainty",
+    "regime_uncertainty",
+    "model_disagreement",
+    "calibration_uncertainty",
+    "product_data_uncertainty",
+    "abstain_score",
+    "final_confidence",
+    "decision",
+    "reasons",
+    "shadow_mode",
+    "config_hash",
+    "git_commit",
+    "schema_version",
+)
+
+
+def _meta_decision_row(d: MetaDecision) -> tuple[Any, ...]:
+    c = d.confidence
+    return (
+        d.run_id,
+        d.underlying_id,
+        d.horizon_days,
+        d.prediction_time,
+        d.decided_at,
+        d.volatility_regime,
+        d.trend_regime,
+        d.regime_observation_count,
+        json.dumps(d.available_models),
+        json.dumps(d.selected_models),
+        json.dumps(d.model_weights),
+        json.dumps([t.model_dump(mode="json") for t in d.model_trust]),
+        c.epistemic_uncertainty,
+        c.data_uncertainty,
+        c.regime_uncertainty,
+        c.model_disagreement,
+        c.calibration_uncertainty,
+        c.product_data_uncertainty,
+        c.abstain_score,
+        d.final_confidence,
+        d.decision.value,
+        json.dumps(d.reasons),
+        d.shadow_mode,
+        d.config_hash,
+        d.git_commit,
+        d.schema_version,
+    )
+
+
+def _row_to_meta_decision(row: tuple[Any, ...]) -> MetaDecision:
+    return MetaDecision(
+        run_id=row[0],
+        underlying_id=row[1],
+        horizon_days=row[2],
+        prediction_time=row[3],
+        decided_at=row[4],
+        volatility_regime=row[5],
+        trend_regime=row[6],
+        regime_observation_count=row[7],
+        available_models=json.loads(row[8]),
+        selected_models=json.loads(row[9]),
+        model_weights=json.loads(row[10]),
+        model_trust=[ModelTrust.model_validate(t) for t in json.loads(row[11])],
+        confidence=DecisionConfidence(
+            epistemic_uncertainty=row[12],
+            data_uncertainty=row[13],
+            regime_uncertainty=row[14],
+            model_disagreement=row[15],
+            calibration_uncertainty=row[16],
+            product_data_uncertainty=row[17],
+            abstain_score=row[18],
+        ),
+        final_confidence=row[19],
+        decision=MetaDecisionKind(row[20]),
+        reasons=json.loads(row[21]),
+        shadow_mode=row[22],
+        config_hash=row[23],
+        git_commit=row[24],
+        schema_version=row[25],
     )

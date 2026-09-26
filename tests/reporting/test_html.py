@@ -158,3 +158,21 @@ def test_save_monthly_report_overwrites_on_rerun(store, record_labeled, tmp_path
     json_path, html_path = save_monthly_report(report, reports_dir=reports_dir)
     assert json_path.exists()
     assert html_path.exists()
+
+
+def test_weekly_plain_text_shows_effective_sample_beside_the_row_count(store) -> None:
+    """The emailed rendering must show the gap, not just the HTML table.
+
+    The 2026-09-26 tournament email printed `n=68` for positions opened in a
+    single scan on a single day — worth about one independent observation —
+    and reported them as Benjamini-Hochberg significant. Showing `n_effective`
+    only in the HTML report would leave the one rendering that actually gets
+    sent as misleading as it was.
+    """
+    report = _populated_weekly_report(store)
+    text = to_plain_text(report)
+
+    assert "n_effective=" in text
+    # Per-trade, not a sqrt(252)-annualized number built on the same fiction.
+    assert "sharpe_per_trade=" in text
+    assert "sharpe=" not in text.replace("sharpe_per_trade=", "")

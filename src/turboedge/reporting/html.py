@@ -447,11 +447,20 @@ def _weekly_plain_text(report: TournamentReport) -> str:
         "Signalfamilien:",
     ]
     for f in report.families:
+        # `n_effective` belongs next to `n`, not only in the HTML table: this
+        # is the rendering that gets emailed, and the gap between the two is
+        # the whole point. The 2026-09-26 report showed n=68 for positions
+        # opened in one scan on one day, worth ~1 independent observation.
+        # Sharpe is per-trade and unannualized (see reporting/weekly.py).
         lines.append(
-            f"  {f.signal_family}{' [protected]' if f.protected else ''}: n={f.n} "
-            f"mean_return={_num(f.mean_return, 4)} sharpe={_num(f.sharpe, 2)} "
+            f"  {f.signal_family}{' [protected]' if f.protected else ''}: "
+            f"n={f.n} n_effective={_num(f.n_effective, 2)} "
+            f"mean_return={_num(f.mean_return, 4)} sharpe_per_trade={_num(f.sharpe, 2)} "
             f"psr={_num(f.psr, 3)} dsr={_num(f.dsr, 3)} bh_rejected={f.bh_rejected}"
         )
+        for note in f.notes:
+            if "n_effective" in note:
+                lines.append(f"      {note}")
     lines.append("")
     lines.append("Promotion-Vorschlaege:")
     if report.promotions:

@@ -247,3 +247,28 @@ what the machinery can and cannot feel, discovered by reading it rather than by
 looking at a result. Fixing a test before it runs is the entire purpose of
 writing the specification first; the failure mode this document guards against
 is changing it *after*.
+
+
+---
+
+## 11. How it runs (added 2026-09-26)
+
+`turboedge research synthetic-ev`, from the monthly pipeline job — the first
+scheduled job on or after the opening date. **Automated deliberately.** What
+separates this trial from the retrospective `p = 0.0135` in
+`docs/measured_results.md` §6.12 is not the statistics; it is that nobody
+chooses when it runs, and nobody gets to run it again. Automation removes a
+researcher degree of freedom here rather than adding risk.
+
+Two guards, both refusing rather than warning, each with its own exit code:
+
+| guard | exit | behaviour |
+|---|---|---|
+| `--not-before 2026-10-01` | 2 | refuses in Q3, which is closed at 11 of 6 |
+| `docs/results_2026Q4_001.json` exists | 3 | refuses once the trial has been run; `--force` overrides and says so in the output, and voids the trial |
+
+Every monthly run after October will legitimately refuse, so the step is
+`continue-on-error`. The result file is committed to version control beside
+this document, not left in an expiring artifact, and it records the fetch
+date, the per-underlying bar count and the git commit — the provenance whose
+absence made §6 irreproducible.

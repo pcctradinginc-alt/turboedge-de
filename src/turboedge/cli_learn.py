@@ -37,6 +37,7 @@ from turboedge.adapters.registry import (
 from turboedge.backtest.excursion_eval import build_excursion_dataset, evaluate_excursion
 from turboedge.backtest.ko_calibration import KoCalibrationMetrics, run_ko_calibration
 from turboedge.backtest.purged_cv import PurgedWalkForwardSplit
+from turboedge.backtest.synthetic_turbo_ev import run_synthetic_net_ev_trial
 from turboedge.backtest.walkforward import walk_forward_evaluate
 from turboedge.config import config_hash
 from turboedge.learning.drift import PageHinkley, PageHinkleyConfig, record_drift_event
@@ -495,6 +496,95 @@ def report_monthly_cmd(
     _print_counts("report monthly", counts)
     console.print(f"Wrote {json_path} / {html_path}")
     _write_summary("report_monthly", counts, month=target_month.isoformat())
+
+
+#: Where the 2026Q4-001 result is written. Its existence is the idempotency
+#: guard: a pre-registered trial is run exactly once, and a scheduled job that
+#: repeats it weekly would be multiple testing by the back door.
+_Q4_001_RESULT_PATH = Path("docs/results_2026Q4_001.json")
+
+
+def research_synthetic_ev_cmd(
+    ctx: typer.Context,
+    force: bool = typer.Option(
+        False, "--force", help="Re-run even though a result already exists (voids the trial)"
+    ),
+    not_before: str = typer.Option(
+        "2026-10-01", "--not-before", help="Refuse to run before this date (ISO)"
+    ),
+) -> None:
+    """Run pre-registered trial 2026Q4-001 (`docs/preregistration_2026Q4_001.md`).
+
+    Exactly once. The pre-registration fixes the primary hypothesis, the
+    method, the decision rule and the denominator before the data was seen;
+    what makes it confirmatory rather than retrospective is that nobody gets
+    to choose when to run it, or to run it again.
+
+    Two guards enforce that, and both refuse rather than warn:
+
+    * A result file already on disk means the trial has been run. `--force`
+      overrides it and says in the output that doing so voids the trial.
+    * `--not-before` refuses to run before 2026-10-01. Q3 is closed at 11 of 6
+      (GOVERNANCE.md §11.1), so a Q3 run would either consume a budget unit
+      that does not exist or charge Q3 work to Q4 -- the two errors §11.1 and
+      §11.5 already record.
+    """
+    app_ctx = ctx.obj
+    now = datetime.now(UTC)
+    threshold = date.fromisoformat(not_before)
+
+    if now.date() < threshold:
+        console.print(
+            f"[yellow]Not run:[/yellow] today is {now.date()}, the trial opens {threshold}. "
+            "Q3 is closed at 11 of 6; running now would mis-charge the quarter."
+        )
+        raise typer.Exit(code=2)
+
+    if _Q4_001_RESULT_PATH.exists() and not force:
+        console.print(
+            f"[yellow]Not run:[/yellow] {_Q4_001_RESULT_PATH} already exists, so this "
+            "pre-registered trial has been run. Re-running it would turn one test into "
+            "many. Use --force only if you intend to void it."
+        )
+        raise typer.Exit(code=3)
+
+    price_adapter = YFinancePriceAdapter()
+    bars_by_underlying = {
+        u: price_adapter.fetch_daily_bars(u, lookback_days=4000)
+        for u in ("DAX", "NDX", "EURUSD", "XAU")
+    }
+    provenance = {u: len(b) for u, b in bars_by_underlying.items()}
+    console.print(f"Bars fetched {now.date()}: {provenance}")
+
+    result = run_synthetic_net_ev_trial(bars_by_underlying)
+
+    _Q4_001_RESULT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    payload = result.model_dump(mode="json")
+    payload["provenance"] = {
+        "fetched_at": now.isoformat(),
+        "bars_per_underlying": provenance,
+        "lookback_days": 4000,
+        "git_commit": app_ctx.git_commit,
+        "forced": force,
+    }
+    _Q4_001_RESULT_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    console.print(
+        f"\n2026Q4-001 {result.verdict}  "
+        f"mean dLCB_NetEV={result.mean_delta_lcb_net_ev:+.6f}  "
+        f"p={result.p_value:.4f} (alpha={result.alpha})  n_dates={result.n_dates}",
+        markup=False,
+        highlight=False,
+    )
+    console.print(f"  {result.verdict_reason}", markup=False, highlight=False)
+    console.print(f"Wrote {_Q4_001_RESULT_PATH}")
+    _write_summary(
+        "research_synthetic_ev",
+        {"n_dates": result.n_dates},
+        verdict=result.verdict,
+        p_value=result.p_value,
+        mean_delta_lcb_net_ev=result.mean_delta_lcb_net_ev,
+    )
 
 
 def research_excursion_cmd(
@@ -1222,6 +1312,7 @@ def register_learn_commands(app: typer.Typer, position_app: typer.Typer) -> None
     research_app = typer.Typer(help="Research governance")
     research_app.command("queue")(research_queue_cmd)
     research_app.command("excursion")(research_excursion_cmd)
+    research_app.command("synthetic-ev")(research_synthetic_ev_cmd)
     research_app.command("approve")(research_approve_cmd)
     research_app.command("tournament")(research_tournament_cmd)
     research_app.command("backfill-trials")(research_backfill_trials_cmd)

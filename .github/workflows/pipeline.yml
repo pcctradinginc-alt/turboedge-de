@@ -579,6 +579,40 @@ jobs:
           TURBOEDGE_EMAIL_TO: ${{ secrets.TURBOEDGE_EMAIL_TO }}
         run: uv run turboedge --log-format json report monthly --email
 
+      # Pre-registered trial 2026Q4-001 (docs/preregistration_2026Q4_001.md).
+      # Runs in the monthly slot because that is the first scheduled job on or
+      # after 2026-10-01, which the pre-registration fixes as the opening date.
+      #
+      # It is meant to run EXACTLY ONCE, and the command enforces that itself:
+      # it refuses before --not-before, and refuses again once
+      # docs/results_2026Q4_001.json exists. Both refusals exit non-zero, which
+      # is why this step is continue-on-error -- every month after October will
+      # legitimately refuse, and that must not fail the monthly job.
+      #
+      # The guard is not bureaucracy. What separates this from the retrospective
+      # p=0.0135 in docs/measured_results.md §6.12 is that nobody chooses when
+      # it runs or gets to run it again; a monthly job that repeated it would
+      # turn one test into twelve.
+      - name: Pre-registered trial 2026Q4-001 (runs once, refuses thereafter)
+        continue-on-error: true
+        run: uv run turboedge --log-format json research synthetic-ev
+
+      # The result file is committed so the trial's outcome is in version
+      # control next to the frozen pre-registration that produced it, rather
+      # than only in an artifact that expires.
+      - name: Commit the 2026Q4-001 result if one was just written
+        continue-on-error: true
+        run: |
+          if [ -f docs/results_2026Q4_001.json ] && ! git diff --quiet --exit-code docs/results_2026Q4_001.json 2>/dev/null; then
+            git config user.name "turboedge-pipeline"
+            git config user.email "noreply@github.com"
+            git add docs/results_2026Q4_001.json
+            git commit -m "Result: pre-registered trial 2026Q4-001"
+            git push
+          else
+            echo "no new 2026Q4-001 result to commit"
+          fi
+
       - name: Job summary
         if: always()
         uses: ./.github/actions/turboedge-state-summary

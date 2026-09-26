@@ -1523,3 +1523,45 @@ correction runs over the pre-registered primary hypotheses of the quarter.
 This is stricter than the old 20/20 win-count framing and looser than the
 180-cell penalty, and unlike either it states the unit of correction before
 the result exists rather than after.
+
+---
+
+## 6.14 The meta layer was starved, not conservative (2026-09-26)
+
+Phase 1 abstained on every horizon with `calibration unmeasured = 1.00` and
+per-model trust of 0.027-0.032 tagged `[unmeasured: historical_oos_quality,
+calibration_quality]`. That was read here as the layer being appropriately
+cautious about an empty evidence base.
+
+It was more specific than that. `turboedge backtest` is the only writer of
+`walkforward_results`, and **it ran in no workflow at all**, so that table was
+empty in every environment. The meta layer reads it for exactly those two
+factors, found nothing, and refused to invent a neutral value — which is the
+behaviour `meta/trust.py` was built for, working correctly on no input.
+
+Measured with the table populated (120 cells from a full walk-forward run):
+
+| | table empty | table populated |
+|---|---|---|
+| `calibration unmeasured` | 1.00 | **0.18** |
+| trust per model | 0.027-0.032 | **0.000** |
+| missing-factor tags | `historical_oos_quality`, `calibration_quality` | none |
+| stated reason | "calibration never measured out-of-sample" | (gone) |
+
+The decision is still ABSTAIN, and the numbers are *worse*. That is the point.
+Trust of exactly 0.000 is `trust.py`'s deliberate encoding of "measurably no
+better than the null" — a model worse than null scores zero rather than a small
+positive number, so the score cannot be mistaken for weak evidence. With the
+table empty the layer said "I cannot tell"; with it populated it says "I can,
+and the answer is no", which agrees with §1-§2's 0/20 cells.
+
+`turboedge backtest` now runs weekly, before the tournament and before the
+state is packed.
+
+One thing the comparison exposed: `walkforward_results` carries six model ids
+and `model_registry` three — the Phase D baselines are measured but never
+registered, so the meta layer cannot score them at all. That is correct today
+(they are not promoted and not in the live ensemble), but it means the layer is
+structurally blind to the only models with any measured improvement. Recorded,
+not changed: registering them would imply a promotion decision that §6.11-§6.13
+does not support.

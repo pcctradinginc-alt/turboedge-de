@@ -33,6 +33,10 @@ from turboedge.storage.schemas import LedgerEntry, LedgerLabel, ModelRegistryEnt
 
 _SIGNAL_ID_VERSION_RE = re.compile(r"^(?P<family>.+)_v\d+$")
 
+#: Bucket for ledger entries whose signal family cannot be resolved.
+#: Grouping them together is deliberate: see `signal_family_for`.
+UNRESOLVED_SIGNAL_FAMILY = "unresolved"
+
 
 @dataclass(frozen=True)
 class WilsonInterval:
@@ -143,7 +147,24 @@ def signal_family_for(entry: LedgerEntry, registry_by_hash: dict[str, str]) -> s
     if family is not None:
         return family
     m = _SIGNAL_ID_VERSION_RE.match(entry.signal_id)
-    return m.group("family") if m is not None else entry.signal_id
+    if m is not None:
+        return m.group("family")
+    # Falling back to the raw `signal_id` was wrong, and wrong in a way that
+    # manufactured statistical significance. `scan-all` writes a per-run
+    # `signal_id` (`<timestamp>-<hash>-<underlying>`) and an *ensemble*
+    # `model_hash` that is not in the registry, so the lookup above always
+    # missed and every scan run became its own "signal family": the weekly
+    # tournament of 2026-09-26 listed ~84 of them instead of three, showed
+    # tsmom/logit/null at n=0, ran Benjamini-Hochberg across 84 restatements
+    # of the same strategy, and reported three families as significant
+    # (`bh_rejected=True`) whose entries were all same-day positions from one
+    # run.
+    #
+    # One visibly unresolved bucket is the honest representation: it is one
+    # hypothesis rather than eighty-four, it cannot be promoted (nothing in
+    # the registry matches it), and the name says the mapping is missing
+    # instead of inventing a family per run.
+    return UNRESOLVED_SIGNAL_FAMILY
 
 
 def registry_hash_map(entries: Sequence[ModelRegistryEntry]) -> dict[str, str]:

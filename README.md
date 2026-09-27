@@ -337,8 +337,9 @@ additive tables for the forecast engine, forward ledger, and position
 re-evaluation. Inspect with `turboedge db info`. `product_snapshots` is
 bounded by `turboedge db compact` (`state/retention.py`, run in the `eod`
 job): rows older than `keep_days` (default 5) are thinned to one
-row/ISIN/UTC-day, and rows older than `hard_delete_after_days` (default
-90, must exceed `keep_days`) are **permanently deleted** — except any
+row/ISIN/UTC-day. Rows older than `hard_delete_after_days` are
+**permanently deleted**, but that is now **off by default** (`null` =
+never; an explicit integer re-enables it) — except any
 ISIN referenced in `forward_ledger`, either as the entry actually taken
 (`selected_isin`) or only as a discarded alternative/counterfactual
 (`alternatives`, Master Spec §21), which is kept in full at any age.
@@ -350,13 +351,17 @@ observation/day regardless (`Store.financing_level_history`), and
 label/counterfactual learning (`learning/labeler.py`,
 `learning/counterfactual.py`) only ever look at ledger-protected ISINs,
 already covered by the exemption above independent of both settings.
-`hard_delete_after_days` was swept from 60 to 180 days against a
-21,700-ISIN/scan synthetic database; compacted size scales roughly
-linearly with it, and 90 days cuts the old, ungrounded 400-day default
-(sized to "at least a year", not to any actual consumer) by ~78% with no
-measured loss — every protected ledger ISIN stayed fully intact and every
-sampled ordinary ISIN kept >= 2 consecutive calendar days of
-`financing_level` history at every value tested.
+`hard_delete_after_days` **defaulted to 90 until 2026-09-27 and now
+defaults to `null` (never delete).** The 60-180-day sweep that produced
+90 is still recorded in `state/retention.py` and was correct about what
+it measured — no *operational* consumer needs more than a few days. It
+asked the wrong question. This table is the only point-in-time archive of
+real quotes, spreads, financing levels, issuer behaviour and knock-out
+events that exists here, and it cannot be bought or reconstructed
+afterwards; deleting it to save space optimised against the wrong
+objective (see CLAUDE.md's North Star). Measured cost of keeping it:
+**~45.7 bytes per (ISIN, day) after thinning, so ~0.36 GB/year at 21,700
+ISINs/day — about 1.8 GB over five years.**
 **Parquet**
 (`$TURBOEDGE_STATE_DIR/snapshots/<table>/date=YYYY-MM-DD/<run_id>.parquet`):
 immutable, append-only, written only during `scan`/`scan-all`; has no

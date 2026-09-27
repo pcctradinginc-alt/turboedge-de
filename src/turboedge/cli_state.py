@@ -460,23 +460,27 @@ def db_compact(
         "--keep-days",
         help="Compact product_snapshots rows older than N days to one row/isin/day",
     ),
-    hard_delete_after_days: int = typer.Option(
+    hard_delete_after_days: int | None = typer.Option(
         DEFAULT_HARD_DELETE_AFTER_DAYS,
         "--hard-delete-after-days",
         help=(
             "Permanently delete product_snapshots rows older than N days (must be > "
             "--keep-days), except ISINs present in forward_ledger (selected or as an "
-            "alternative/counterfactual), which are never thinned or deleted"
+            "alternative/counterfactual), which are never thinned or deleted. Omit (or "
+            "pass nothing) to never hard-delete -- the default -- in which case rows are "
+            "still thinned to one/isin/day, just never permanently removed"
         ),
     ),
 ) -> None:
     """Reduce ``product_snapshots`` rows older than --keep-days to one row
-    per (isin, UTC calendar day), then permanently delete whatever is still
-    older than --hard-delete-after-days; ISINs present in ``forward_ledger``
-    (if that table exists yet -- as the selected pick or anywhere in
-    ``alternatives``) keep their full history and are never thinned or
-    deleted, however old. Runs CHECKPOINT, then rewrites the database file
-    in place so the reduction actually shrinks it on disk (see
+    per (isin, UTC calendar day), then -- only if --hard-delete-after-days is
+    given -- permanently delete whatever is still older than it; ISINs
+    present in ``forward_ledger`` (if that table exists yet -- as the
+    selected pick or anywhere in ``alternatives``) keep their full history
+    and are never thinned or deleted, however old. With
+    --hard-delete-after-days omitted (the default), nothing is ever
+    hard-deleted -- thinning still runs. Runs CHECKPOINT, then rewrites the
+    database file in place so the reduction actually shrinks it on disk (see
     ``state/retention.py`` module docstring).
     """
     app_ctx = ctx.obj

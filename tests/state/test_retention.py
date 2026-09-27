@@ -10,6 +10,7 @@ import pytest
 from turboedge.state.retention import (
     DEFAULT_HARD_DELETE_AFTER_DAYS,
     DEFAULT_KEEP_DAYS,
+    RetentionConfig,
     compact_product_snapshots,
 )
 from turboedge.storage.duckdb import Store
@@ -276,7 +277,10 @@ def test_default_keep_days_constant() -> None:
 
 
 def test_default_hard_delete_after_days_constant() -> None:
-    assert DEFAULT_HARD_DELETE_AFTER_DAYS == 90
+    """Corrected 2026-09-27: the default is now None (never hard-delete),
+    not 90 -- see the module docstring for why the 90-day figure, while
+    correctly measured, sized the wrong objective for a research archive."""
+    assert DEFAULT_HARD_DELETE_AFTER_DAYS is None
 
 
 def test_invalid_keep_days_raises(store: Store) -> None:
@@ -298,6 +302,41 @@ def test_hard_delete_after_days_must_exceed_keep_days(store: Store) -> None:
         compact_product_snapshots(store, keep_days=45, hard_delete_after_days=45)
     with pytest.raises(ValueError, match="hard_delete_after_days"):
         compact_product_snapshots(store, keep_days=45, hard_delete_after_days=10)
+
+
+def test_hard_delete_after_days_none_is_valid_regardless_of_keep_days(store: Store) -> None:
+    """None must never trip the `hard_delete_after_days > keep_days` check --
+    it is a distinct "never delete" state, not a number to compare."""
+    # Would raise for any int <= keep_days (see the test above); must not
+    # raise for None, no matter how large keep_days is.
+    report = compact_product_snapshots(store, keep_days=45, hard_delete_after_days=None)
+    assert report.hard_delete_after_days is None
+
+
+def test_retention_config_default_hard_delete_after_days_is_none() -> None:
+    assert RetentionConfig().hard_delete_after_days is None
+
+
+def test_retention_config_accepts_explicit_none() -> None:
+    cfg = RetentionConfig(keep_days=45, hard_delete_after_days=None)
+    assert cfg.hard_delete_after_days is None
+
+
+def test_retention_config_none_passes_the_keep_days_validator() -> None:
+    """None must pass RetentionConfig's `hard_delete_after_days > keep_days`
+    validator unconditionally -- it is never compared to keep_days at all,
+    so no keep_days value can make it "trip"."""
+    RetentionConfig(keep_days=10_000, hard_delete_after_days=None)  # must not raise
+
+
+def test_retention_config_explicit_int_still_validated_against_keep_days() -> None:
+    """The capability to hard-delete via an explicit int must remain fully
+    validated exactly as before -- None is an additional state, not a
+    replacement for the existing int validation."""
+    with pytest.raises(ValueError, match="hard_delete_after_days"):
+        RetentionConfig(keep_days=45, hard_delete_after_days=45)
+    with pytest.raises(ValueError, match="greater than 0"):
+        RetentionConfig(keep_days=45, hard_delete_after_days=0)
 
 
 # --------------------------------------------------------------------------
@@ -374,6 +413,76 @@ def test_hard_delete_protects_ledger_selected_isin_beyond_hard_cutoff(
     assert [r[0] for r in rows] == [protected_isin]
 
 
+def test_hard_delete_after_days_none_never_deletes_no_matter_how_old(
+    store: Store, make_product_snapshot: Callable[..., ProductSnapshot]
+) -> None:
+    """MANDATORY regression for the catastrophic misread this type change
+    makes possible: `hard_delete_after_days=None` must never be treated as
+    0 (which would make `observation_time < (now - timedelta(days=0))` --
+    i.e. "older than right now" -- true for almost every row, deleting
+    everything) and must never be treated as falsy in a way that silently
+    substitutes some other cutoff. A row 5000 days old (far beyond any
+    hard_delete_after_days ever used in this module, default or explicit)
+    must still survive under None -- thinned, never deleted."""
+    now = datetime(2026, 9, 14, 12, 0, tzinfo=UTC)
+    ancient = now - timedelta(days=5000)
+    isin = "DE000AAA1111"
+    store.append_product_snapshots([_snap_at(make_product_snapshot, isin=isin, when=ancient)])
+
+    report = compact_product_snapshots(store, keep_days=45, hard_delete_after_days=None, now=now)
+
+    assert report.hard_delete_after_days is None
+    assert report.rows_hard_deleted == 0
+    assert report.rows_before == 1
+    assert report.rows_after == 1
+    remaining = store._conn.execute("SELECT isin FROM product_snapshots").fetchall()
+    assert remaining == [(isin,)]
+
+
+def test_hard_delete_after_days_none_still_thins_multiple_snapshots_per_day(
+    store: Store, make_product_snapshot: Callable[..., ProductSnapshot]
+) -> None:
+    """None disables only the permanent-delete step (rule 2) -- the
+    keep_days thinning (rule 1) must still run exactly as with an explicit
+    hard_delete_after_days, reducing an old day's multiple scans down to
+    one, not zero."""
+    now = datetime(2026, 9, 14, 12, 0, tzinfo=UTC)
+    old_day = now - timedelta(days=500)
+    isin = "DE000AAA1111"
+    snaps = [
+        _snap_at(make_product_snapshot, isin=isin, when=old_day.replace(hour=h))
+        for h in (9, 13, 17)
+    ]
+    store.append_product_snapshots(snaps)
+
+    report = compact_product_snapshots(store, keep_days=45, hard_delete_after_days=None, now=now)
+
+    assert report.rows_before == 3
+    assert report.rows_hard_deleted == 0
+    assert report.rows_after == 1  # thinned to one/isin/day, not deleted to zero
+    remaining = store._conn.execute("SELECT quote_timestamp FROM product_snapshots").fetchall()
+    assert len(remaining) == 1
+    assert remaining[0][0].hour == 17  # the latest of the day survives, same as rule 1 always does
+
+
+def test_explicit_hard_delete_after_days_still_deletes_as_before(
+    store: Store, make_product_snapshot: Callable[..., ProductSnapshot]
+) -> None:
+    """The capability to hard-delete must remain fully available via an
+    explicit int, unchanged by None becoming the default -- for anyone who
+    actually needs a size cap."""
+    now = datetime(2026, 9, 14, 12, 0, tzinfo=UTC)
+    beyond_cutoff = now - timedelta(days=500)
+    isin = "DE000AAA1111"
+    store.append_product_snapshots([_snap_at(make_product_snapshot, isin=isin, when=beyond_cutoff)])
+
+    report = compact_product_snapshots(store, keep_days=45, hard_delete_after_days=400, now=now)
+
+    assert report.hard_delete_after_days == 400
+    assert report.rows_hard_deleted == 1
+    assert report.rows_after == 0
+
+
 def test_hard_delete_protects_ledger_alternative_isin_beyond_hard_cutoff(
     store: Store, make_product_snapshot: Callable[..., ProductSnapshot]
 ) -> None:
@@ -407,6 +516,42 @@ def test_hard_delete_protects_ledger_alternative_isin_beyond_hard_cutoff(
     assert rows == {selected_isin, alt_isin}
 
 
+def test_ledger_protection_holds_under_hard_delete_after_days_none(
+    store: Store, make_product_snapshot: Callable[..., ProductSnapshot]
+) -> None:
+    """The ledger exemption is unconditional on age and must be completely
+    unaffected by hard_delete_after_days becoming None: a protected ISIN
+    keeps its full history exactly as with any explicit value, and an
+    unprotected ISIN still gets thinned (never deleted) alongside it."""
+    now = datetime(2026, 9, 14, 12, 0, tzinfo=UTC)
+    ancient = now - timedelta(days=1000)
+
+    protected_isin = "DE000PROTEC1"
+    unprotected_isin = "DE000PLAIN01"
+    snaps = []
+    for h in (9, 13, 17):
+        snaps.append(
+            _snap_at(make_product_snapshot, isin=protected_isin, when=ancient.replace(hour=h))
+        )
+        snaps.append(
+            _snap_at(make_product_snapshot, isin=unprotected_isin, when=ancient.replace(hour=h))
+        )
+    store.append_product_snapshots(snaps)
+
+    store._conn.execute("DROP TABLE IF EXISTS forward_ledger")
+    store._conn.execute("CREATE TABLE forward_ledger (selected_isin VARCHAR NOT NULL)")
+    store._conn.execute("INSERT INTO forward_ledger (selected_isin) VALUES (?)", [protected_isin])
+
+    report = compact_product_snapshots(store, keep_days=45, hard_delete_after_days=None, now=now)
+
+    assert report.rows_hard_deleted == 0
+    counts = dict(
+        store._conn.execute("SELECT isin, count(*) FROM product_snapshots GROUP BY isin").fetchall()
+    )
+    assert counts[protected_isin] == 3  # full history, unconditional on age
+    assert counts[unprotected_isin] == 1  # thinned, not deleted
+
+
 def test_hard_delete_report_default_matches_module_default(
     store: Store, make_product_snapshot: Callable[..., ProductSnapshot]
 ) -> None:
@@ -414,6 +559,7 @@ def test_hard_delete_report_default_matches_module_default(
     store.append_product_snapshots([_snap_at(make_product_snapshot, isin="DE000AAA1111", when=now)])
     report = compact_product_snapshots(store, keep_days=45, now=now)
     assert report.hard_delete_after_days == DEFAULT_HARD_DELETE_AFTER_DAYS
+    assert report.hard_delete_after_days is None
 
 
 def test_runs_checkpoint_and_reports_db_size(
@@ -782,26 +928,39 @@ def _seed_default_scale_database(store: Store, *, now: datetime) -> None:
         )
 
 
-def test_defaults_compact_realistically_and_preserve_ledger_and_financing_history(
+# The old module default before the 2026-09-27 correction (see
+# DEFAULT_HARD_DELETE_AFTER_DAYS's docstring) -- kept here, hardcoded, as an
+# explicit value so the at-scale regression test for the *retained*
+# hard-delete capability doesn't silently stop exercising it once the
+# module default changes out from under it.
+_LEGACY_HARD_DELETE_AFTER_DAYS = 90
+
+
+def test_explicit_hard_delete_after_days_compacts_realistically_and_preserves_history(
     store: Store,
 ) -> None:
     """Encodes the measurement behind DEFAULT_KEEP_DAYS=5/
-    DEFAULT_HARD_DELETE_AFTER_DAYS=90 (see module docstring): at a
-    realistic multi-hundred-day scale with the current *defaults* (no
-    explicit keep_days/hard_delete_after_days override), thinning and real
-    hard deletion both actually happen, no ledger-protected ISIN loses a
-    single row, and financing-level history for ordinary ISINs never drops
-    below 2 consecutive calendar days -- the exact bar
-    `pricing/financing.py`'s spread inference needs."""
+    the pre-2026-09-27 DEFAULT_HARD_DELETE_AFTER_DAYS=90 (see module
+    docstring): at a realistic multi-hundred-day scale with an *explicit*
+    hard_delete_after_days=90 (no longer the default -- see
+    test_defaults_thin_only_no_hard_delete_at_realistic_scale below for
+    today's default), thinning and real hard deletion both actually happen,
+    no ledger-protected ISIN loses a single row, and financing-level
+    history for ordinary ISINs never drops below 2 consecutive calendar
+    days -- the exact bar `pricing/financing.py`'s spread inference needs.
+    This is the regression test for the capability itself: an explicit int
+    must still delete exactly as before."""
     now = datetime(2026, 9, 14, 20, 0, tzinfo=UTC)
     _seed_default_scale_database(store, now=now)
 
     rows_before = store._conn.execute("SELECT count(*) FROM product_snapshots").fetchone()[0]
 
-    report = compact_product_snapshots(store, now=now)  # defaults only
+    report = compact_product_snapshots(
+        store, hard_delete_after_days=_LEGACY_HARD_DELETE_AFTER_DAYS, now=now
+    )
 
     assert report.keep_days == DEFAULT_KEEP_DAYS
-    assert report.hard_delete_after_days == DEFAULT_HARD_DELETE_AFTER_DAYS
+    assert report.hard_delete_after_days == _LEGACY_HARD_DELETE_AFTER_DAYS
     assert report.rows_before == rows_before
     # Both rules actually bite at this scale (not a no-op).
     assert report.rows_removed > 0
@@ -831,3 +990,67 @@ def test_defaults_compact_realistically_and_preserve_ledger_and_financing_histor
         assert any(
             (history_days[i + 1] - history_days[i]).days == 1 for i in range(len(history_days) - 1)
         ), f"{isin}: no 2 consecutive calendar days in {history_days}"
+
+
+def test_defaults_thin_only_no_hard_delete_at_realistic_scale(
+    store: Store,
+) -> None:
+    """Corrected 2026-09-27 counterpart to the test above: at the same
+    realistic multi-hundred-day, multi-thousand-ISIN scale, today's
+    *defaults* (hard_delete_after_days=None) must delete nothing at any
+    age -- not the ledger-protected ISINs (as always), and, unlike the old
+    90-day default, not the ordinary ISINs either. Every row inserted
+    across the entire _DEFAULT_SCALE_COLD_DAYS span -- including the
+    days-90-to-110 slice the old default would have permanently deleted --
+    must still be present, and every ordinary ISIN's financing-level
+    history must still span the *entire* cold window, not just the last
+    couple of days."""
+    now = datetime(2026, 9, 14, 20, 0, tzinfo=UTC)
+    _seed_default_scale_database(store, now=now)
+
+    rows_before = store._conn.execute("SELECT count(*) FROM product_snapshots").fetchone()[0]
+
+    report = compact_product_snapshots(store, now=now)  # defaults only: hard_delete_after_days=None
+
+    assert report.keep_days == DEFAULT_KEEP_DAYS
+    assert report.hard_delete_after_days is None
+    assert report.rows_before == rows_before
+    assert report.rows_hard_deleted == 0
+    # Nothing lost: the synthetic cold tier is seeded already at one
+    # row/isin/day (see _seed_default_scale_database's docstring), so
+    # thinning is a no-op here and, with hard delete off, so is everything
+    # else -- rows_after must equal rows_before exactly, not just "not much
+    # less".
+    assert report.rows_after == rows_before
+
+    # Ledger ISINs: unaffected, as always.
+    ledger_counts = dict(
+        store._conn.execute(
+            "SELECT isin, count(*) FROM product_snapshots WHERE isin LIKE 'DE000LG%' GROUP BY isin"
+        ).fetchall()
+    )
+    expected_per_ledger_isin = _DEFAULT_SCALE_COLD_DAYS * 5
+    assert len(ledger_counts) == _DEFAULT_SCALE_LEDGER_TOTAL
+    assert all(c == expected_per_ledger_isin for c in ledger_counts.values())
+
+    # Ordinary ISINs: the exact point of this change -- history all the way
+    # back to the earliest seeded cold day survives, including the portion
+    # (days 90-110) the old 90-day default would have permanently deleted.
+    sample_isins = [
+        f"DE000NL{str(i).zfill(6)}"
+        for i in (0, _DEFAULT_SCALE_ISIN_COUNT // 2, _DEFAULT_SCALE_ISIN_COUNT - 1)
+    ]
+    hot_days = DEFAULT_KEEP_DAYS
+    expected_per_ordinary_isin = hot_days * 5 + (_DEFAULT_SCALE_COLD_DAYS - hot_days)
+    for isin in sample_isins:
+        count = store._conn.execute(
+            "SELECT count(*) FROM product_snapshots WHERE isin = ?", [isin]
+        ).fetchone()[0]
+        assert count == expected_per_ordinary_isin, (
+            f"{isin}: expected {expected_per_ordinary_isin}, got {count}"
+        )
+        history_days = {ts.date() for ts, _ in store.financing_level_history(isin)}
+        assert len(history_days) == _DEFAULT_SCALE_COLD_DAYS, (
+            f"{isin}: expected {_DEFAULT_SCALE_COLD_DAYS} distinct days of history, "
+            f"got {len(history_days)}"
+        )

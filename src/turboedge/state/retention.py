@@ -64,8 +64,70 @@ candidate tested, 60 through 180). No consumer identified above looks back
 further than a ledger entry's own lifetime (unconditionally protected) or a
 handful of calendar days (financing spread inference, which further
 robustifies via a median over "clean" pairs, so a longer window has no
-measured benefit) -- 90 days keeps a wide safety margin above every actual
-need while cutting the old, ungrounded 400-day horizon by ~78%.
+measured benefit).
+
+**That measurement asked the right question of the wrong objective, and the
+90-day default it produced was wrong (corrected 2026-09-27).** Every bullet
+above is still true, and is kept above verbatim rather than deleted -- it
+correctly establishes that no *operational* consumer (financing-spread
+inference, labelling, position re-evaluation) needs an ordinary ISIN's
+history past a handful of days. But this table is not only an operational
+input; for a system meant to learn over years (rule 33's reproducibility
+requirement; the meta layer's whole premise, ``meta/catalog.py``), it is
+also the *only* record of what real quotes, spreads, financing levels,
+issuer behaviour and knock-out events actually looked like at each point in
+time -- for every ISIN, not only the ones a past version of the ledger
+happened to select or consider. That point-in-time archive cannot be
+bought or reconstructed after the fact once deleted; a future research
+question this system doesn't know to ask yet (a new forecast feature, a new
+issuer-behaviour study, a re-run of a past trial against a wider ISIN set)
+can only ever be answered from history that was still on disk when it was
+asked. Sizing the hard-delete horizon to what the current operational
+consumers measurably need optimizes the wrong objective: it protects disk
+space that, per the GB/year figure below, is cheap, at the cost of
+permanently destroying the one input this project cannot re-buy.
+
+``DEFAULT_HARD_DELETE_AFTER_DAYS`` is therefore ``None`` -- hard delete is
+opt-in, not on by default. The thinning rule (rule 1) still runs
+unconditionally and is unaffected by this change: it is a resolution
+reduction (many scans/day down to one/day), not a deletion of history, and
+daily resolution is ample for research exactly as it is for the operational
+consumers above. Only rule 2 (the permanent delete) defaults off. The
+capability to hard-delete is deliberately kept, for anyone who has an actual
+size cap to meet (e.g. a hard disk-quota constraint) and has decided that
+tradeoff explicitly: pass an explicit ``hard_delete_after_days`` (as before,
+must be an ``int > keep_days``) to ``compact_product_snapshots``/``turboedge
+db compact --hard-delete-after-days N``/``configs/state.yaml``.
+
+Storage cost of leaving hard delete off, measured directly (not the 90-day
+sweep above, which measured row counts, not steady-state bytes/day): a
+synthetic database was seeded with ~21,700 ISINs/day (matching one real
+DAX+NDX scan), one already-thinned row per ISIN per day (the exact shape
+the "cold" tier settles into under rule 1, forever, once a day ages past
+``keep_days``), varying every priced column (issuer, venue, bid/ask,
+financing level, ratio, etc.) so no column collapses to a single repeated
+value under DuckDB's columnar compression. Each day's insert was
+physically rewritten via the same ``COPY FROM DATABASE`` this module's own
+:func:`_rewrite_database_file` uses (a live, non-rewritten file's size is
+not a valid measurement here -- see that function's docstring for why: it
+tracks freed blocks in an internal free list rather than shrinking, and new
+writes reuse that slack in ways that make a single day's marginal size
+look like zero one day and double the next). Over 19 such days the
+physical file grew from 2,633,728 to 21,770,240 bytes; averaged over the
+last 14 daily increments (deliberately spanning several DuckDB row-group
+boundaries -- the default row-group size, ~122,880 rows, is itself close to
+5.7 days of this workload, so any single short window over/under-samples a
+flush boundary) that is **~45.7 bytes/(ISIN, day)**. At ~21,700 ISINs/day,
+every day the cold tier is left ungoverned by rule 2 costs
+``45.7 * 21,700 ~= 992 KB/day``, i.e. **~0.36 GB/year** of steady,
+unbounded growth (this is on top of, not instead of, whatever the ``keep_days``
+window and the ledger-protected ISINs already cost -- both unaffected by
+this change). Sub-gigabyte-per-year is the actual price of "never delete
+this table"; it is not the multi-year unbounded-growth risk the old
+``hard_delete_after_days`` reasoning implicitly treated it as, and it is
+cheap next to the alternative of not being able to answer a research
+question three years from now because the only evidence for it was deleted
+on a schedule tuned to what a 2026 pipeline stage happened to query.
 
 Both rules keep the *full*, untouched history for any ISIN that appears in
 ``forward_ledger`` -- as the entry actually taken (``selected_isin``) or only
@@ -124,17 +186,24 @@ logger = structlog.get_logger(__name__)
 # resolution, so this is a debugging/inspection buffer, not a data
 # dependency, and its exact size barely moves steady-state DB size.
 DEFAULT_KEEP_DAYS = 5
-# 90 days: comfortably exceeds every measured actual need (a ledger entry's
+# None: never hard-delete. Corrected 2026-09-27 -- the previous default (90)
+# comfortably exceeded every measured *operational* need (a ledger entry's
 # own lifetime is protected unconditionally regardless of age; financing
 # spread inference only needs a handful of the most recent distinct
-# calendar days and further robustifies via a median over "clean" pairs) --
-# see the module docstring ("Why these defaults") for the measurement this
-# is based on. Cuts the old, ungrounded 400-day horizon (which was sized to
-# "at least a year", not to any actual consumer) by ~78%; still well inside
-# the 90-180-day range this was evaluated against. See README.md's "Data
-# Storage"/"Pipeline modes and schedule" sections and CLAUDE.md's Notes for
-# the ledger-ISIN exemption this pairs with.
-DEFAULT_HARD_DELETE_AFTER_DAYS = 90
+# calendar days), but this table is this project's only point-in-time
+# record of real quotes/spreads/financing levels/issuer behaviour/KO
+# events, which a multi-year research system cannot re-buy once deleted --
+# see the module docstring ("Why these defaults") for the full correction,
+# the retained 60-180-day sweep this superseded, and the measured storage
+# cost (~0.36 GB/year at realistic scale) of leaving this unset. The
+# thinning rule (``keep_days``, unaffected by this default) still runs
+# unconditionally, so this only ever changes whether the daily-resolution
+# "cold" tier is ever physically deleted, not whether it exists. An
+# explicit ``int`` (must be ``> keep_days``) still hard-deletes exactly as
+# before, for anyone who has decided they need a size cap. See README.md's
+# "Data Storage"/"Pipeline modes and schedule" sections and CLAUDE.md's
+# Notes for the ledger-ISIN exemption this pairs with.
+DEFAULT_HARD_DELETE_AFTER_DAYS: int | None = None
 
 _LEDGER_TABLE = "forward_ledger"
 # W6's `forward_ledger` schema (storage/duckdb.py) names the column
@@ -160,11 +229,17 @@ class RetentionConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     keep_days: int = Field(gt=0, default=DEFAULT_KEEP_DAYS)
-    hard_delete_after_days: int = Field(gt=0, default=DEFAULT_HARD_DELETE_AFTER_DAYS)
+    # None = never hard-delete (see DEFAULT_HARD_DELETE_AFTER_DAYS / the
+    # module docstring). `gt=0` only constrains the `int` branch of this
+    # Optional -- None passes through untouched, it is never compared to 0.
+    hard_delete_after_days: int | None = Field(gt=0, default=DEFAULT_HARD_DELETE_AFTER_DAYS)
 
     @model_validator(mode="after")
     def _hard_delete_after_keep(self) -> RetentionConfig:
-        if self.hard_delete_after_days <= self.keep_days:
+        if (
+            self.hard_delete_after_days is not None
+            and self.hard_delete_after_days <= self.keep_days
+        ):
             raise ValueError(
                 f"hard_delete_after_days ({self.hard_delete_after_days}) must be greater than "
                 f"keep_days ({self.keep_days}) -- a row must be thinned to one/isin/day before "
@@ -176,7 +251,7 @@ class RetentionConfig(BaseModel):
 @dataclass(frozen=True)
 class RetentionReport:
     keep_days: int
-    hard_delete_after_days: int
+    hard_delete_after_days: int | None
     rows_before: int
     rows_after: int
     rows_removed: int
@@ -398,18 +473,23 @@ def compact_product_snapshots(
     store: Store,
     *,
     keep_days: int = DEFAULT_KEEP_DAYS,
-    hard_delete_after_days: int = DEFAULT_HARD_DELETE_AFTER_DAYS,
+    hard_delete_after_days: int | None = DEFAULT_HARD_DELETE_AFTER_DAYS,
     now: datetime | None = None,
 ) -> RetentionReport:
     """Reduce ``product_snapshots`` rows older than ``keep_days`` to one row
-    per ``(isin, UTC calendar day)``, then permanently delete whatever is
-    still older than ``hard_delete_after_days`` -- except ISINs present in
-    ``forward_ledger`` (as ``selected_isin`` or anywhere in
-    ``alternatives``), which are kept in full and never thinned or deleted,
-    however old. Runs a ``CHECKPOINT``, then rewrites the database file in
-    place (see :func:`_rewrite_database_file` and the module docstring) so
-    the row reduction actually shrinks the file on disk instead of just
-    moving free space around inside it.
+    per ``(isin, UTC calendar day)``, then -- only if ``hard_delete_after_days``
+    is not ``None`` -- permanently delete whatever is still older than
+    ``hard_delete_after_days`` -- except ISINs present in ``forward_ledger``
+    (as ``selected_isin`` or anywhere in ``alternatives``), which are kept in
+    full and never thinned or deleted, however old. ``hard_delete_after_days
+    = None`` (the default, see :data:`DEFAULT_HARD_DELETE_AFTER_DAYS`) means
+    "never hard-delete": the thinning still runs exactly as with an explicit
+    value, only the permanent-delete step is skipped, so the daily-resolution
+    "cold" tier is retained indefinitely instead of being capped. Runs a
+    ``CHECKPOINT``, then rewrites the database file in place (see
+    :func:`_rewrite_database_file` and the module docstring) so the row
+    reduction actually shrinks the file on disk instead of just moving free
+    space around inside it.
 
     ``store`` must have already had ``init_schema()`` called (as every CLI
     command does) -- this function only touches ``product_snapshots``
@@ -425,23 +505,31 @@ def compact_product_snapshots(
     which happened.
 
     Raises:
-        ValueError: if ``keep_days``/``hard_delete_after_days`` is not
-            positive, or if ``hard_delete_after_days <= keep_days`` (a row
-            must be thinned before it can ever be hard-deleted).
+        ValueError: if ``keep_days`` is not positive; or if
+            ``hard_delete_after_days`` is given (not ``None``) and is either
+            not positive or ``<= keep_days`` (a row must be thinned before it
+            can ever be hard-deleted). ``hard_delete_after_days=None`` always
+            passes both checks -- it is never compared to 0 or to
+            ``keep_days``, and must never be treated as if it were 0.
     """
     if keep_days <= 0:
         raise ValueError(f"keep_days must be > 0, got {keep_days}")
-    if hard_delete_after_days <= 0:
-        raise ValueError(f"hard_delete_after_days must be > 0, got {hard_delete_after_days}")
-    if hard_delete_after_days <= keep_days:
-        raise ValueError(
-            f"hard_delete_after_days ({hard_delete_after_days}) must be greater than "
-            f"keep_days ({keep_days})"
-        )
+    if hard_delete_after_days is not None:
+        if hard_delete_after_days <= 0:
+            raise ValueError(f"hard_delete_after_days must be > 0, got {hard_delete_after_days}")
+        if hard_delete_after_days <= keep_days:
+            raise ValueError(
+                f"hard_delete_after_days ({hard_delete_after_days}) must be greater than "
+                f"keep_days ({keep_days})"
+            )
 
     as_of = now if now is not None else datetime.now(UTC)
     keep_cutoff = as_of - timedelta(days=keep_days)
-    hard_cutoff = as_of - timedelta(days=hard_delete_after_days)
+    hard_cutoff = (
+        as_of - timedelta(days=hard_delete_after_days)
+        if hard_delete_after_days is not None
+        else None
+    )
 
     # `Store` (storage/duckdb.py) is outside this module's assignment and
     # does not expose its connection publicly; see
@@ -474,12 +562,32 @@ def compact_product_snapshots(
     # Measured for reporting only (`report.rows_hard_deleted`) -- the actual
     # deletion happens below, as part of the same rebuild that does the
     # keep_days thinning, so the table is only ever rewritten once per call.
-    rows_hard_deleted = _scalar_count(
-        conn,
-        f"SELECT count(*) FROM product_snapshots "
-        f"WHERE observation_time < ? AND {not_protected_clause}",
-        [hard_cutoff],
-    )
+    # hard_cutoff is None exactly when hard_delete_after_days is None --
+    # nothing is ever hard-deleted, so the count is 0 without a query.
+    if hard_cutoff is not None:
+        rows_hard_deleted = _scalar_count(
+            conn,
+            f"SELECT count(*) FROM product_snapshots "
+            f"WHERE observation_time < ? AND {not_protected_clause}",
+            [hard_cutoff],
+        )
+    else:
+        rows_hard_deleted = 0
+
+    # With hard_cutoff is None, the `AND observation_time >= ?` conjunct
+    # that would otherwise gate survival of an old, already-thinned
+    # (`__rn = 1`) row is dropped entirely -- every such row survives
+    # regardless of age, i.e. thinning still runs but nothing is ever
+    # hard-deleted. This is *not* the same as passing an enormous cutoff
+    # value: there is no cutoff at all.
+    if hard_cutoff is not None:
+        where_clause = (
+            "__is_protected OR observation_time >= ? OR (observation_time >= ? AND __rn = 1)"
+        )
+        rebuild_params: list[Any] = [keep_cutoff, hard_cutoff]
+    else:
+        where_clause = "__is_protected OR observation_time >= ? OR __rn = 1"
+        rebuild_params = [keep_cutoff]
 
     conn.execute(f"DROP TABLE IF EXISTS {_COMPACT_TABLE_NAME}")
     conn.execute(
@@ -494,11 +602,9 @@ def compact_product_snapshots(
                 {is_protected_expr} AS __is_protected
             FROM product_snapshots
         )
-        WHERE __is_protected
-           OR observation_time >= ?
-           OR (observation_time >= ? AND __rn = 1)
+        WHERE {where_clause}
         """,
-        [keep_cutoff, hard_cutoff],
+        rebuild_params,
     )
     conn.execute("DROP TABLE product_snapshots")
     conn.execute(f"ALTER TABLE {_COMPACT_TABLE_NAME} RENAME TO product_snapshots")

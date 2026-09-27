@@ -19,12 +19,20 @@ retention:
   # thinned "cold" tier grows without bound forever (~1 row/isin/day).
   # Ledger-referenced ISINs (selected_isin AND alternatives/counterfactual)
   # are exempt from this and from the thinning above, at any age. Must be
-  # greater than keep_days. 90 days was chosen from a measured sweep
-  # (60/90/120/180, see state/retention.py's module docstring): the
-  # compacted steady-state size scales roughly linearly with this value and
-  # no real consumer needs data older than a ledger entry's own lifetime
-  # (protected unconditionally) or a handful of days of financing-level
-  # history -- 90 days keeps a wide safety margin while cutting the old
-  # 400-day default (sized to "at least a year", not to any actual need)
-  # by ~78%.
-  hard_delete_after_days: 90
+  # greater than keep_days when set.
+  #
+  # null (the default, corrected 2026-09-27): never hard-delete. A measured
+  # sweep (60/90/120/180, see state/retention.py's module docstring)
+  # originally set this to 90, on the grounds that no *operational*
+  # consumer needs data older than a ledger entry's own lifetime (protected
+  # unconditionally) or a handful of days of financing-level history. That
+  # reasoning is still recorded (and still correct) in the module
+  # docstring, but it answered the wrong question: this table is also the
+  # only point-in-time record of real quotes/spreads/financing levels/
+  # issuer behaviour/KO events this multi-year research system has, and
+  # that cannot be re-bought once a hard-delete pass removes it. Measured
+  # cost of `null` (see the module docstring for the derivation): ~0.36
+  # GB/year at realistic scale (~21,700 ISINs/day). Set an explicit integer
+  # (as before, must be > keep_days) if a hard size cap is ever actually
+  # needed.
+  hard_delete_after_days: null

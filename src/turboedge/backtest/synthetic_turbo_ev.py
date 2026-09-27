@@ -113,6 +113,83 @@ with a genuine two-sided quote around fair value:
 genuinely depends on ``spread``, so §6's sensitivity check is now a real
 computation rather than a structural identity (see
 :func:`_spread_sensitivity_mean_delta_lcb_net_ev`).
+
+---
+
+**2026Q4-002 extension** (``docs/preregistration_2026Q4_002.md``): the only
+difference from 2026Q4-001 is §1 -- each arm's path dispersion is set to
+*that arm's own forecast sigma* via ``simulation/paths.py::simulate_paths``'s
+``target_sigma`` (commit ``b70c050``) instead of both arms inheriting
+historical dispersion. :class:`SyntheticTurboConfig.sigma_source` selects the
+mode: ``"historical"`` (default, unchanged -- reproduces 2026Q4-001 exactly,
+bit-for-bit, by continuing to call ``evaluate_product_horizons`` exactly as
+before), ``"forecast"`` (2026Q4-002 §1's primary mode: each arm gets its own
+forecast's ``sigma`` as its path-dispersion target) and ``"null_forecast"``
+(2026Q4-002 §2 point 3 / §6's falsification mode: **both** arms are forced to
+the null model's own forecast sigma, so any surviving difference cannot be
+attributed to width).
+
+**Driving ``target_sigma`` without touching ``ranking/ev.py``.**
+``ranking/ev.py::evaluate_product_horizons`` builds its ``PathSet``\\ s
+internally (its private ``_build_paths``, which calls ``simulate_paths``) and
+exposes no parameter for ``target_sigma`` at all -- and per this trial's own
+constraint, ``ranking/ev.py`` is not modified to add one (that would be a
+production path-engine change affecting every existing measurement, and
+belongs in a separate, reviewed step, exactly as Amendment B of
+2026Q4-001 said of ``target_sigma`` itself before it existed). Passing a
+pre-built ``PathSet`` into ``evaluate_product_horizons`` is also not an
+option: it has no such parameter either -- it always builds its own paths
+from ``bars``/``forecast_by_horizon``.
+
+The only remaining option the pre-registration itself names --
+"construct the EV evaluation the way ``ranking/ev.py`` does but with the
+sigma set" -- is what :func:`_evaluate_grid_with_target_sigma` does: it
+mirrors ``evaluate_product_horizons``'s own payoff/shrinkage/LCB computation
+(reusing its actual dependencies -- ``simulation/paths.py::simulate_paths``,
+``simulation/payoff.py::simulate_product_payoff``,
+``ranking/shrinkage.py::shrink_group_means``,
+``ranking/lcb.py::lower_confidence_bound``, and ``ranking/ev.py::EvConfig``
+itself for every default that is not sigma-specific -- ``z_pessimistic``,
+``lcb.z``, ``shrinkage``, ``path_method``, ``block_size``, ``lookback_days``),
+but builds each ``(direction, horizon, scenario)`` ``PathSet`` itself, one
+level below ``evaluate_product_horizons``, with ``target_sigma`` threaded
+through. Only the two trivial, direction-and-scenario-only formulas that
+``evaluate_product_horizons`` computes inline (the pessimistic-scenario drift
+sign, and the leverage approximation used purely for shrinkage-group
+bucketing) are duplicated locally rather than imported across the module
+boundary this harness must not cross -- see
+:func:`_approx_leverage_for_grouping`'s docstring for why importing
+``ranking/ev.py``'s own (private, underscore-prefixed) helpers instead was
+rejected. This is used only for ``sigma_source in {"forecast",
+"null_forecast"}``; ``"historical"`` keeps calling
+``evaluate_product_horizons`` completely unchanged, so nothing about
+2026Q4-001's measured behaviour can move.
+
+**Unreachable targets (§3).** ``simulate_paths`` clamps and reports
+(``target_sigma_met=False``) rather than raising when a target is below the
+achievable floor (``_apply_volatility_scaling``'s own documented policy).
+Clamped cells are priced and included exactly like any other cell -- never
+dropped -- and counted per arm in :class:`StabilityAnalysis`
+(``clamped_cell_count_null``/``clamped_cell_count_regime_conditional``),
+alongside the primary statistic recomputed on reachable-only cells
+(``reachable_only_mean_delta_lcb_net_ev``, §6: stability, never primary) and
+the realised-vs-requested sigma per arm
+(``mean_realized_sigma_by_arm``/``mean_target_sigma_by_arm``).
+
+**The falsification arm (§2 point 3, §6) is a first-class, top-level result
+field** (:class:`FalsificationArm`, ``SyntheticEvResult.falsification``), not
+buried in stability analysis -- computed automatically whenever
+``sigma_source="forecast"`` by rerunning the whole grid with
+``sigma_source="null_forecast"`` (both arms forced to the null's own sigma)
+against the identical, already-computed walk-forward forecasts. Whether it
+"shows an effect" is a fixed, pre-committed numeric rule
+(:func:`_falsification_shows_effect`): the *same* PASS bar as the primary
+(``p <= alpha`` and ``mean_delta > 0``) applied to the falsification arm's own
+delta series -- see that function's docstring for why this bar, not a
+bespoke one, was chosen. The primary verdict is then one of **four** branches
+(:func:`_verdict_with_falsification`, pre-registration §5) rather than
+2026Q4-001's three: PASS's row is split into PASS (falsification shows no
+effect) and CONFOUNDED (falsification shows an effect too).
 """
 
 from __future__ import annotations
@@ -132,7 +209,10 @@ from turboedge.models.directional import NullModel
 from turboedge.models.forecast import HORIZONS, ForecastModel, HorizonForecast
 from turboedge.pricing.fair_value import theoretical_fair_value
 from turboedge.ranking.ev import EvConfig, evaluate_product_horizons
-from turboedge.simulation.payoff import ProductTerms
+from turboedge.ranking.lcb import lower_confidence_bound
+from turboedge.ranking.shrinkage import leverage_bucket_for, shrink_group_means, shrinkage_group_key
+from turboedge.simulation.paths import PathSet, simulate_paths
+from turboedge.simulation.payoff import ProductTerms, simulate_product_payoff
 from turboedge.storage.schemas import Direction, ProductType, UnderlyingBar
 
 #: Walk-forward parameters, frozen identical to pre-registration §4 /
@@ -179,6 +259,15 @@ class SyntheticTurboConfig:
     exit_spread_pct: float = 0.005
     n_paths: int = 2000
     seed: int = 20261001
+    #: 2026Q4-002 §1: which dispersion each arm's simulated paths use.
+    #: ``"historical"`` (default) reproduces 2026Q4-001 exactly -- both arms'
+    #: dispersion comes entirely from ``bars`` via ``evaluate_product_horizons``,
+    #: unchanged. ``"forecast"`` is the 2026Q4-002 primary mode: each arm's
+    #: paths target *that arm's own* forecast sigma. ``"null_forecast"`` is
+    #: the §2/§6 falsification mode: **both** arms are forced to the null
+    #: model's own forecast sigma. See module docstring, "2026Q4-002
+    #: extension".
+    sigma_source: Literal["historical", "forecast", "null_forecast"] = "historical"
 
 
 def _synthetic_isin(direction: Direction, distance: float) -> str:
@@ -328,12 +417,74 @@ class StabilityAnalysis(BaseModel):
     #: asks for ("the reader must be able to see that without re-running
     #: anything").
     spread_sensitivity_sign_stable: bool
+    #: 2026Q4-002 §3/§6: count of grid cells (out of ``n_cells``) whose
+    #: requested ``target_sigma`` was unreachable and therefore clamped
+    #: (``PathSet.target_sigma_met=False``), per arm. **These cells are
+    #: still included** in every delta/primary computation above -- this is
+    #: a count for the reader, not a record of anything dropped (§3:
+    #: "unreachable cells are included at the clamped sigma and counted...
+    #: not dropped"). Always 0 for ``sigma_source="historical"`` (no target
+    #: is ever requested there, so nothing can be clamped).
+    clamped_cell_count_null: int = 0
+    clamped_cell_count_regime_conditional: int = 0
+    #: 2026Q4-002 §6: the primary statistic (mean delta LCB NetEV, not a
+    #: fresh p-value -- §6 asks for the *statistic* recomputed, not a second
+    #: significance test) recomputed on only the cells where **neither** arm
+    #: was clamped. ``None`` when every cell was clamped (no reachable cells
+    #: to recompute from) or when ``sigma_source="historical"`` and no
+    #: sigma-targeting information exists at all. Stability only, per §3:
+    #: "never as the primary".
+    reachable_only_mean_delta_lcb_net_ev: float | None = None
+    #: 2026Q4-002 §6: "realised-vs-requested sigma per arm, so a reader can
+    #: confirm the mechanism did what §1 claims" -- mean, across all cells
+    #: that carry sigma-targeting diagnostics, of the *central-scenario*
+    #: ``PathSet.realized_sigma``/``target_sigma`` for that arm. Keys
+    #: ``"null"``/``"regime_conditional"``. Empty for
+    #: ``sigma_source="historical"``.
+    mean_realized_sigma_by_arm: dict[str, float] = Field(default_factory=dict)
+    mean_target_sigma_by_arm: dict[str, float] = Field(default_factory=dict)
+
+
+class FalsificationArm(BaseModel):
+    """Pre-registration 2026Q4-002 §2 point 3 / §6: the comparison rerun with **both** arms
+    forced to the null model's own forecast sigma (never each arm's own -- that is exactly the
+    manipulation the primary "forecast" run applies, and this arm exists to remove it and see
+    whether the effect survives).
+
+    Kept as its own top-level field on :class:`SyntheticEvResult` -- **not** nested inside
+    :class:`StabilityAnalysis` -- because the pre-registration frames it as the thing that lets
+    a PASS be attacked (§2: "this arm exists specifically so a PASS can be attacked, and its
+    outcome is reported whatever it says"), which means a reader must not have to go looking in
+    secondary/stability analysis to find it.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    #: Same statistic as the primary (mean over dates of the whole-grid-mean
+    #: LCB NetEV delta), computed with both arms forced to the null's own
+    #: forecast sigma.
+    mean_delta_lcb_net_ev: float
+    #: Same one-sided moving-block-bootstrap procedure as the primary
+    #: (identical alpha/block_length/n_resamples/seed), applied to this
+    #: arm's own delta-by-date series.
+    p_value: float = Field(ge=0.0, le=1.0)
+    n_dates: int = Field(gt=0)
+    #: See :func:`_falsification_shows_effect` for the fixed, pre-committed
+    #: numeric rule this is computed from.
+    shows_effect: bool
+    shows_effect_reason: str
 
 
 class SyntheticEvResult(BaseModel):
-    """Pre-registration 2026Q4-001 result: exactly one primary p-value (§4/§5, statistic per
-    Amendment B §10) plus the stability analysis (§6), kept in a structurally separate nested
-    field so a reader cannot mistake secondary evidence for the primary test."""
+    """Pre-registration result: exactly one primary p-value (§4/§5, statistic per Amendment B
+    §10) plus the stability analysis (§6), kept in a structurally separate nested field so a
+    reader cannot mistake secondary evidence for the primary test.
+
+    2026Q4-002 extension: ``verdict`` gains a fourth branch (``CONFOUNDED``) and
+    ``falsification``/``sigma_source`` are new, both ``None``/``"historical"`` respectively for
+    a 2026Q4-001-shaped (``sigma_source="historical"``) run -- see module docstring, "2026Q4-002
+    extension".
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -351,18 +502,41 @@ class SyntheticEvResult(BaseModel):
     bootstrap_seed: int
     n_dates: int = Field(gt=0)
     #: Pre-registration §5's decision table, verbatim:
-    #: PASS = p<=alpha and mean_delta>0; FAIL_NULL_RESULT = p>alpha;
-    #: FAIL_NEGATIVE_SIGNIFICANT = p<=alpha and mean_delta<=0 (§5 row 3: "a
-    #: more informative negative than a null result").
-    verdict: Literal["PASS", "FAIL_NULL_RESULT", "FAIL_NEGATIVE_SIGNIFICANT"]
+    #: PASS = p<=alpha and mean_delta>0 and (2026Q4-002 only) falsification
+    #: shows no effect; CONFOUNDED (2026Q4-002 only) = same, but falsification
+    #: also shows an effect; FAIL_NULL_RESULT = p>alpha;
+    #: FAIL_NEGATIVE_SIGNIFICANT = p<=alpha and mean_delta<=0 ("a more
+    #: informative negative than a null result").
+    verdict: Literal["PASS", "CONFOUNDED", "FAIL_NULL_RESULT", "FAIL_NEGATIVE_SIGNIFICANT"]
     verdict_reason: str
     stability: StabilityAnalysis
+    #: 2026Q4-002 §2/§6: populated iff ``config.sigma_source == "forecast"`` --
+    #: the only mode where "is the effect attributable to width" is a live
+    #: question. ``None`` for ``"historical"`` (2026Q4-001 -- no sigma
+    #: targeting exists to falsify) and ``"null_forecast"`` (this run *is*
+    #: already the falsification-style comparison; nesting another
+    #: falsification arm inside it is not meaningful).
+    falsification: FalsificationArm | None = None
+    #: Echoes ``config.sigma_source`` used to produce this result (§4
+    #: provenance discipline: what was actually run should be readable off
+    #: the result, not just inferred from the caller's own config object).
+    sigma_source: Literal["historical", "forecast", "null_forecast"] = "historical"
 
 
 @dataclass(frozen=True, slots=True)
 class _CellRecord:
     """One ``(prediction date, underlying, isin, horizon)`` grid cell's LCB NetEV, both arms
-    (Amendment B §10: ``ProductHorizonEvaluation.lcb_net_return``, not ``mean_net_return``)."""
+    (Amendment B §10: ``ProductHorizonEvaluation.lcb_net_return``, not ``mean_net_return``).
+
+    The ``*_realized_sigma``/``*_target_sigma``/``*_target_sigma_met`` fields (2026Q4-002 §1/§3/
+    §6) default to ``None`` -- populated only for ``sigma_source in {"forecast",
+    "null_forecast"}`` (see :func:`_price_trial_grid`) from the *central*-scenario
+    ``PathSet``'s own diagnostics (the pessimistic scenario targets the same ``target_sigma``,
+    per :func:`_evaluate_grid_with_target_sigma`, so the central scenario is representative
+    without double-counting a cell for both scenarios). ``None`` throughout for
+    ``sigma_source="historical"``, exactly like existing tests that construct a bare
+    ``_CellRecord`` with only the original eight fields expect.
+    """
 
     date_key: date
     underlying_id: str
@@ -372,6 +546,12 @@ class _CellRecord:
     horizon_days: int
     lcb_net_ev_null: float
     lcb_net_ev_regime_conditional: float
+    null_realized_sigma: float | None = None
+    null_target_sigma: float | None = None
+    null_target_sigma_met: bool | None = None
+    regime_realized_sigma: float | None = None
+    regime_target_sigma: float | None = None
+    regime_target_sigma_met: bool | None = None
 
     @property
     def delta(self) -> float:
@@ -448,6 +628,249 @@ def _collect_forecasts_by_underlying(
     return result
 
 
+#: Internal scenario keys for :func:`_evaluate_grid_with_target_sigma` --
+#: mirrors ``ranking/ev.py``'s own ``_SCENARIO_CENTRAL``/``_SCENARIO_PESSIMISTIC``
+#: constants (arbitrary internal dict keys; not part of any public contract).
+_SIGMA_SCENARIO_CENTRAL = "central"
+_SIGMA_SCENARIO_PESSIMISTIC = "pessimistic"
+
+#: Mirrors ``ranking/ev.py::_MAX_PLAUSIBLE_UNDERLYING_MOVE`` exactly (see that
+#: module's own 2026-09-24 incident comment for why this guard exists at
+#: all). Duplicated, not imported, for the same reason as
+#: :func:`_approx_leverage_for_grouping`.
+_SIGMA_MAX_PLAUSIBLE_UNDERLYING_MOVE = 3.0
+
+
+@dataclass(slots=True)
+class _RawSigmaRecord:
+    """Internal, mutable accumulator for one (isin, horizon) cell between the path-simulation
+    pass and the shrinkage/LCB pass of :func:`_evaluate_grid_with_target_sigma` -- mirrors
+    ``ranking/ev.py::_RawRecord``, trimmed to only what this trial's primary statistic and §6
+    stability analysis read (``lcb_net_return`` and the sigma-targeting diagnostics)."""
+
+    isin: str
+    horizon_days: int
+    group_key: str
+    mean_net_return: float
+    pessimistic_mean: float
+    mc_standard_error: float
+    model_uncertainty: float
+    realized_sigma: float | None
+    target_sigma: float | None
+    target_sigma_met: bool | None
+    shrunk_mean: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class _SigmaCellEval:
+    """One (isin, horizon) cell's LCB NetEV plus the 2026Q4-002 §1/§3/§6 sigma-targeting
+    diagnostics, as returned by :func:`_evaluate_grid_with_target_sigma`."""
+
+    isin: str
+    horizon_days: int
+    lcb_net_return: float
+    realized_sigma: float | None
+    target_sigma: float | None
+    target_sigma_met: bool | None
+
+
+def _approx_leverage_for_grouping(terms: ProductTerms, spot0: float) -> float:
+    """Standard turbo leverage approximation, used *only* to bucket cells for shrinkage
+    grouping -- mirrors ``ranking/ev.py::_approx_leverage`` exactly.
+
+    Duplicated rather than imported: ``ranking/ev.py`` is not modified by this trial (see
+    module docstring), and importing its private, underscore-prefixed helper across the module
+    boundary would create an undeclared dependency on an implementation detail of a module this
+    harness is expressly forbidden from touching -- if ``ranking/ev.py`` ever renames or
+    inlines ``_approx_leverage``, this trial's own tests (not a cross-module import failure
+    somewhere else) are what should catch a divergence.
+    """
+    if not (spot0 > 0.0) or not (terms.entry_ask > 0.0) or not (terms.fx > 0.0):
+        return 1.0
+    return (spot0 * terms.ratio) / (terms.entry_ask * terms.fx)
+
+
+def _evaluate_grid_with_target_sigma(
+    terms_by_isin: Mapping[str, ProductTerms],
+    forecast_by_horizon: Mapping[int, HorizonForecast],
+    bars: Sequence[UnderlyingBar],
+    *,
+    underlying_id: str,
+    spot0: float,
+    start: datetime,
+    as_of: date,
+    rng: np.random.Generator,
+    horizons: Sequence[int],
+    n_paths: int,
+    target_sigma_by_horizon: Mapping[int, float] | None,
+) -> list[_SigmaCellEval]:
+    """2026Q4-002 §1's sigma-targeting mode of the payoff/LCB pipeline -- see module docstring,
+    "Driving target_sigma without touching ranking/ev.py", for why this exists as a parallel
+    path rather than a parameter on ``evaluate_product_horizons``.
+
+    Mirrors ``evaluate_product_horizons``'s own payoff/shrinkage/LCB computation using its
+    actual dependencies (``simulate_paths``, ``simulate_product_payoff``, ``shrink_group_means``,
+    ``lower_confidence_bound``) and its own default config (``EvConfig(n_paths=n_paths)`` --
+    ``z_pessimistic``, ``lcb.z``, ``shrinkage``, ``path_method``, ``block_size``,
+    ``lookback_days`` are all read from it, never hand-picked constants, so a future change to
+    those defaults is felt here too), differing only in:
+
+    - building each ``(direction, horizon, scenario)`` ``PathSet`` with
+      ``target_sigma=target_sigma_by_horizon[h]`` (``None`` per horizon disables targeting for
+      that horizon, matching ``simulate_paths``'s own no-op contract) instead of leaving
+      dispersion to come from ``bars`` alone;
+    - returning only what this trial needs (``lcb_net_return`` plus the sigma diagnostics) --
+      utility/score/sizing/liquidity/gates are irrelevant to a standardised-universe trial that
+      only ever reads ``lcb_net_return`` (see the existing ``_CellRecord``).
+
+    Per-cell sigma diagnostics (``realized_sigma``/``target_sigma``/``target_sigma_met``) are
+    taken from the **central**-scenario ``PathSet``: dispersion targeting runs before the drift
+    tilt inside ``simulate_paths`` (``_apply_volatility_scaling`` precedes ``_apply_drift_tilt``),
+    so the achievable dispersion does not depend on which scenario's drift is applied, and using
+    one scenario avoids reporting a cell's clamp status twice.
+
+    No look-ahead: identical to ``evaluate_product_horizons``'s own guarantee -- ``simulate_paths``
+    excludes any bar at or after ``start`` from its bootstrap sample, and ``forecast_by_horizon``
+    was already fit only on bars available before this date by the caller's walk-forward step.
+
+    Raises:
+        ValueError: if ``horizons`` is empty or ``spot0 <= 0`` (mirrors
+            ``evaluate_product_horizons``'s own input validation).
+    """
+    if not horizons:
+        raise ValueError("horizons must not be empty")
+    if not (spot0 > 0.0):
+        raise ValueError(f"spot0 must be > 0, got {spot0!r}")
+    if not terms_by_isin:
+        return []
+
+    ev_cfg = EvConfig(n_paths=n_paths)
+    directions_present = {t.direction for t in terms_by_isin.values()}
+
+    paths: dict[Direction, dict[int, dict[str, PathSet]]] = {}
+    for direction in sorted(directions_present, key=lambda d: d.value):
+        paths[direction] = {}
+        # Adverse-for-this-direction sign, mirroring ranking/ev.py::_drift_for_scenario
+        # exactly: LONG's pessimistic scenario is a lower drift, SHORT's is a higher one.
+        adverse_is_lower = direction == Direction.LONG
+        pess_sign = -1.0 if adverse_is_lower else 1.0
+        for h in sorted(horizons):
+            forecast = forecast_by_horizon[h]
+            target_sigma = None if target_sigma_by_horizon is None else target_sigma_by_horizon[h]
+            central_drift = forecast.mean
+            pessimistic_drift = (
+                forecast.mean + pess_sign * ev_cfg.z_pessimistic * forecast.uncertainty
+            )
+            paths[direction][h] = {
+                _SIGMA_SCENARIO_CENTRAL: simulate_paths(
+                    bars,
+                    spot0=spot0,
+                    start=start,
+                    horizon_days=h,
+                    n_paths=ev_cfg.n_paths,
+                    rng=rng,
+                    drift_log_return=central_drift,
+                    target_sigma=target_sigma,
+                    method=ev_cfg.path_method,  # type: ignore[arg-type]
+                    block_size=ev_cfg.block_size,
+                    lookback_days=ev_cfg.lookback_days,
+                ),
+                _SIGMA_SCENARIO_PESSIMISTIC: simulate_paths(
+                    bars,
+                    spot0=spot0,
+                    start=start,
+                    horizon_days=h,
+                    n_paths=ev_cfg.n_paths,
+                    rng=rng,
+                    drift_log_return=pessimistic_drift,
+                    target_sigma=target_sigma,
+                    method=ev_cfg.path_method,  # type: ignore[arg-type]
+                    block_size=ev_cfg.block_size,
+                    lookback_days=ev_cfg.lookback_days,
+                ),
+            }
+
+    raw: list[_RawSigmaRecord] = []
+    for isin, terms in terms_by_isin.items():
+        for h in horizons:
+            scenario_paths = paths[terms.direction][h]
+            central_paths = scenario_paths[_SIGMA_SCENARIO_CENTRAL]
+            central_dist = simulate_product_payoff(terms, central_paths, [h], as_of=as_of)[h]
+            pessimistic_dist = simulate_product_payoff(
+                terms, scenario_paths[_SIGMA_SCENARIO_PESSIMISTIC], [h], as_of=as_of
+            )[h]
+
+            leverage = _approx_leverage_for_grouping(terms, spot0)
+            bucket = leverage_bucket_for(leverage)
+            group_key = f"{shrinkage_group_key(underlying_id, terms.direction, bucket)}|h{h}"
+
+            # Physical-impossibility guard, mirroring ranking/ev.py's own (see that module's
+            # 2026-09-24 incident comment) -- never suppresses a plausible candidate, only
+            # arithmetically impossible output.
+            plausible_bound = _SIGMA_MAX_PLAUSIBLE_UNDERLYING_MOVE * leverage
+            if abs(central_dist.mean) > plausible_bound or abs(pessimistic_dist.mean) > (
+                plausible_bound
+            ):
+                continue
+
+            raw.append(
+                _RawSigmaRecord(
+                    isin=isin,
+                    horizon_days=h,
+                    group_key=group_key,
+                    mean_net_return=central_dist.mean,
+                    pessimistic_mean=pessimistic_dist.mean,
+                    mc_standard_error=central_dist.mc_standard_error,
+                    model_uncertainty=forecast_by_horizon[h].uncertainty,
+                    realized_sigma=central_paths.realized_sigma,
+                    target_sigma=central_paths.target_sigma,
+                    target_sigma_met=central_paths.target_sigma_met,
+                )
+            )
+
+    groups: dict[str, list[_RawSigmaRecord]] = {}
+    for rec in raw:
+        groups.setdefault(rec.group_key, []).append(rec)
+    for members in groups.values():
+        shrunk, _intensity = shrink_group_means(
+            [m.mean_net_return for m in members],
+            [m.mc_standard_error for m in members],
+            [m.model_uncertainty for m in members],
+            cfg=ev_cfg.shrinkage,
+        )
+        for member, shrunk_mean in zip(members, shrunk, strict=True):
+            member.shrunk_mean = shrunk_mean
+
+    evaluations: list[_SigmaCellEval] = []
+    for rec in raw:
+        lcb_net_return = lower_confidence_bound(
+            rec.mean_net_return,
+            rec.pessimistic_mean,
+            rec.mc_standard_error,
+            rec.shrunk_mean,
+            z=ev_cfg.lcb.z,
+        )
+        evaluations.append(
+            _SigmaCellEval(
+                isin=rec.isin,
+                horizon_days=rec.horizon_days,
+                lcb_net_return=lcb_net_return,
+                realized_sigma=rec.realized_sigma,
+                target_sigma=rec.target_sigma,
+                target_sigma_met=rec.target_sigma_met,
+            )
+        )
+    return evaluations
+
+
+def _target_sigma_by_horizon(
+    forecast_map: Mapping[int, HorizonForecast], horizons: Sequence[int]
+) -> dict[int, float]:
+    """2026Q4-002 §1: one arm's own forecast sigma, per horizon -- the target
+    :func:`_evaluate_grid_with_target_sigma` is asked to hit for that arm."""
+    return {h: forecast_map[h].sigma for h in horizons}
+
+
 def _price_trial_grid(
     underlying_forecasts: Mapping[str, _UnderlyingForecasts],
     cfg: SyntheticTurboConfig,
@@ -469,6 +892,14 @@ def _price_trial_grid(
     model was fit only on bars up to that fold's training bar's
     ``available_at`` inside ``walk_forward_evaluate`` -- this function adds
     no additional data access of its own.
+
+    2026Q4-002 §1: for ``cfg.sigma_source in {"forecast", "null_forecast"}``,
+    grid pricing runs through :func:`_evaluate_grid_with_target_sigma` instead
+    of ``evaluate_product_horizons`` (module docstring, "Driving target_sigma
+    without touching ranking/ev.py"). ``"historical"`` (default) is
+    completely unchanged from 2026Q4-001 -- still ``evaluate_product_horizons``,
+    still no ``target_sigma`` requested at all -- so this branch cannot move
+    any existing measurement.
     """
     records: list[_CellRecord] = []
     for underlying_id, uf in underlying_forecasts.items():
@@ -488,9 +919,77 @@ def _price_trial_grid(
             # built once per date, not once per arm.
             universe = build_standardised_universe(bar.close, config=cfg)
             cluster_id = f"synthetic::{underlying_id}"
-            ev_cfg = EvConfig(n_paths=cfg.n_paths)
 
-            null_evals = evaluate_product_horizons(
+            if cfg.sigma_source == "historical":
+                ev_cfg = EvConfig(n_paths=cfg.n_paths)
+
+                null_evals = evaluate_product_horizons(
+                    universe,
+                    {h: null_forecast_map[h] for h in common_horizons},
+                    uf.bars,
+                    underlying_id=underlying_id,
+                    spot0=bar.close,
+                    start=bar.available_at,
+                    as_of=d,
+                    cluster_id=cluster_id,
+                    # Fresh Generator, same seed, for both arms (§4: "identical
+                    # across arms") -- common random numbers, so any difference
+                    # in path draws is impossible and any NetEV difference
+                    # attributes to the forecast alone.
+                    rng=np.random.default_rng(cfg.seed),
+                    horizons=common_horizons,
+                    cfg=ev_cfg,
+                )
+                regime_evals = evaluate_product_horizons(
+                    universe,
+                    {h: regime_forecast_map[h] for h in common_horizons},
+                    uf.bars,
+                    underlying_id=underlying_id,
+                    spot0=bar.close,
+                    start=bar.available_at,
+                    as_of=d,
+                    cluster_id=cluster_id,
+                    rng=np.random.default_rng(cfg.seed),
+                    horizons=common_horizons,
+                    cfg=ev_cfg,
+                )
+
+                null_by_key = {(e.isin, e.horizon_days): e for e in null_evals}
+                regime_by_key = {(e.isin, e.horizon_days): e for e in regime_evals}
+                # A candidate can be excluded per-arm by ev.py's own
+                # implausible-magnitude guard; never silently defaulted here --
+                # only cells priced by *both* arms enter the paired delta.
+                common_keys = sorted(set(null_by_key) & set(regime_by_key))
+                for isin, horizon_days in common_keys:
+                    direction, distance = _parse_synthetic_isin(isin)
+                    records.append(
+                        _CellRecord(
+                            date_key=d,
+                            underlying_id=underlying_id,
+                            isin=isin,
+                            direction=direction,
+                            barrier_distance=distance,
+                            horizon_days=horizon_days,
+                            lcb_net_ev_null=null_by_key[(isin, horizon_days)].lcb_net_return,
+                            lcb_net_ev_regime_conditional=regime_by_key[
+                                (isin, horizon_days)
+                            ].lcb_net_return,
+                        )
+                    )
+                continue
+
+            # cfg.sigma_source in {"forecast", "null_forecast"} (2026Q4-002 §1/§2).
+            null_target = _target_sigma_by_horizon(null_forecast_map, common_horizons)
+            if cfg.sigma_source == "forecast":
+                # §1: each arm targets its own forecast's sigma.
+                regime_target = _target_sigma_by_horizon(regime_forecast_map, common_horizons)
+            else:
+                # "null_forecast" -- §2 point 3/§6 falsification: BOTH arms
+                # forced to the null's own sigma (regime is not allowed its
+                # own, narrower, target here).
+                regime_target = dict(null_target)
+
+            null_sigma_evals = _evaluate_grid_with_target_sigma(
                 universe,
                 {h: null_forecast_map[h] for h in common_horizons},
                 uf.bars,
@@ -498,16 +997,12 @@ def _price_trial_grid(
                 spot0=bar.close,
                 start=bar.available_at,
                 as_of=d,
-                cluster_id=cluster_id,
-                # Fresh Generator, same seed, for both arms (§4: "identical
-                # across arms") -- common random numbers, so any difference
-                # in path draws is impossible and any NetEV difference
-                # attributes to the forecast alone.
-                rng=np.random.default_rng(cfg.seed),
+                rng=np.random.default_rng(cfg.seed),  # same seed, both arms -- §4
                 horizons=common_horizons,
-                cfg=ev_cfg,
+                n_paths=cfg.n_paths,
+                target_sigma_by_horizon=null_target,
             )
-            regime_evals = evaluate_product_horizons(
+            regime_sigma_evals = _evaluate_grid_with_target_sigma(
                 universe,
                 {h: regime_forecast_map[h] for h in common_horizons},
                 uf.bars,
@@ -515,20 +1010,19 @@ def _price_trial_grid(
                 spot0=bar.close,
                 start=bar.available_at,
                 as_of=d,
-                cluster_id=cluster_id,
                 rng=np.random.default_rng(cfg.seed),
                 horizons=common_horizons,
-                cfg=ev_cfg,
+                n_paths=cfg.n_paths,
+                target_sigma_by_horizon=regime_target,
             )
 
-            null_by_key = {(e.isin, e.horizon_days): e for e in null_evals}
-            regime_by_key = {(e.isin, e.horizon_days): e for e in regime_evals}
-            # A candidate can be excluded per-arm by ev.py's own
-            # implausible-magnitude guard; never silently defaulted here --
-            # only cells priced by *both* arms enter the paired delta.
-            common_keys = sorted(set(null_by_key) & set(regime_by_key))
-            for isin, horizon_days in common_keys:
+            null_sigma_by_key = {(e.isin, e.horizon_days): e for e in null_sigma_evals}
+            regime_sigma_by_key = {(e.isin, e.horizon_days): e for e in regime_sigma_evals}
+            common_sigma_keys = sorted(set(null_sigma_by_key) & set(regime_sigma_by_key))
+            for isin, horizon_days in common_sigma_keys:
                 direction, distance = _parse_synthetic_isin(isin)
+                null_eval = null_sigma_by_key[(isin, horizon_days)]
+                regime_eval = regime_sigma_by_key[(isin, horizon_days)]
                 records.append(
                     _CellRecord(
                         date_key=d,
@@ -537,10 +1031,14 @@ def _price_trial_grid(
                         direction=direction,
                         barrier_distance=distance,
                         horizon_days=horizon_days,
-                        lcb_net_ev_null=null_by_key[(isin, horizon_days)].lcb_net_return,
-                        lcb_net_ev_regime_conditional=regime_by_key[
-                            (isin, horizon_days)
-                        ].lcb_net_return,
+                        lcb_net_ev_null=null_eval.lcb_net_return,
+                        lcb_net_ev_regime_conditional=regime_eval.lcb_net_return,
+                        null_realized_sigma=null_eval.realized_sigma,
+                        null_target_sigma=null_eval.target_sigma,
+                        null_target_sigma_met=null_eval.target_sigma_met,
+                        regime_realized_sigma=regime_eval.realized_sigma,
+                        regime_target_sigma=regime_eval.target_sigma,
+                        regime_target_sigma_met=regime_eval.target_sigma_met,
                     )
                 )
     return records
@@ -644,6 +1142,104 @@ def _verdict(
     )
 
 
+def _falsification_shows_effect(
+    p_value: float, mean_delta_lcb_net_ev: float, alpha: float
+) -> tuple[bool, str]:
+    """2026Q4-002 §2 point 3 / §5: the fixed, pre-committed numeric definition of "the
+    falsification arm shows an effect" -- written before any result of this trial exists (this
+    module may not be run against real data before 2026-10-01; see the module-level warning),
+    exactly the discipline the pre-registration itself demands of every other threshold.
+
+    **Rule: the falsification arm is judged by exactly the same bar as the primary hypothesis.**
+    It "shows an effect" iff its own mean delta LCB NetEV is positive **and** its own one-sided
+    moving-block-bootstrap p-value (identical alpha, block length, resample count and
+    methodology to the primary -- see :func:`_moving_block_bootstrap_p_value`) is ``<= alpha``.
+    In other words: the falsification arm shows an effect iff it would itself PASS as a
+    standalone trial.
+
+    Reasoning, fixed here rather than chosen after seeing a number:
+
+    1. **No new threshold.** There is exactly one pre-registered test procedure in this
+       document (§4: one-sided, alpha=0.10, moving-block bootstrap, block length 21).
+       Reusing it for the falsification arm avoids inventing a second, independently
+       choosable significance standard whose looseness or strictness could itself be
+       second-guessed once a result exists -- precisely the kind of post-hoc degree of
+       freedom §5 forbids for every other threshold in this trial.
+    2. **Symmetric by construction, and therefore legible.** "The falsification arm shows an
+       effect" becomes "the same test that said PASS for the primary also says PASS here, with
+       width neutralised" -- a sentence a reader can verify without decoding a bespoke
+       threshold, which is the whole point of a check whose "outcome is reported whatever it
+       says" (§2).
+    3. **Matches §2's own language.** §2 asks whether "the effect survives" once both arms are
+       forced to the same sigma. A p-value that no longer clears alpha, or a delta that is no
+       longer positive, is not "the same effect surviving" under any reading of that sentence --
+       both are an absence of effect by the primary's own definition of what an effect is.
+    """
+    shows_effect = p_value <= alpha and mean_delta_lcb_net_ev > 0.0
+    verdict_word = "shows an effect" if shows_effect else "shows no effect"
+    consequence = (
+        "the primary result is not attributable to width alone (§2/§5: CONFOUNDED)"
+        if shows_effect
+        else "consistent with the primary result being attributable to width (§2/§5: eligible "
+        "for PASS)"
+    )
+    reason = (
+        "falsification arm (both arms forced to the null model's own forecast sigma): "
+        f"p={p_value:.4f}, mean delta LCB NetEV={mean_delta_lcb_net_ev:.6f} against alpha="
+        f"{alpha} -- {verdict_word} (same bar as the primary PASS criterion): {consequence}."
+    )
+    return shows_effect, reason
+
+
+def _verdict_with_falsification(
+    p_value: float,
+    mean_delta_lcb_net_ev: float,
+    alpha: float,
+    falsification_shows_effect: bool,
+) -> tuple[Literal["PASS", "CONFOUNDED", "FAIL_NULL_RESULT", "FAIL_NEGATIVE_SIGNIFICANT"], str]:
+    """Pre-registration 2026Q4-002 §5's four-branch decision table, verbatim, stated before any
+    result existed. Used only when ``cfg.sigma_source == "forecast"``
+    (:func:`run_synthetic_net_ev_trial`); every other mode keeps using :func:`_verdict`'s
+    three-branch table unchanged, since neither "historical" (no sigma-targeting exists to
+    falsify) nor a standalone "null_forecast" run (it already *is* the falsification-style
+    comparison) has a meaningful nested falsification check.
+
+    Extends :func:`_verdict` by splitting its PASS row in two according to whether the §6
+    falsification arm (:func:`_falsification_shows_effect`) also shows an effect; the other two
+    rows (p > alpha; mean delta <= 0 at p <= alpha) are unchanged.
+    """
+    if p_value <= alpha and mean_delta_lcb_net_ev > 0.0:
+        if falsification_shows_effect:
+            return (
+                "CONFOUNDED",
+                f"p={p_value:.4f} <= alpha={alpha} and mean delta LCB NetEV="
+                f"{mean_delta_lcb_net_ev:.6f} > 0, but the §6 falsification arm (both arms "
+                "forced to the null's own forecast sigma) also shows an effect (pre-"
+                "registration §5 row 2): the effect is not attributable to width. Reported as "
+                "such, promoted to nothing.",
+            )
+        return (
+            "PASS",
+            f"p={p_value:.4f} <= alpha={alpha}, mean delta LCB NetEV="
+            f"{mean_delta_lcb_net_ev:.6f} > 0, and the §6 falsification arm shows no effect "
+            "(pre-registration §5 row 1): the forecast's width carries economic value on "
+            "standardised terms. Necessary condition met; forward real-product arm becomes "
+            "the next trial. Still no promotion.",
+        )
+    if p_value > alpha:
+        return (
+            "FAIL_NULL_RESULT",
+            f"p={p_value:.4f} > alpha={alpha} (pre-registration §5 row 3): the distributional "
+            "improvement is real, measurable and economically inert through both channels.",
+        )
+    return (
+        "FAIL_NEGATIVE_SIGNIFICANT",
+        f"p={p_value:.4f} <= alpha={alpha} but mean delta LCB NetEV="
+        f"{mean_delta_lcb_net_ev:.6f} <= 0 (pre-registration §5 row 4): reported as evidence "
+        "the sharper forecast is economically harmful.",
+    )
+
+
 def _spread_sensitivity_mean_delta_lcb_net_ev(
     underlying_forecasts: Mapping[str, _UnderlyingForecasts], cfg: SyntheticTurboConfig
 ) -> dict[str, float]:
@@ -701,6 +1297,13 @@ def _stability_analysis(
     it itself, so this function stays a pure grouping/summary step over
     ``records`` and is independently testable against fabricated records
     without re-running the (expensive, Amendment-B-genuine) spread probes.
+
+    2026Q4-002 §3/§6: also derives the clamped-cell counts, the reachable-only primary
+    recompute and the realised-vs-requested sigma means, all straight from ``records``' own
+    (optional, ``None``-defaulted) sigma-diagnostic fields -- no new required parameter, so
+    every existing caller (including bare, hand-constructed ``_CellRecord``s from
+    ``sigma_source="historical"`` runs, whose sigma fields are all ``None``) keeps working
+    unchanged and simply gets 0 clamped cells and empty sigma dicts back.
     """
     if not records:
         raise ValueError("records must not be empty")
@@ -709,12 +1312,60 @@ def _stability_analysis(
     by_horizon: dict[int, list[float]] = {}
     by_distance: dict[float, list[float]] = {}
     n_positive = 0
+    clamped_null = 0
+    clamped_regime = 0
     for rec in records:
         by_underlying.setdefault(rec.underlying_id, []).append(rec.delta)
         by_horizon.setdefault(rec.horizon_days, []).append(rec.delta)
         by_distance.setdefault(rec.barrier_distance, []).append(rec.delta)
         if rec.delta > 0.0:
             n_positive += 1
+        if rec.null_target_sigma_met is False:  # `is`, not `==`: None is not a clamp, only False is
+            clamped_null += 1
+        if rec.regime_target_sigma_met is False:
+            clamped_regime += 1
+
+    # §6: primary statistic recomputed on reachable-only cells -- a cell counts as "reachable"
+    # unless *some* arm's target was known to be unreachable (`is False`; `None` means no target
+    # was ever requested for that cell, e.g. sigma_source="historical", which is trivially
+    # "reachable" since nothing was clamped).
+    reachable = [
+        r
+        for r in records
+        if r.null_target_sigma_met is not False and r.regime_target_sigma_met is not False
+    ]
+    reachable_only_mean_delta: float | None
+    if reachable:
+        _, reachable_null_means, reachable_regime_means, _ = _grid_means_by_date(reachable)
+        reachable_only_mean_delta = float(
+            np.mean(
+                np.asarray(reachable_regime_means, dtype=np.float64)
+                - np.asarray(reachable_null_means, dtype=np.float64)
+            )
+        )
+    else:
+        reachable_only_mean_delta = None
+
+    def _mean_of_present(values: list[float | None]) -> float | None:
+        present = [v for v in values if v is not None]
+        return float(np.mean(present)) if present else None
+
+    mean_realized_null = _mean_of_present([r.null_realized_sigma for r in records])
+    mean_realized_regime = _mean_of_present([r.regime_realized_sigma for r in records])
+    mean_target_null = _mean_of_present([r.null_target_sigma for r in records])
+    mean_target_regime = _mean_of_present([r.regime_target_sigma for r in records])
+
+    mean_realized_sigma_by_arm: dict[str, float] = {}
+    if mean_realized_null is not None:
+        mean_realized_sigma_by_arm["null"] = mean_realized_null
+    if mean_realized_regime is not None:
+        mean_realized_sigma_by_arm["regime_conditional"] = mean_realized_regime
+
+    mean_target_sigma_by_arm: dict[str, float] = {}
+    if mean_target_null is not None:
+        mean_target_sigma_by_arm["null"] = mean_target_null
+    if mean_target_regime is not None:
+        mean_target_sigma_by_arm["regime_conditional"] = mean_target_regime
 
     return StabilityAnalysis(
         delta_net_ev_by_underlying={k: float(np.mean(v)) for k, v in by_underlying.items()},
@@ -727,6 +1378,11 @@ def _stability_analysis(
             (v > 0.0) == (primary_mean_delta_lcb_net_ev > 0.0)
             for v in spread_sensitivity_mean_delta.values()
         ),
+        clamped_cell_count_null=clamped_null,
+        clamped_cell_count_regime_conditional=clamped_regime,
+        reachable_only_mean_delta_lcb_net_ev=reachable_only_mean_delta,
+        mean_realized_sigma_by_arm=mean_realized_sigma_by_arm,
+        mean_target_sigma_by_arm=mean_target_sigma_by_arm,
     )
 
 
@@ -764,6 +1420,16 @@ def run_synthetic_net_ev_trial(
     analysis, whose spread-sensitivity entries are genuine re-runs of the
     grid at each probe spread reusing the same walk-forward forecasts.
 
+    2026Q4-002 §1/§2/§6 (``cfg.sigma_source``): ``"historical"`` (default) is unchanged from
+    2026Q4-001 in every particular above. ``"forecast"`` prices the grid with each arm's own
+    forecast sigma as its path-dispersion target (:func:`_price_trial_grid`) and additionally
+    reruns the whole grid with ``sigma_source="null_forecast"`` (both arms forced to the null's
+    own sigma) against the same already-computed walk-forward forecasts, to build the §6
+    falsification arm (:class:`FalsificationArm`) and feed the §5 four-branch verdict
+    (:func:`_verdict_with_falsification`). A standalone ``"null_forecast"`` run prices the
+    falsification comparison directly and is judged by the plain three-branch table
+    (:func:`_verdict`), with no nested falsification arm of its own.
+
     Raises:
         ValueError: if ``bars_by_underlying`` is empty, any underlying's
             bars are empty, or no ``(date, underlying, horizon)`` cell could
@@ -800,7 +1466,45 @@ def run_synthetic_net_ev_trial(
         rng=bootstrap_rng,
     )
 
-    verdict, verdict_reason = _verdict(p_value, mean_delta_lcb_net_ev, _ALPHA)
+    falsification: FalsificationArm | None = None
+    if cfg.sigma_source == "forecast":
+        # §2 point 3 / §6: rerun the identical grid with BOTH arms forced to the null's own
+        # sigma, reusing the same walk-forward forecasts (no re-walk-forward needed -- forecasts
+        # don't depend on sigma_source any more than they depend on spread).
+        falsification_cfg = replace(cfg, sigma_source="null_forecast")
+        falsification_records = _price_trial_grid(underlying_forecasts, falsification_cfg)
+        if not falsification_records:
+            raise ValueError(
+                "the §2/§6 falsification arm (sigma_source='null_forecast') evaluated no "
+                "cells -- cannot compute the CONFOUNDED check from zero data"
+            )
+        f_dates_sorted, f_null_means, f_regime_means, _ = _grid_means_by_date(falsification_records)
+        f_delta_by_date = np.asarray(f_regime_means, dtype=np.float64) - np.asarray(
+            f_null_means, dtype=np.float64
+        )
+        f_mean_delta = float(np.mean(f_delta_by_date))
+        f_bootstrap_rng = np.random.default_rng(cfg.seed)
+        f_p_value = _moving_block_bootstrap_p_value(
+            f_delta_by_date,
+            block_length=_BLOCK_LENGTH,
+            n_resamples=_N_BOOTSTRAP_RESAMPLES,
+            rng=f_bootstrap_rng,
+        )
+        shows_effect, shows_effect_reason = _falsification_shows_effect(
+            f_p_value, f_mean_delta, _ALPHA
+        )
+        falsification = FalsificationArm(
+            mean_delta_lcb_net_ev=f_mean_delta,
+            p_value=f_p_value,
+            n_dates=len(f_dates_sorted),
+            shows_effect=shows_effect,
+            shows_effect_reason=shows_effect_reason,
+        )
+        verdict, verdict_reason = _verdict_with_falsification(
+            p_value, mean_delta_lcb_net_ev, _ALPHA, shows_effect
+        )
+    else:
+        verdict, verdict_reason = _verdict(p_value, mean_delta_lcb_net_ev, _ALPHA)
 
     spread_sensitivity = _spread_sensitivity_mean_delta_lcb_net_ev(underlying_forecasts, cfg)
     stability = _stability_analysis(cell_records, mean_delta_lcb_net_ev, spread_sensitivity)
@@ -833,11 +1537,14 @@ def run_synthetic_net_ev_trial(
         verdict=verdict,
         verdict_reason=verdict_reason,
         stability=stability,
+        falsification=falsification,
+        sigma_source=cfg.sigma_source,
     )
 
 
 __all__ = [
     "ArmResult",
+    "FalsificationArm",
     "StabilityAnalysis",
     "SyntheticEvResult",
     "SyntheticTurboConfig",

@@ -146,3 +146,75 @@ also why the falsification arm is not optional.
 If it passes, the first question is whether the coverage advantage in §6.16
 holds in the specific regimes where the KO probability moved most, not whether
 an edge has been found.
+
+---
+
+## 9. Amendment A (2026-09-26, before any measurement) — §2's stated bias is backwards
+
+**Written before any measurement of the primary hypothesis.** Found while
+building the harness, verified independently against real DAX bars rather than
+taken on report.
+
+### §2 claimed the wrong direction
+
+§2 states: *"A narrower predicted distribution lowers knock-out probability
+mechanically... it will look better on EV for that reason alone."* **That is
+false**, and the error is not small.
+
+Measured directly — identical terms, LONG, zero drift, DAX h=7d, 8,000 paths,
+one seed, varying only `target_sigma` between the null's 0.0282 and
+`regime_conditional`'s 0.0204:
+
+| barrier distance | mean net return, σ=0.0282 | σ=0.0204 | Δ | p_ko 0.0282 | p_ko 0.0204 |
+|---|---|---|---|---|---|
+| 2% | +0.0545 | -0.0046 | **-0.0591** | 0.375 | 0.293 |
+| 5% | -0.0064 | -0.0189 | **-0.0126** | 0.061 | 0.027 |
+| 10% | -0.0096 | -0.0127 | -0.0030 | 0.012 | 0.000 |
+| 15% | -0.0085 | -0.0098 | -0.0012 | 0.000 | 0.000 |
+| 20% | -0.0074 | -0.0083 | -0.0009 | 0.000 | 0.000 |
+
+The narrower distribution *does* lower knock-out probability, exactly as §2
+said — 0.375 to 0.293 at the 2% barrier, 0.061 to 0.027 at 5%. And the payoff
+still gets **worse at every barrier distance.**
+
+### Why
+
+A turbo is a convex claim on the underlying: leverage means the payoff rises
+faster than the underlying on the upside. For a convex payoff, higher
+dispersion raises the expectation (Jensen). The knock-out truncates the left
+tail, which is what §2 was reasoning about, but the convexity in the surviving
+right tail dominates — narrowing gives up more upside than it saves in
+knock-out losses. The effect is strongest where leverage is highest, which is
+why it is largest at the 2% barrier and fades monotonically outward.
+
+### Consequences, all stated before the result
+
+1. **The mechanical bias runs *against* `regime_conditional`, not for it.**
+   §2's defence was built against a headwind that does not exist and a
+   tailwind that does not exist either. The falsification arm in §6 stays —
+   it now guards against a mean-channel effect leaking in, which is a real
+   risk (§6.15 measured that channel) — but it is no longer protecting
+   against a width tailwind, because there is none.
+2. **A PASS would be stronger evidence than §2 implied, not weaker.** If a
+   26-38% narrower forecast produces a positive ΔLCB_NetEV *despite* a
+   convexity headwind of this size, that is a substantial result.
+3. **§8's prior moves toward FAIL, and for a new reason.** The mechanical
+   direction is now known to be adverse and large: -0.0591 at the 2% barrier
+   against the -0.0205 that 2026Q4-001 measured for the whole mean channel.
+   For the trial to pass, the forecast's accuracy would have to beat a
+   structural headwind bigger than the entire effect the previous trial
+   measured.
+
+**No part of §1, §4, §5 or §6 changes.** The hypothesis, the method, the
+decision rule and the stability analysis are as specified. What changes is that
+a premise I stated about the mechanism was wrong, and the correction is
+recorded here rather than discovered while reading a result — which is the
+whole reason the premise was written down in advance.
+
+### One thing this exposes beyond the trial
+
+`p_ko` falling while expected return falls means **knock-out probability and
+expected return are not monotonically related** in this product class. A gate
+built on both (`lcb_ev > 0` *and* `p_ko` acceptable) is therefore not
+double-counting one risk; it is reading two genuinely different ones. That is
+worth knowing independently of this trial's outcome.

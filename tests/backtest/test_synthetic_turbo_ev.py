@@ -730,3 +730,660 @@ def test_anti_triviality_identical_forecasts_yield_null_result() -> None:
     verdict, _ = sev._verdict(p, float(np.mean(delta)), 0.10)
     assert p > 0.10
     assert verdict == "FAIL_NULL_RESULT"
+
+
+# ---------------------------------------------------------------------------
+# 2026Q4-002 §1: sigma_source config, default reproduces 2026Q4-001 unchanged
+# ---------------------------------------------------------------------------
+
+
+def test_sigma_source_defaults_to_historical() -> None:
+    assert SyntheticTurboConfig().sigma_source == "historical"
+
+
+def test_default_call_reproduces_2026q4_001_shape(small_trial_result: SyntheticEvResult) -> None:
+    """A default (``sigma_source="historical"``) call must keep behaving exactly like the
+    2026Q4-001 harness: no falsification arm, no sigma-targeting diagnostics populated, and the
+    verdict stays within 2026Q4-001's own three-value set."""
+    assert small_trial_result.sigma_source == "historical"
+    assert small_trial_result.falsification is None
+    assert small_trial_result.verdict in (
+        "PASS",
+        "FAIL_NULL_RESULT",
+        "FAIL_NEGATIVE_SIGNIFICANT",
+    )
+    stability = small_trial_result.stability
+    assert stability.clamped_cell_count_null == 0
+    assert stability.clamped_cell_count_regime_conditional == 0
+    assert stability.mean_realized_sigma_by_arm == {}
+    assert stability.mean_target_sigma_by_arm == {}
+    # Historical mode never requests a target, so every cell is trivially "reachable" and the
+    # reachable-only recompute must equal the primary exactly.
+    assert stability.reachable_only_mean_delta_lcb_net_ev == pytest.approx(
+        small_trial_result.mean_delta_lcb_net_ev
+    )
+
+
+# ---------------------------------------------------------------------------
+# 2026Q4-002 §1: forecast mode actually targets each arm's own forecast sigma
+# ---------------------------------------------------------------------------
+
+
+def test_forecast_mode_sets_target_sigma_and_realized_matches_where_reachable() -> None:
+    """§1: with ``target_sigma_by_horizon`` supplied, every returned cell's ``target_sigma``
+    equals what was requested, and (for a target well above the gap-only floor, i.e. reachable)
+    ``realized_sigma`` lands close to it with ``target_sigma_met=True``."""
+    bars = _bars(800, seed=100, daily_vol=0.01)
+    spot0 = bars[-1].close
+    universe = build_standardised_universe(spot0, config=SyntheticTurboConfig(n_paths=2000))
+    forecast = {5: _make_forecast(0.0, horizon_days=5, sigma=0.05, uncertainty=0.01)}
+
+    evals = sev._evaluate_grid_with_target_sigma(
+        universe,
+        forecast,
+        bars,
+        underlying_id="DAX",
+        spot0=spot0,
+        start=bars[-1].available_at,
+        as_of=bars[-1].ts.date(),
+        rng=np.random.default_rng(123),
+        horizons=[5],
+        n_paths=2000,
+        target_sigma_by_horizon={5: 0.05},
+    )
+
+    assert evals
+    for e in evals:
+        assert e.target_sigma == pytest.approx(0.05)
+        assert e.target_sigma_met is True
+        assert e.realized_sigma is not None
+        assert e.realized_sigma == pytest.approx(0.05, rel=0.15)
+
+
+def test_forecast_mode_none_target_disables_sigma_targeting() -> None:
+    """``target_sigma_by_horizon=None`` must leave the sigma diagnostics at ``None`` (the
+    ``simulate_paths`` no-op contract), matching ``sigma_source="historical"``'s intent."""
+    bars = _bars(800, seed=101, daily_vol=0.01)
+    spot0 = bars[-1].close
+    universe = build_standardised_universe(spot0, config=SyntheticTurboConfig(n_paths=50))
+    forecast = {5: _make_forecast(0.0, horizon_days=5, sigma=0.05, uncertainty=0.01)}
+
+    evals = sev._evaluate_grid_with_target_sigma(
+        universe,
+        forecast,
+        bars,
+        underlying_id="DAX",
+        spot0=spot0,
+        start=bars[-1].available_at,
+        as_of=bars[-1].ts.date(),
+        rng=np.random.default_rng(123),
+        horizons=[5],
+        n_paths=50,
+        target_sigma_by_horizon=None,
+    )
+    assert evals
+    for e in evals:
+        assert e.target_sigma is None
+        assert e.target_sigma_met is None
+
+
+# ---------------------------------------------------------------------------
+# 2026Q4-002 §2/§6: the falsification mechanism itself can fire
+# ---------------------------------------------------------------------------
+
+
+def test_falsification_forces_both_arms_to_null_sigma_and_zeroes_a_pure_sigma_difference() -> None:
+    """Explicit test bullet from the brief: "the falsification arm forces both arms to the
+    same sigma and yields delta ~= 0 when the only difference between models is their sigma."
+
+    Two forecasts share the same mean and uncertainty and differ *only* in sigma. Under the
+    §1 "own sigma per arm" rule the two arms would generally be priced with different
+    dispersion; under the §2/§6 falsification rule (both forced to the null's own sigma) the
+    two calls become fully identical inputs (same mean, same uncertainty, same target_sigma,
+    same rng seed) and must therefore produce bit-identical LCB NetEV per cell -- delta exactly
+    0, not merely small.
+    """
+    bars = _bars(800, seed=102, daily_vol=0.01)
+    spot0 = bars[-1].close
+    universe = build_standardised_universe(spot0, config=SyntheticTurboConfig(n_paths=200))
+    start = bars[-1].available_at
+    as_of = bars[-1].ts.date()
+
+    null_forecast = {5: _make_forecast(0.01, horizon_days=5, sigma=0.02, uncertainty=0.01)}
+    regime_forecast = {5: _make_forecast(0.01, horizon_days=5, sigma=0.008, uncertainty=0.01)}
+    null_sigma = {5: 0.02}
+    falsification_target = dict(null_sigma)  # both forced to the null's own sigma
+
+    null_evals = sev._evaluate_grid_with_target_sigma(
+        universe,
+        null_forecast,
+        bars,
+        underlying_id="DAX",
+        spot0=spot0,
+        start=start,
+        as_of=as_of,
+        rng=np.random.default_rng(20261002),
+        horizons=[5],
+        n_paths=200,
+        target_sigma_by_horizon=falsification_target,
+    )
+    regime_evals = sev._evaluate_grid_with_target_sigma(
+        universe,
+        regime_forecast,
+        bars,
+        underlying_id="DAX",
+        spot0=spot0,
+        start=start,
+        as_of=as_of,
+        rng=np.random.default_rng(20261002),
+        horizons=[5],
+        n_paths=200,
+        target_sigma_by_horizon=falsification_target,
+    )
+
+    null_by_key = {(e.isin, e.horizon_days): e.lcb_net_return for e in null_evals}
+    regime_by_key = {(e.isin, e.horizon_days): e.lcb_net_return for e in regime_evals}
+    assert set(null_by_key) == set(regime_by_key)
+    deltas = np.array([regime_by_key[k] - null_by_key[k] for k in null_by_key], dtype=np.float64)
+    assert np.allclose(deltas, 0.0, atol=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# 2026Q4-002 §3/§6: clamped cells are counted, never dropped
+# ---------------------------------------------------------------------------
+
+
+def test_clamped_cells_counted_in_stability_not_dropped() -> None:
+    records = [
+        sev._CellRecord(
+            date_key=date(2020, 1, 1),
+            underlying_id="DAX",
+            isin="SYNTH-LONG-0.0200",
+            direction=Direction.LONG,
+            barrier_distance=0.02,
+            horizon_days=5,
+            lcb_net_ev_null=0.0,
+            lcb_net_ev_regime_conditional=0.01,
+            null_realized_sigma=0.03,
+            null_target_sigma=0.03,
+            null_target_sigma_met=True,
+            regime_realized_sigma=0.045,
+            regime_target_sigma=0.01,
+            regime_target_sigma_met=False,  # clamped: unreachable target
+        ),
+        sev._CellRecord(
+            date_key=date(2020, 1, 1),
+            underlying_id="DAX",
+            isin="SYNTH-SHORT-0.0200",
+            direction=Direction.SHORT,
+            barrier_distance=0.02,
+            horizon_days=5,
+            lcb_net_ev_null=0.0,
+            lcb_net_ev_regime_conditional=0.02,
+            null_realized_sigma=0.03,
+            null_target_sigma=0.03,
+            null_target_sigma_met=True,
+            regime_realized_sigma=0.02,
+            regime_target_sigma=0.02,
+            regime_target_sigma_met=True,
+        ),
+    ]
+    spread_sensitivity = {"spread_0.0025": 0.001, "spread_0.01": 0.002}
+    stability = sev._stability_analysis(
+        records,
+        primary_mean_delta_lcb_net_ev=0.015,
+        spread_sensitivity_mean_delta=spread_sensitivity,
+    )
+
+    # Both cells are still in n_cells / share_cells_delta_positive -- clamping never drops a cell.
+    assert stability.n_cells == 2
+    assert stability.share_cells_delta_positive == pytest.approx(1.0)
+    assert stability.clamped_cell_count_null == 0
+    assert stability.clamped_cell_count_regime_conditional == 1
+
+    # Reachable-only recompute excludes the clamped (LONG) cell -- only the SHORT cell's delta
+    # (0.02) remains, not the mean of both (0.015).
+    assert stability.reachable_only_mean_delta_lcb_net_ev == pytest.approx(0.02)
+
+    assert stability.mean_realized_sigma_by_arm["null"] == pytest.approx(0.03)
+    assert stability.mean_realized_sigma_by_arm["regime_conditional"] == pytest.approx(
+        (0.045 + 0.02) / 2.0
+    )
+    assert stability.mean_target_sigma_by_arm["regime_conditional"] == pytest.approx(
+        (0.01 + 0.02) / 2.0
+    )
+
+
+def test_clamped_cells_reachable_only_is_none_when_everything_is_clamped() -> None:
+    records = [
+        sev._CellRecord(
+            date_key=date(2020, 1, 1),
+            underlying_id="DAX",
+            isin="SYNTH-LONG-0.0200",
+            direction=Direction.LONG,
+            barrier_distance=0.02,
+            horizon_days=5,
+            lcb_net_ev_null=0.0,
+            lcb_net_ev_regime_conditional=0.01,
+            regime_target_sigma_met=False,
+        ),
+    ]
+    stability = sev._stability_analysis(
+        records,
+        primary_mean_delta_lcb_net_ev=0.01,
+        spread_sensitivity_mean_delta={"spread_0.0025": 0.01, "spread_0.01": 0.01},
+    )
+    assert stability.reachable_only_mean_delta_lcb_net_ev is None
+
+
+def test_clamped_cell_end_to_end_via_large_gap_risk_bars() -> None:
+    """End-to-end (not just the stability-summary unit test above): a bar series with genuine,
+    large overnight/weekend gaps gives ``_apply_volatility_scaling`` a high gap-only variance
+    floor (``simulation/paths.py`` §3 -- gap is never scaled). Requesting a target far below
+    that floor must clamp (``target_sigma_met=False``) rather than raise, and the cell must
+    still come back in the result -- never silently dropped."""
+    rng = np.random.default_rng(7)
+    bars: list[UnderlyingBar] = []
+    price = 100.0
+    d = date(2015, 1, 1)
+    for _ in range(800):
+        while d.weekday() >= 5:
+            d += timedelta(days=1)
+        gap = rng.normal(0.0, 0.05)  # large overnight/weekend gap risk
+        o = price * float(np.exp(gap))
+        ret = rng.normal(0.0, 0.001)  # tiny intraday move
+        c = o * float(np.exp(ret))
+        hi = max(o, c) * float(np.exp(abs(rng.normal(0.0, 0.0005))))
+        lo = min(o, c) * float(np.exp(-abs(rng.normal(0.0, 0.0005))))
+        ts = datetime(d.year, d.month, d.day, 22, 0, tzinfo=UTC)
+        bars.append(
+            UnderlyingBar(
+                underlying_id="DAX",
+                ts=ts,
+                interval="1d",
+                open=o,
+                high=hi,
+                low=lo,
+                close=c,
+                volume=1000.0,
+                observation_time=ts,
+                available_at=ts,
+                retrieved_at=ts,
+                source="test",
+                parser_version="1",
+                quality_score=1.0,
+            )
+        )
+        price = c
+        d += timedelta(days=1)
+
+    spot0 = bars[-1].close
+    universe = build_standardised_universe(spot0, config=SyntheticTurboConfig(n_paths=500))
+    forecast = {5: _make_forecast(0.0, horizon_days=5, sigma=0.0001, uncertainty=0.01)}
+
+    evals = sev._evaluate_grid_with_target_sigma(
+        universe,
+        forecast,
+        bars,
+        underlying_id="DAX",
+        spot0=spot0,
+        start=bars[-1].available_at,
+        as_of=bars[-1].ts.date(),
+        rng=np.random.default_rng(5),
+        horizons=[5],
+        n_paths=500,
+        target_sigma_by_horizon={5: 0.0001},
+    )
+
+    # Every cell of the standardised grid must still be present.
+    assert len(evals) == len(universe)
+    assert any(e.target_sigma_met is False for e in evals)
+    for e in evals:
+        assert e.target_sigma_met is False
+        assert e.realized_sigma is not None
+        # Clamped: the achieved sigma is far above the unreachable requested target.
+        assert e.realized_sigma > e.target_sigma  # type: ignore[operator]
+
+
+# ---------------------------------------------------------------------------
+# 2026Q4-002 §2/§5: the falsification numeric rule and the four verdict branches
+# ---------------------------------------------------------------------------
+
+
+def test_falsification_shows_effect_when_significant_and_positive() -> None:
+    shows_effect, reason = sev._falsification_shows_effect(0.02, 0.01, 0.10)
+    assert shows_effect is True
+    assert "shows an effect" in reason
+
+
+def test_falsification_shows_no_effect_when_not_significant() -> None:
+    shows_effect, _ = sev._falsification_shows_effect(0.50, 0.01, 0.10)
+    assert shows_effect is False
+
+
+def test_falsification_shows_no_effect_when_delta_not_positive() -> None:
+    shows_effect, _ = sev._falsification_shows_effect(0.01, 0.0, 0.10)
+    assert shows_effect is False
+    shows_effect, _ = sev._falsification_shows_effect(0.01, -0.01, 0.10)
+    assert shows_effect is False
+
+
+def test_falsification_boundary_p_equals_alpha_is_an_effect() -> None:
+    shows_effect, _ = sev._falsification_shows_effect(0.10, 0.001, 0.10)
+    assert shows_effect is True
+
+
+def test_verdict_with_falsification_pass_when_no_confound() -> None:
+    verdict, reason = sev._verdict_with_falsification(0.05, 0.01, 0.10, False)
+    assert verdict == "PASS"
+    assert "row 1" in reason
+
+
+def test_verdict_with_falsification_confounded_when_falsification_also_fires() -> None:
+    verdict, reason = sev._verdict_with_falsification(0.05, 0.01, 0.10, True)
+    assert verdict == "CONFOUNDED"
+    assert "row 2" in reason
+
+
+def test_verdict_with_falsification_fail_null_result_regardless_of_falsification() -> None:
+    verdict, reason = sev._verdict_with_falsification(0.50, 0.01, 0.10, True)
+    assert verdict == "FAIL_NULL_RESULT"
+    assert "row 3" in reason
+    verdict, _ = sev._verdict_with_falsification(0.50, 0.01, 0.10, False)
+    assert verdict == "FAIL_NULL_RESULT"
+
+
+def test_verdict_with_falsification_fail_negative_significant_regardless_of_falsification() -> None:
+    verdict, reason = sev._verdict_with_falsification(0.02, -0.01, 0.10, True)
+    assert verdict == "FAIL_NEGATIVE_SIGNIFICANT"
+    assert "row 4" in reason
+    verdict, _ = sev._verdict_with_falsification(0.02, -0.01, 0.10, False)
+    assert verdict == "FAIL_NEGATIVE_SIGNIFICANT"
+
+
+# ---------------------------------------------------------------------------
+# 2026Q4-002 mandatory anti-triviality checks
+# ---------------------------------------------------------------------------
+
+
+def test_anti_triviality_narrower_sigma_genuinely_improves_payoff_passes() -> None:
+    """(1) A rigged pair of forecasts, identical in mean and uncertainty and differing only in
+    sigma (the challenger narrower), whose narrower dispersion genuinely improves the priced
+    grid, must reach PASS: significant positive delta under "own sigma per arm", and the §6
+    falsification arm (both forced to the null's sigma) shows no effect, since forcing sigma
+    equal removes the only difference between the two forecasts.
+
+    Restricted to the LONG half of the grid, same reasoning as the 2026Q4-001 anti-triviality
+    test (a whole-grid average would partially cancel a symmetric effect by construction --
+    a fact about the priced grid, not the machinery under test) -- and, empirically, to the
+    farther barrier distances (10/15/20%): a direct probe of this rig (``dispersion's effect on
+    a knock-out-truncated payoff is not monotonic in barrier distance`` -- narrowing sigma
+    *hurts* the near-barrier cells here and *helps* the far-barrier ones, sensible for a
+    convex, KO-truncated payoff where far-from-barrier cells behave more like the "wider
+    dispersion raises a convex payoff's expectation" case) shows the near-barrier cells (2%, 5%)
+    would swamp the far ones with the opposite sign at this vol/mean setting. Picking the
+    subset where the rig's claimed direction (narrower is better) actually holds is exactly
+    what "genuinely improves the payoff" requires this test to verify, not assume.
+    """
+    bars = _bars(900, seed=201, daily_vol=0.008)
+    cfg = SyntheticTurboConfig(barrier_distances=(0.10, 0.15, 0.20), n_paths=300)
+
+    null_forecast = {5: _make_forecast(0.0, horizon_days=5, sigma=0.05, uncertainty=0.01)}
+    better_forecast = {5: _make_forecast(0.0, horizon_days=5, sigma=0.02, uncertainty=0.01)}
+    null_sigma = {5: 0.05}
+    better_sigma = {5: 0.02}
+    falsification_sigma = dict(null_sigma)
+
+    own_sigma_deltas: list[float] = []
+    falsification_deltas: list[float] = []
+    for i in range(800, 860, 6):  # 10 synthetic "dates" drawn from one long history
+        bar = bars[i]
+        grid = build_standardised_universe(bar.close, config=cfg)
+        grid_long = {isin: t for isin, t in grid.items() if t.direction == Direction.LONG}
+        start = bar.available_at
+        as_of = bar.ts.date()
+
+        null_own = sev._evaluate_grid_with_target_sigma(
+            grid_long,
+            null_forecast,
+            bars,
+            underlying_id="DAX",
+            spot0=bar.close,
+            start=start,
+            as_of=as_of,
+            rng=np.random.default_rng(cfg.seed),
+            horizons=[5],
+            n_paths=cfg.n_paths,
+            target_sigma_by_horizon=null_sigma,
+        )
+        better_own = sev._evaluate_grid_with_target_sigma(
+            grid_long,
+            better_forecast,
+            bars,
+            underlying_id="DAX",
+            spot0=bar.close,
+            start=start,
+            as_of=as_of,
+            rng=np.random.default_rng(cfg.seed),
+            horizons=[5],
+            n_paths=cfg.n_paths,
+            target_sigma_by_horizon=better_sigma,
+        )
+        own_sigma_deltas.append(
+            float(np.mean([e.lcb_net_return for e in better_own]))
+            - float(np.mean([e.lcb_net_return for e in null_own]))
+        )
+
+        null_f = sev._evaluate_grid_with_target_sigma(
+            grid_long,
+            null_forecast,
+            bars,
+            underlying_id="DAX",
+            spot0=bar.close,
+            start=start,
+            as_of=as_of,
+            rng=np.random.default_rng(cfg.seed),
+            horizons=[5],
+            n_paths=cfg.n_paths,
+            target_sigma_by_horizon=falsification_sigma,
+        )
+        better_f = sev._evaluate_grid_with_target_sigma(
+            grid_long,
+            better_forecast,
+            bars,
+            underlying_id="DAX",
+            spot0=bar.close,
+            start=start,
+            as_of=as_of,
+            rng=np.random.default_rng(cfg.seed),
+            horizons=[5],
+            n_paths=cfg.n_paths,
+            target_sigma_by_horizon=falsification_sigma,
+        )
+        falsification_deltas.append(
+            float(np.mean([e.lcb_net_return for e in better_f]))
+            - float(np.mean([e.lcb_net_return for e in null_f]))
+        )
+
+    own_delta = np.asarray(own_sigma_deltas)
+    mean_own_delta = float(np.mean(own_delta))
+    assert mean_own_delta > 0.0  # sanity: the rig actually produced an advantage
+
+    p_own = sev._moving_block_bootstrap_p_value(
+        own_delta, block_length=5, n_resamples=2000, rng=np.random.default_rng(0)
+    )
+
+    falsification_delta = np.asarray(falsification_deltas)
+    # Both models are forced to identical (mean, uncertainty, target_sigma) inputs under the
+    # same rng seed in the falsification arm -- bit-identical paths, hence exactly zero delta.
+    assert np.allclose(falsification_delta, 0.0, atol=1e-9)
+    p_falsification = sev._moving_block_bootstrap_p_value(
+        falsification_delta, block_length=5, n_resamples=2000, rng=np.random.default_rng(1)
+    )
+    shows_effect, _ = sev._falsification_shows_effect(
+        p_falsification, float(np.mean(falsification_delta)), 0.10
+    )
+    assert shows_effect is False
+
+    verdict, _ = sev._verdict_with_falsification(p_own, mean_own_delta, 0.10, shows_effect)
+    assert verdict == "PASS"
+
+
+def test_anti_triviality_effect_surviving_falsification_is_confounded() -> None:
+    """(2) This is the test that proves the falsification arm can actually fire (without it,
+    §2's defence against the known bias is decorative): rig a pair of forecasts whose primary
+    ("own sigma per arm") delta is driven by a real *mean* difference between the two models
+    (the same channel 2026Q4-001 tested) as well as a sigma difference. Forcing both arms to
+    the null's own sigma in the falsification arm neutralises only the sigma channel -- the mean
+    difference is untouched, so the same significant, positive-signed effect survives, and the
+    correct verdict is CONFOUNDED: the effect is not attributable to width.
+
+    (A rig that differs *only* in sigma, with an identical mean and uncertainty, cannot produce
+    CONFOUNDED under a correctly implemented falsification arm: forcing sigma equal in that case
+    makes the two arms' inputs -- and, under the shared rng seed this harness always uses,
+    their simulated paths -- fully identical, which is exactly
+    ``test_anti_triviality_narrower_sigma_genuinely_improves_payoff_passes``'s PASS case above.
+    A model pair that differs only in sigma is therefore the wrong rig to prove CONFOUNDED can
+    fire at all; a mean difference that survives sigma-equalisation is the direct, defensible
+    construction of a case where the primary's effect is genuinely not (solely) attributable to
+    width, which is the property this test exists to demonstrate.)
+    """
+    bars = _bars(900, seed=202, daily_vol=0.008)
+    cfg = SyntheticTurboConfig(n_paths=300)
+
+    null_forecast = {5: _make_forecast(0.0, horizon_days=5, sigma=0.05, uncertainty=0.01)}
+    better_forecast = {5: _make_forecast(0.04, horizon_days=5, sigma=0.02, uncertainty=0.01)}
+    null_sigma = {5: 0.05}
+    better_sigma = {5: 0.02}
+    falsification_sigma = dict(null_sigma)
+
+    own_sigma_deltas: list[float] = []
+    falsification_deltas: list[float] = []
+    for i in range(800, 860, 6):
+        bar = bars[i]
+        grid = build_standardised_universe(bar.close, config=cfg)
+        grid_long = {isin: t for isin, t in grid.items() if t.direction == Direction.LONG}
+        start = bar.available_at
+        as_of = bar.ts.date()
+
+        null_own = sev._evaluate_grid_with_target_sigma(
+            grid_long,
+            null_forecast,
+            bars,
+            underlying_id="DAX",
+            spot0=bar.close,
+            start=start,
+            as_of=as_of,
+            rng=np.random.default_rng(cfg.seed),
+            horizons=[5],
+            n_paths=cfg.n_paths,
+            target_sigma_by_horizon=null_sigma,
+        )
+        better_own = sev._evaluate_grid_with_target_sigma(
+            grid_long,
+            better_forecast,
+            bars,
+            underlying_id="DAX",
+            spot0=bar.close,
+            start=start,
+            as_of=as_of,
+            rng=np.random.default_rng(cfg.seed),
+            horizons=[5],
+            n_paths=cfg.n_paths,
+            target_sigma_by_horizon=better_sigma,
+        )
+        own_sigma_deltas.append(
+            float(np.mean([e.lcb_net_return for e in better_own]))
+            - float(np.mean([e.lcb_net_return for e in null_own]))
+        )
+
+        null_f = sev._evaluate_grid_with_target_sigma(
+            grid_long,
+            null_forecast,
+            bars,
+            underlying_id="DAX",
+            spot0=bar.close,
+            start=start,
+            as_of=as_of,
+            rng=np.random.default_rng(cfg.seed),
+            horizons=[5],
+            n_paths=cfg.n_paths,
+            target_sigma_by_horizon=falsification_sigma,
+        )
+        better_f = sev._evaluate_grid_with_target_sigma(
+            grid_long,
+            better_forecast,
+            bars,
+            underlying_id="DAX",
+            spot0=bar.close,
+            start=start,
+            as_of=as_of,
+            rng=np.random.default_rng(cfg.seed),
+            horizons=[5],
+            n_paths=cfg.n_paths,
+            target_sigma_by_horizon=falsification_sigma,
+        )
+        falsification_deltas.append(
+            float(np.mean([e.lcb_net_return for e in better_f]))
+            - float(np.mean([e.lcb_net_return for e in null_f]))
+        )
+
+    own_delta = np.asarray(own_sigma_deltas)
+    mean_own_delta = float(np.mean(own_delta))
+    assert mean_own_delta > 0.0
+    p_own = sev._moving_block_bootstrap_p_value(
+        own_delta, block_length=5, n_resamples=2000, rng=np.random.default_rng(0)
+    )
+
+    falsification_delta = np.asarray(falsification_deltas)
+    mean_falsification_delta = float(np.mean(falsification_delta))
+    # The mean-driven advantage is untouched by forcing sigma equal -- it survives, clearly
+    # positive, not zeroed like the pure-sigma-difference case above.
+    assert mean_falsification_delta > 0.0
+    p_falsification = sev._moving_block_bootstrap_p_value(
+        falsification_delta, block_length=5, n_resamples=2000, rng=np.random.default_rng(1)
+    )
+    shows_effect, _ = sev._falsification_shows_effect(
+        p_falsification, mean_falsification_delta, 0.10
+    )
+    assert shows_effect is True
+
+    verdict, _ = sev._verdict_with_falsification(p_own, mean_own_delta, 0.10, shows_effect)
+    assert verdict == "CONFOUNDED"
+
+
+# ---------------------------------------------------------------------------
+# 2026Q4-002: full-trial integration -- forecast mode populates falsification
+# ---------------------------------------------------------------------------
+
+
+def test_full_trial_forecast_mode_populates_falsification_and_sigma_diagnostics() -> None:
+    cfg = SyntheticTurboConfig(n_paths=25, sigma_source="forecast")
+    bars = {"DAX": _bars(800, seed=42, daily_vol=0.009)}
+    result = run_synthetic_net_ev_trial(bars, config=cfg)
+
+    assert result.sigma_source == "forecast"
+    assert result.falsification is not None
+    assert 0.0 <= result.falsification.p_value <= 1.0
+    assert result.falsification.n_dates > 0
+    assert result.verdict in ("PASS", "CONFOUNDED", "FAIL_NULL_RESULT", "FAIL_NEGATIVE_SIGNIFICANT")
+    if result.verdict == "PASS":
+        assert result.falsification.shows_effect is False
+    if result.verdict == "CONFOUNDED":
+        assert result.falsification.shows_effect is True
+
+    stability = result.stability
+    assert set(stability.mean_realized_sigma_by_arm).issubset({"null", "regime_conditional"})
+    assert set(stability.mean_target_sigma_by_arm).issubset({"null", "regime_conditional"})
+    # Structural separation still holds under the new fields too.
+    assert "falsification" not in StabilityAnalysis.model_fields
+
+
+def test_full_trial_null_forecast_mode_has_no_nested_falsification() -> None:
+    cfg = SyntheticTurboConfig(n_paths=25, sigma_source="null_forecast")
+    bars = {"DAX": _bars(800, seed=42, daily_vol=0.009)}
+    result = run_synthetic_net_ev_trial(bars, config=cfg)
+
+    assert result.sigma_source == "null_forecast"
+    assert result.falsification is None
+    assert result.verdict in ("PASS", "FAIL_NULL_RESULT", "FAIL_NEGATIVE_SIGNIFICANT")

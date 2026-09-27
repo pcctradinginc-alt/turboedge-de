@@ -34,6 +34,17 @@ repository has had with itself:
   operational target is: persistently positive net EV across many weakly
   correlated sources, with fast withdrawal when a source stops working.
 
+**Most research hypotheses are expected to fail.** A high failure rate is the
+system working, not the system broken. 0/20 forecast cells, 0/80 challenger
+cells, Cboe, CFTC, and the regime-conditional economic test have all failed,
+and each is recorded rather than quietly dropped. A research process with a
+high hit rate is either lucky or not correcting for multiple testing.
+
+**A system generation is considered improved only when genuinely new forward
+evidence supports it.** Not because weights changed, models were replaced,
+features were added, or a backtest got better. `SystemGeneration` exists to
+make that comparison explicit; a better backtest is not a better generation.
+
 The intended shape, for orientation rather than as a checklist:
 
     Data Factory -> Alpha Factory -> Model Tournament -> Path Engine

@@ -13,6 +13,63 @@ This document defines research governance policies for TurboEdge-DE's iterative 
 
 Every research change—feature variant, threshold adjustment, model hyperparameter, sizing rule—receives a unique `trial_id`.
 
+### 1.1a Amendment: evidence-gated automatic alpha promotion (2026-09-27)
+
+**Recorded as an amendment, on written human instruction, because it reverses
+a rule this document and CLAUDE.md both stated.**
+
+The previous position, stated by the same human earlier the same day: *"No
+production promotion without explicit human approval."* The Alpha Factory
+specification's lifecycle diagram said the same
+(`Forward Shadow -> Human Review -> Human Promotion -> Production`).
+
+The instruction that supersedes it: *"Human statistical judgement must NOT be
+required for routine alpha promotion. A human may not be capable of
+independently evaluating every model, alpha source, posterior or statistical
+test. Therefore promotion decisions should be made by a deterministic,
+non-learning Evidence & Risk Gate... Routine statistical alpha promotion does
+NOT require human approval."*
+
+**Why this is not a weakening.** A human approval that cannot independently
+verify what it approves is a rubber stamp, and a rubber stamp is worse than no
+gate because it creates the appearance of review. The instruction moves the
+human's leverage from approving *conclusions* to approving *rules*, which is
+the part a non-specialist can actually audit. That is a stronger arrangement,
+not a looser one — provided the following hold, all of which the same
+instruction requires:
+
+1. **Promotion criteria are frozen, versioned, and independent of the
+   candidate being evaluated.** A candidate may never change its own bar.
+2. **The adaptive system may not modify the criteria.** It may propose alpha
+   sources and tune their parameters during permitted research phases. §25 and
+   §43 already forbid changing promotion *standards* and do not list making a
+   promotion, so those sections are unaffected.
+3. **Promotion is staged**: FORWARD_SHADOW -> CANARY_PRODUCTION ->
+   LIMITED_PRODUCTION -> NORMAL_PRODUCTION, each gated.
+4. **Promotion is reversible and demotion is automatic** on deteriorating
+   forward evidence, with an immediate path to DISABLED on a risk violation.
+5. **The human retains veto, disable and emergency stop** at all times.
+6. **Human approval remains mandatory** for: hard portfolio risk limits,
+   maximum aggregate capital exposure, the promotion criteria themselves,
+   governance rules, confirmation methodology, the allowed instrument
+   universe, and any introduction of automatic broker execution.
+
+**What has not changed.** No broker integration, no automatic order placement,
+manual execution remains mandatory (Master Spec §49 rules 1-3). Automatic
+promotion means an alpha may begin contributing to a *proposal*; it never
+means an order is placed.
+
+**Notification.** `ALPHA_PROMOTION_NOTICE` informs after an evidence-gated
+promotion. `ALPHA_PROMOTION_REQUIRED` is retained, unchanged in meaning, for
+the six reserved categories in point 6. Both exist in the action-type enum so
+the distinction is explicit in code rather than implied by convention.
+
+**Status: criteria not yet defined numerically, no evaluator implemented, no
+alpha promoted.** Phase A adds the frozen-criteria *object* and the lifecycle
+states only. Nothing evaluates or promotes anything yet, and every gate
+threshold that the repository does not already have a measured number for is
+left explicitly unset rather than guessed.
+
 ### 1.2 Quarterly Adaptation Budget
 
 **Max changes per quarter: 6**

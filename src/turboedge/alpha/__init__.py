@@ -1,4 +1,11 @@
 from turboedge.alpha.promotion import PromotionCriteria
+from turboedge.alpha.registry import (
+    AlphaAlreadyRegistered,
+    AlphaImmutable,
+    AlphaNotFound,
+    AlphaRegistry,
+    IllegalAlphaTransition,
+)
 from turboedge.alpha.schemas import (
     AlphaSource,
     AlphaStatus,
@@ -7,9 +14,14 @@ from turboedge.alpha.schemas import (
 )
 
 __all__ = [
+    "AlphaAlreadyRegistered",
+    "AlphaImmutable",
+    "AlphaNotFound",
+    "AlphaRegistry",
     "AlphaSource",
     "AlphaStatus",
     "EdgeAttribution",
+    "IllegalAlphaTransition",
     "PromotionCriteria",
     "transition_allowed",
 ]

@@ -25,6 +25,7 @@ from typing import Any, Self
 import duckdb
 import structlog
 
+from turboedge.alpha.schemas import AlphaSource, AlphaStatus
 from turboedge.meta.research_opportunity import (
     Estimate,
     InformationFamily,
@@ -287,6 +288,41 @@ _DDL_STATEMENTS: tuple[str, ...] = (
         note VARCHAR NOT NULL,
         schema_version VARCHAR NOT NULL,
         PRIMARY KEY (pattern_id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS alpha_sources (
+        alpha_id VARCHAR NOT NULL,
+        name VARCHAR NOT NULL,
+        family VARCHAR NOT NULL,
+        version VARCHAR NOT NULL,
+        description VARCHAR NOT NULL,
+        economic_hypothesis VARCHAR NOT NULL,
+        status VARCHAR NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL,
+        frozen_at TIMESTAMPTZ,
+        underlyings VARCHAR NOT NULL,
+        horizons VARCHAR NOT NULL,
+        directions VARCHAR NOT NULL,
+        required_data_sources VARCHAR NOT NULL,
+        trial_ids VARCHAR NOT NULL,
+        evidence VARCHAR NOT NULL,
+        git_commit VARCHAR,
+        config_hash VARCHAR,
+        schema_version VARCHAR NOT NULL,
+        PRIMARY KEY (alpha_id, version)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS alpha_status_history (
+        alpha_id VARCHAR NOT NULL,
+        version VARCHAR NOT NULL,
+        recorded_at TIMESTAMPTZ NOT NULL,
+        from_status VARCHAR,
+        to_status VARCHAR NOT NULL,
+        actor VARCHAR NOT NULL,
+        note VARCHAR NOT NULL,
+        PRIMARY KEY (alpha_id, version, recorded_at, to_status)
     )
     """,
     """
@@ -665,6 +701,8 @@ _ALL_TABLES: tuple[str, ...] = (
     "meta_decisions",
     "research_opportunities",
     "successful_research_patterns",
+    "alpha_sources",
+    "alpha_status_history",
     "signals",
     "candidate_sets",
     "source_health",
@@ -1119,6 +1157,75 @@ class Store:
             params,
         ).fetchall()
         return [_row_to_meta_decision(r) for r in rows]
+
+    # -- alpha registry (Alpha Factory, Phase A) ---------------------------
+
+    def upsert_alpha_source(self, alpha: AlphaSource) -> None:
+        """Insert or replace one alpha source, keyed on `(alpha_id, version)`.
+
+        Versioned on purpose: a changed hypothesis is a new version rather than
+        an overwrite, so the evidence that supported the old one stays
+        retrievable. History of *status* lives in `alpha_status_history`.
+        """
+        self._conn.execute(
+            f"INSERT OR REPLACE INTO alpha_sources ({', '.join(_ALPHA_SOURCE_COLUMNS)}) "
+            f"VALUES ({', '.join(['?'] * len(_ALPHA_SOURCE_COLUMNS))})",
+            _alpha_source_row(alpha),
+        )
+
+    def list_alpha_sources(self, *, status: str | None = None) -> list[AlphaSource]:
+        where = "WHERE status = ?" if status is not None else ""
+        params = [status] if status is not None else []
+        rows = self._conn.execute(
+            f"SELECT {', '.join(_ALPHA_SOURCE_COLUMNS)} FROM alpha_sources {where} "
+            "ORDER BY created_at ASC, alpha_id ASC, version ASC",
+            params,
+        ).fetchall()
+        return [_row_to_alpha_source(r) for r in rows]
+
+    def get_alpha_source(self, alpha_id: str, version: str) -> AlphaSource | None:
+        rows = self._conn.execute(
+            f"SELECT {', '.join(_ALPHA_SOURCE_COLUMNS)} FROM alpha_sources "
+            "WHERE alpha_id = ? AND version = ?",
+            [alpha_id, version],
+        ).fetchall()
+        return _row_to_alpha_source(rows[0]) if rows else None
+
+    def append_alpha_status_change(
+        self,
+        *,
+        alpha_id: str,
+        version: str,
+        recorded_at: datetime,
+        from_status: str | None,
+        to_status: str,
+        actor: str,
+        note: str,
+    ) -> None:
+        """Append one status transition. Never updates, never deletes.
+
+        The registry must not silently remove or overwrite a failed alpha
+        (spec §7): the current status lives on the row, and how it got there
+        lives here. A rejection that leaves no trace is the failure memory this
+        project depends on, erased.
+        """
+        self._conn.execute(
+            "INSERT OR REPLACE INTO alpha_status_history "
+            "(alpha_id, version, recorded_at, from_status, to_status, actor, note) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [alpha_id, version, recorded_at, from_status, to_status, actor, note],
+        )
+
+    def list_alpha_status_history(
+        self, alpha_id: str, version: str
+    ) -> list[tuple[datetime, str | None, str, str, str]]:
+        """`(recorded_at, from_status, to_status, actor, note)`, oldest first."""
+        rows = self._conn.execute(
+            "SELECT recorded_at, from_status, to_status, actor, note FROM alpha_status_history "
+            "WHERE alpha_id = ? AND version = ? ORDER BY recorded_at ASC",
+            [alpha_id, version],
+        ).fetchall()
+        return [(r[0], r[1], r[2], r[3], r[4]) for r in rows]
 
     # -- research queue (Phase 2) ------------------------------------------
 
@@ -3496,4 +3603,95 @@ def _row_to_research_pattern(row: tuple[Any, ...]) -> SuccessfulResearchPattern:
         trial_id=row[14],
         note=row[15],
         schema_version=row[16],
+    )
+
+
+_ALPHA_SOURCE_COLUMNS: tuple[str, ...] = (
+    "alpha_id",
+    "name",
+    "family",
+    "version",
+    "description",
+    "economic_hypothesis",
+    "status",
+    "created_at",
+    "frozen_at",
+    "underlyings",
+    "horizons",
+    "directions",
+    "required_data_sources",
+    "trial_ids",
+    "evidence",
+    "git_commit",
+    "config_hash",
+    "schema_version",
+)
+
+#: The `Estimate`-valued fields of `AlphaSource`, serialised together into the
+#: `evidence` JSON column. Listed explicitly rather than derived by
+#: introspection so that adding an evidence field to the schema fails loudly
+#: here instead of being silently dropped on write.
+_ALPHA_EVIDENCE_FIELDS: tuple[str, ...] = (
+    "nominal_sample",
+    "effective_sample",
+    "expected_net_ev",
+    "lcb_net_ev",
+    "posterior_probability_positive",
+    "uncertainty_score",
+    "drift_score",
+    "decay_score",
+)
+
+
+def _alpha_source_row(a: AlphaSource) -> tuple[Any, ...]:
+    evidence = {f: getattr(a, f).model_dump(mode="json") for f in _ALPHA_EVIDENCE_FIELDS}
+    return (
+        a.alpha_id,
+        a.name,
+        str(a.family),
+        a.version,
+        a.description,
+        a.economic_hypothesis,
+        str(a.status),
+        a.created_at,
+        a.frozen_at,
+        json.dumps(a.underlyings),
+        json.dumps(a.horizons),
+        json.dumps(a.directions),
+        json.dumps(a.required_data_sources),
+        json.dumps(a.trial_ids),
+        json.dumps(evidence),
+        a.git_commit,
+        a.config_hash,
+        a.schema_version,
+    )
+
+
+def _row_to_alpha_source(row: tuple[Any, ...]) -> AlphaSource:
+    evidence = {k: Estimate.model_validate(v) for k, v in json.loads(row[14]).items()}
+    missing = set(_ALPHA_EVIDENCE_FIELDS) - evidence.keys()
+    if missing:
+        raise ValueError(
+            f"stored alpha {row[0]!r} is missing evidence field(s) {sorted(missing)}; "
+            "refusing to reconstruct it with defaults"
+        )
+    return AlphaSource(
+        alpha_id=row[0],
+        name=row[1],
+        family=InformationFamily(row[2]),
+        version=row[3],
+        description=row[4],
+        economic_hypothesis=row[5],
+        status=AlphaStatus(row[6]),
+        created_at=row[7],
+        frozen_at=row[8],
+        underlyings=json.loads(row[9]),
+        horizons=json.loads(row[10]),
+        directions=json.loads(row[11]),
+        required_data_sources=json.loads(row[12]),
+        trial_ids=json.loads(row[13]),
+        git_commit=row[15],
+        config_hash=row[16],
+        schema_version=row[17],
+        **evidence,
     )

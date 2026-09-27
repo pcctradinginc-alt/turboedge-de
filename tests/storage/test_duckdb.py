@@ -56,6 +56,8 @@ def test_init_schema_creates_all_tables_empty(store: Store) -> None:
         "meta_decisions",
         "research_opportunities",
         "successful_research_patterns",
+        "alpha_sources",
+        "alpha_status_history",
         "signals",
         "candidate_sets",
         "source_health",

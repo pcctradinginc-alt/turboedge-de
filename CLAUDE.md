@@ -8,6 +8,49 @@ TurboEdge-DE is a quantitative research system for identifying, evaluating, and 
 
 ---
 
+## North Star
+
+**TurboEdge does not optimize prediction accuracy. TurboEdge optimizes durable,
+diversified, uncertainty-adjusted forward net economic value after all
+real-world costs.**
+
+Read that before proposing any change. It decides most arguments this
+repository has had with itself:
+
+- A model with better CRPS is not an improvement until it survives spread,
+  financing, issuer margin, knock-out asymmetry and slippage. `regime_conditional`
+  improved CRPS in 18/20 cells at p ≈ 0.014 and was measured **economically
+  worse** than the null (`docs/measured_results.md` §6.15, -0.0205). Both facts
+  are true and only the second one counts here.
+- The target is not one good strategy. It is many small, as-independent-as-
+  possible edges — forecast, path/KO, volatility/tail, timing, product
+  selection, issuer/pricing, cost/spread, portfolio allocation — each allowed
+  to be weak, jointly required to be positive after costs. A single edge that
+  needs to be strong is a single point of failure.
+- "Durable" and "diversified" are load-bearing. An edge that decays unnoticed
+  is worse than no edge, because it is sized as if it worked. Detecting decay
+  deserves the same effort as detecting discovery.
+- Constant returns are not a goal this system can honestly promise. The
+  operational target is: persistently positive net EV across many weakly
+  correlated sources, with fast withdrawal when a source stops working.
+
+The intended shape, for orientation rather than as a checklist:
+
+    Data Factory -> Alpha Factory -> Model Tournament -> Path Engine
+      -> Product Alpha -> Portfolio Engine -> Forward Feedback
+      -> Research Controller -> (back to Data Factory)
+
+**Research, Shadow and Production are three separate layers and must stay
+separate.** Research may experiment aggressively. Shadow may evaluate on live
+data without influencing anything. Production accepts only what cleared
+pre-registered out-of-sample and forward gates. The correct response to wanting
+more experiments is more automation in Research plus a promotion gate that
+experiments cannot reach — not a looser gate. This repository has already
+demonstrated why: the 2026Q3 adaptation budget of 6 stands at 13, each overrun
+individually justified in writing, which is exactly how discipline erodes.
+
+---
+
 ## Verbindliche Regeln (Master Spec §49, wörtlich)
 
 1. Keine Live-Execution implementieren.

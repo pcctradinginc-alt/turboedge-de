@@ -66,6 +66,7 @@ from turboedge.models.forecast import ForecastModel
 from turboedge.notifications.dedup import NotificationDeduplicator, notification_hash
 from turboedge.notifications.gmail import EmailMessageSpec, GmailCredentials, GmailNotifier
 from turboedge.notifications.templates import PositionUpdateContext, render_position_update
+from turboedge.pipeline.archive import run_product_archive
 from turboedge.pipeline.scan_all import run_scan_all
 from turboedge.positions.reevaluate import reevaluate_open_positions
 from turboedge.provenance import git_commit
@@ -1322,6 +1323,105 @@ def research_ko_calibration_cmd(
     )
 
 
+def archive_products_cmd(
+    ctx: typer.Context,
+    underlying: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--underlying",
+            help=(
+                "Underlying id(s) to archive (repeatable). Default: every "
+                "enabled id from configs/universe.yaml"
+            ),
+        ),
+    ] = None,
+    max_pages: int = typer.Option(
+        150,
+        "--max-pages",
+        help=(
+            "Deep gettex page cap for this archive run only (default 150, "
+            "~15,000 rows at 100 rows/page). Never affects the live scan "
+            "path, which keeps its own configs/sources.yaml value."
+        ),
+    ),
+) -> None:
+    """Deep, slow, once-daily full-depth product fetch for research only.
+
+    Decoupled from the decision path on purpose (see
+    ``pipeline/archive.py`` module docstring): writes ``product_snapshots``/
+    ``instruments`` at full depth, never touches pricing, EV, gates, the
+    forward ledger or notifications. Belongs in the ``eod`` job, never one
+    of the five daily ``scan-all`` runs.
+    """
+    app_ctx = ctx.obj
+    underlying_ids = list(underlying) if underlying else app_ctx.cfg.universe.enabled_ids()
+    if not underlying_ids:
+        err_console.print(
+            "[red]No underlyings enabled in configs/universe.yaml and none given via "
+            "--underlying[/red]"
+        )
+        raise typer.Exit(code=2)
+
+    product_adapters = build_product_adapters(app_ctx.cfg)
+
+    with Store(app_ctx.db_path) as store:
+        store.init_schema()
+        result = run_product_archive(
+            app_ctx.cfg,
+            store,
+            product_adapters=product_adapters,
+            underlying_ids=underlying_ids,
+            max_pages=max_pages,
+        )
+
+    counts = {
+        "snapshots_written": result.snapshots_written,
+        "instruments_upserted": result.instruments_upserted,
+        "issuers_seen": len(result.issuers_seen),
+    }
+
+    if redact_console_enabled():
+        _print_counts("archive products", counts)
+    else:
+        table = Table(title="archive products -- issuer breadth")
+        table.add_column("Issuer")
+        table.add_column("Snapshots", justify="right")
+        for issuer, n in sorted(result.issuers_seen.items(), key=lambda kv: -kv[1]):
+            table.add_row(issuer, str(n))
+        console.print(table)
+
+        by_underlying = Table(title="archive products -- rows by underlying")
+        by_underlying.add_column("Underlying")
+        by_underlying.add_column("Rows", justify="right")
+        for uid, n in result.rows_fetched_by_underlying.items():
+            by_underlying.add_row(uid, str(n))
+        console.print(by_underlying)
+
+        console.print(
+            f"Snapshots written: {result.snapshots_written}  "
+            f"Instruments upserted: {result.instruments_upserted}  "
+            f"Duration: {result.duration_s:.1f}s"
+        )
+        if len(result.issuers_seen) <= 1:
+            console.print(
+                "[yellow]Only one issuer this run -- the point of this command is "
+                "issuer BREADTH, so this is a disappointing result, not a quiet "
+                "success.[/yellow]"
+            )
+        if result.warnings:
+            console.print(f"[yellow]Warnings: {', '.join(result.warnings)}[/yellow]")
+
+    _write_summary(
+        "archive_products",
+        counts,
+        underlyings=list(result.underlyings),
+        issuers_seen=result.issuers_seen,
+        rows_fetched_by_underlying=result.rows_fetched_by_underlying,
+        warnings=result.warnings,
+        duration_s=result.duration_s,
+    )
+
+
 def register_learn_commands(app: typer.Typer, position_app: typer.Typer) -> None:
     """Wire every Contract v3 integration-wave command into the main CLI.
     Called once from ``cli.py``::
@@ -1349,6 +1449,10 @@ def register_learn_commands(app: typer.Typer, position_app: typer.Typer) -> None
     research_app.command("backfill-trials")(research_backfill_trials_cmd)
     research_app.command("ko-calibration")(research_ko_calibration_cmd)
     app.add_typer(research_app, name="research")
+
+    archive_app = typer.Typer(help="Deep, slow, once-daily research-only product archive")
+    archive_app.command("products")(archive_products_cmd)
+    app.add_typer(archive_app, name="archive")
 
 
 __all__ = ["register_learn_commands"]

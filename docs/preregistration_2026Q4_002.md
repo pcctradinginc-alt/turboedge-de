@@ -249,3 +249,126 @@ step is `continue-on-error`. The result is committed to version control beside
 this document with its provenance — fetch date, per-underlying bar counts after
 the OHLC filter, git commit, the `sigma_source` used, and whether the run was
 forced.
+
+---
+
+## 11. Amendment B (2026-09-27, before any measurement) — the scrutiny §7 asked for, and one scope limit it found
+
+§7 declined to bring this trial forward on the grounds that *"the mechanism it
+depends on was written today and has one day of scrutiny."* The purpose was
+scrutiny, not the calendar. This records the scrutiny, performed before any
+measurement of the primary hypothesis.
+
+### Three adversarial checks on the mechanism
+
+**1. Units — `forecast.sigma` is the quantity `target_sigma` expects.** The
+most damaging undetected defect class would be feeding a differently-scaled
+number. Checked against each model's own quantiles, where a normal
+distribution implies `sigma ≈ (q95-q05)/3.29`:
+
+| model | cell | `sigma` | implied by quantiles | ratio |
+|---|---|---|---|---|
+| null | DAX 3d | 0.01885 | 0.01792 | 0.95× |
+| null | NDX 14d | 0.04853 | 0.05144 | 1.06× |
+| regime_conditional | DAX 3d | 0.01392 | 0.01408 | 1.01× |
+| regime_conditional | NDX 14d | 0.03026 | 0.03372 | 1.11× |
+
+Consistent to 0.92-1.11×, with the spread explained by fat tails rather than a
+scaling error. No units defect.
+
+**2. Targeting is exact.** Reachable targets are hit to 0.00% on real DAX bars;
+unreachable ones clamp at the gap-only floor with `target_sigma_met=False`
+rather than silently returning a different dispersion. Drift is preserved to
+six decimals when scaling and tilting are combined, `gap` is bit-identical, and
+repeated runs are bit-identical.
+
+**3. Shape largely transfers, not just width.** Scaling matches the second
+moment; whether it also transmits the forecast's *shape* was untested. Measured
+at `target_sigma = forecast.sigma`, 20,000 paths:
+
+| h | τ=0.05 forecast / paths | τ=0.50 | τ=0.95 | path excess kurtosis |
+|---|---|---|---|---|
+| 3d | -0.02805 / **-0.02428** | 0.00032 / 0.00015 | 0.01826 / 0.01973 | +2.37 |
+| 14d | -0.05737 / **-0.05588** | -0.00398 / -0.00399 | 0.03751 / 0.03851 | +0.77 |
+
+Realised sigma matches the target exactly in both. Quantiles agree to
+0.0001-0.0038 in log return, because the bootstrap already carries realistic
+fat tails.
+
+### The scope limit this found
+
+**The paths' left tail is systematically thinner than the forecast's.** At
+h=3d the forecast puts q05 at -0.0281 and the scaled paths at -0.0243 — a gap
+of 0.0038 in log return, about 0.38% of the underlying level, shrinking to
+0.0015 by h=14d.
+
+For a long turbo a thinner left tail **understates knock-out risk**, which is
+the anti-conservative direction. The effect is largest where leverage is
+highest, so it partly offsets the convexity headwind Amendment A measured
+(-0.0591 at the 2% barrier) rather than adding to it.
+
+This is a limit of transmitting a distribution through its second moment, not a
+defect: `simulate_paths` takes a sigma, not a shape. **Recorded as a bound on
+what a PASS would mean** — a PASS would show the forecast's *width* carries
+economic value, with its left-tail shape approximated by history rather than
+taken from the forecast. §1, §4, §5 and §6 are unchanged.
+
+### Verdict on the mechanism
+
+No defect found. The scrutiny §7 asked for has been performed rather than
+waited out.
+
+---
+
+## 12. Amendment C (2026-09-27, before any measurement) — run brought forward
+
+**Written before the run.** The date guard is overridden and the trial runs on
+2026-09-27 instead of 2026-10-01.
+
+### Why the §7 reason is discharged
+
+§7 gave one reason for waiting: *"waiting five days buys a chance to find a
+defect in `_apply_volatility_scaling` before a result is attached to it."*
+Amendment B performed that scrutiny — units, exactness, clamping, gap
+invariance, drift interaction, determinism, and shape transfer — plus 41 tests
+on the scaling and 55 on the harness. No defect was found, and one scope limit
+was, and is recorded.
+
+The reason was scrutiny, not the calendar. It has been discharged by doing the
+work.
+
+### What it costs, stated plainly
+
+**Budget.** Charged to **2026Q3 as the 13th of 6**, not to Q4. Q3 already
+stands at 12 of 6 after 2026Q4-001's own Amendment C. Making this a Q4 unit
+would repeat the `PD-2026Q4-001..003` error that GOVERNANCE.md §11.5 exists to
+record.
+
+Deflation: the Q3 model-level count moves from twelve to thirteen. The rank-2
+BH threshold moves from `2/12·0.10 = 0.0167` to `2/13·0.10 = 0.0154`; the Phase
+D p-values of 0.0135 and 0.0142 both still clear it, so §6.13's conclusion is
+unaffected.
+
+**The precedent, which is the real cost.** This is the **second** date-guard
+override in two days. A guard overridden twice is closer to a suggestion than
+a rule, and saying otherwise would be dishonest. Two things limit the damage:
+each override is written down before the run with its reason and its price, and
+neither touched the hypothesis, the method or the decision rule — which is
+where an override would actually corrupt a result.
+
+**A third override should not happen without the calendar advancing.** If a
+future trial's specification wants a waiting period, the waiting period should
+be met or the specification should not claim one.
+
+### Why now
+
+The standing goal is to find an economic edge if one exists and report it.
+2026Q4-001 closed the mean channel. This is the only remaining channel with
+measured evidence pointing the right way (§6.16: 26-38% narrower intervals that
+cover better), the mechanism to test it exists and has been scrutinised, and
+four days of calendar buys nothing further that the scrutiny has not already
+bought.
+
+§8's prior stands: **FAIL**, and Amendment A strengthened it — the convexity
+headwind at the 2% barrier (-0.0591) is larger than the entire mean-channel
+effect 2026Q4-001 measured (-0.0205).

@@ -595,22 +595,33 @@ jobs:
       # turn one test into twelve.
       - name: Pre-registered trial 2026Q4-001 (runs once, refuses thereafter)
         continue-on-error: true
-        run: uv run turboedge --log-format json research synthetic-ev
+        run: uv run turboedge --log-format json research synthetic-ev --trial 2026Q4-001
+
+      # 2026Q4-002 tests the WIDTH channel: each arm's path dispersion set to
+      # its own forecast sigma, which simulate_paths only became able to
+      # express on 2026-09-26. Same one-shot guards, own result file, own
+      # opening date. Its Amendment A already found the premise in its own §2
+      # to be backwards -- narrowing the distribution lowers P(KO) and makes
+      # the payoff worse anyway, because a turbo is a convex claim -- so the
+      # mechanical bias runs against the challenger, not for it.
+      - name: Pre-registered trial 2026Q4-002 (runs once, refuses thereafter)
+        continue-on-error: true
+        run: uv run turboedge --log-format json research synthetic-ev --trial 2026Q4-002
 
       # The result file is committed so the trial's outcome is in version
       # control next to the frozen pre-registration that produced it, rather
       # than only in an artifact that expires.
-      - name: Commit the 2026Q4-001 result if one was just written
+      - name: Commit any synthetic-EV result just written
         continue-on-error: true
         run: |
-          if [ -f docs/results_2026Q4_001.json ] && ! git diff --quiet --exit-code docs/results_2026Q4_001.json 2>/dev/null; then
+          if ! git diff --quiet --exit-code docs/results_2026Q4_00*.json 2>/dev/null || [ -n "$(git ls-files --others --exclude-standard docs/results_2026Q4_00*.json)" ]; then
             git config user.name "turboedge-pipeline"
             git config user.email "noreply@github.com"
-            git add docs/results_2026Q4_001.json
-            git commit -m "Result: pre-registered trial 2026Q4-001"
+            git add docs/results_2026Q4_00*.json
+            git commit -m "Result: pre-registered synthetic-EV trial"
             git push
           else
-            echo "no new 2026Q4-001 result to commit"
+            echo "no new synthetic-EV result to commit"
           fi
 
       - name: Job summary

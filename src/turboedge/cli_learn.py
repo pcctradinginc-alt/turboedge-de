@@ -19,7 +19,7 @@ import re
 from dataclasses import asdict
 from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 import numpy as np
 import structlog
@@ -37,7 +37,10 @@ from turboedge.adapters.registry import (
 from turboedge.backtest.excursion_eval import build_excursion_dataset, evaluate_excursion
 from turboedge.backtest.ko_calibration import KoCalibrationMetrics, run_ko_calibration
 from turboedge.backtest.purged_cv import PurgedWalkForwardSplit
-from turboedge.backtest.synthetic_turbo_ev import run_synthetic_net_ev_trial
+from turboedge.backtest.synthetic_turbo_ev import (
+    SyntheticTurboConfig,
+    run_synthetic_net_ev_trial,
+)
 from turboedge.backtest.walkforward import walk_forward_evaluate
 from turboedge.config import config_hash
 from turboedge.learning.drift import PageHinkley, PageHinkleyConfig, record_drift_event
@@ -498,22 +501,36 @@ def report_monthly_cmd(
     _write_summary("report_monthly", counts, month=target_month.isoformat())
 
 
-#: Where the 2026Q4-001 result is written. Its existence is the idempotency
-#: guard: a pre-registered trial is run exactly once, and a scheduled job that
-#: repeats it weekly would be multiple testing by the back door.
-_Q4_001_RESULT_PATH = Path("docs/results_2026Q4_001.json")
+#: One entry per pre-registered synthetic-EV trial: result path, the date it
+#: opens, and which sigma channel it tests. The result file's existence is the
+#: idempotency guard -- a pre-registered trial runs exactly once, and a
+#: scheduled job that repeats it would be multiple testing by the back door.
+_SigmaSource = Literal["historical", "forecast", "null_forecast"]
+
+_SYNTHETIC_EV_TRIALS: dict[str, tuple[Path, str, _SigmaSource]] = {
+    # 2026Q4-001: the mean channel. Run 2026-09-26 under its Amendment C and
+    # charged to Q3 as the 12th of 6. Result: FAIL_NULL_RESULT, -0.020547.
+    "2026Q4-001": (Path("docs/results_2026Q4_001.json"), "2026-10-01", "historical"),
+    # 2026Q4-002: the width channel -- each arm's path dispersion set to its own
+    # forecast sigma, which `simulate_paths` only became able to express on
+    # 2026-09-26. Deliberately NOT brought forward: the mechanism it depends on
+    # is days old (see its §7), and its Amendment A already found the premise in
+    # its own §2 to be backwards.
+    "2026Q4-002": (Path("docs/results_2026Q4_002.json"), "2026-10-01", "forecast"),
+}
 
 
 def research_synthetic_ev_cmd(
     ctx: typer.Context,
+    trial: str = typer.Option("2026Q4-001", "--trial", help="Which pre-registered trial to run"),
     force: bool = typer.Option(
         False, "--force", help="Re-run even though a result already exists (voids the trial)"
     ),
-    not_before: str = typer.Option(
-        "2026-10-01", "--not-before", help="Refuse to run before this date (ISO)"
+    not_before: str | None = typer.Option(
+        None, "--not-before", help="Override the trial's own opening date (ISO)"
     ),
 ) -> None:
-    """Run pre-registered trial 2026Q4-001 (`docs/preregistration_2026Q4_001.md`).
+    """Run one pre-registered synthetic-EV trial (`docs/preregistration_<trial>.md`).
 
     Exactly once. The pre-registration fixes the primary hypothesis, the
     method, the decision rule and the denominator before the data was seen;
@@ -524,27 +541,37 @@ def research_synthetic_ev_cmd(
 
     * A result file already on disk means the trial has been run. `--force`
       overrides it and says in the output that doing so voids the trial.
-    * `--not-before` refuses to run before 2026-10-01. Q3 is closed at 11 of 6
-      (GOVERNANCE.md §11.1), so a Q3 run would either consume a budget unit
+    * The trial's own opening date refuses an early run. Q3 is closed at 11 of
+      6 (GOVERNANCE.md §11.1), so a Q3 run would either consume a budget unit
       that does not exist or charge Q3 work to Q4 -- the two errors §11.1 and
-      §11.5 already record.
+      §11.5 already record. `--not-before` overrides the date, and an override
+      needs a written amendment in the pre-registration, as 2026Q4-001's
+      Amendment C is.
     """
     app_ctx = ctx.obj
     now = datetime.now(UTC)
-    threshold = date.fromisoformat(not_before)
+
+    if trial not in _SYNTHETIC_EV_TRIALS:
+        console.print(
+            f"[red]Unknown trial {trial!r}.[/red] Registered: "
+            f"{', '.join(sorted(_SYNTHETIC_EV_TRIALS))}"
+        )
+        raise typer.Exit(code=4)
+    result_path, opens_on, sigma_source = _SYNTHETIC_EV_TRIALS[trial]
+    threshold = date.fromisoformat(not_before or opens_on)
 
     if now.date() < threshold:
         console.print(
-            f"[yellow]Not run:[/yellow] today is {now.date()}, the trial opens {threshold}. "
-            "Q3 is closed at 11 of 6; running now would mis-charge the quarter."
+            f"[yellow]Not run:[/yellow] today is {now.date()}, trial {trial} opens "
+            f"{threshold}. Q3 is closed at 11 of 6; running now would mis-charge the quarter."
         )
         raise typer.Exit(code=2)
 
-    if _Q4_001_RESULT_PATH.exists() and not force:
+    if result_path.exists() and not force:
         console.print(
-            f"[yellow]Not run:[/yellow] {_Q4_001_RESULT_PATH} already exists, so this "
-            "pre-registered trial has been run. Re-running it would turn one test into "
-            "many. Use --force only if you intend to void it."
+            f"[yellow]Not run:[/yellow] {result_path} already exists, so trial {trial} has "
+            "been run. Re-running it would turn one test into many. Use --force only if you "
+            "intend to void it."
         )
         raise typer.Exit(code=3)
 
@@ -556,9 +583,11 @@ def research_synthetic_ev_cmd(
     provenance = {u: len(b) for u, b in bars_by_underlying.items()}
     console.print(f"Bars fetched {now.date()}: {provenance}")
 
-    result = run_synthetic_net_ev_trial(bars_by_underlying)
+    result = run_synthetic_net_ev_trial(
+        bars_by_underlying, config=SyntheticTurboConfig(sigma_source=sigma_source)
+    )
 
-    _Q4_001_RESULT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    result_path.parent.mkdir(parents=True, exist_ok=True)
     payload = result.model_dump(mode="json")
     payload["provenance"] = {
         "fetched_at": now.isoformat(),
@@ -566,18 +595,20 @@ def research_synthetic_ev_cmd(
         "lookback_days": 4000,
         "git_commit": app_ctx.git_commit,
         "forced": force,
+        "trial": trial,
+        "sigma_source": sigma_source,
     }
-    _Q4_001_RESULT_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    result_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     console.print(
-        f"\n2026Q4-001 {result.verdict}  "
+        f"\n{trial} {result.verdict}  "
         f"mean dLCB_NetEV={result.mean_delta_lcb_net_ev:+.6f}  "
         f"p={result.p_value:.4f} (alpha={result.alpha})  n_dates={result.n_dates}",
         markup=False,
         highlight=False,
     )
     console.print(f"  {result.verdict_reason}", markup=False, highlight=False)
-    console.print(f"Wrote {_Q4_001_RESULT_PATH}")
+    console.print(f"Wrote {result_path}")
     _write_summary(
         "research_synthetic_ev",
         {"n_dates": result.n_dates},

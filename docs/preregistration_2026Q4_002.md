@@ -218,3 +218,34 @@ expected return are not monotonically related** in this product class. A gate
 built on both (`lcb_ev > 0` *and* `p_ko` acceptable) is therefore not
 double-counting one risk; it is reading two genuinely different ones. That is
 worth knowing independently of this trial's outcome.
+
+
+---
+
+## 10. How it runs (added 2026-09-27)
+
+`turboedge research synthetic-ev --trial 2026Q4-002`, from the monthly pipeline
+job — the first scheduled job on or after the opening date. Automated for the
+same reason 2026Q4-001 was: nobody chooses when it runs, and nobody can run it
+again. That is what separates it from the retrospective evidence in
+`docs/measured_results.md` §6.12.
+
+Four guards, each with its own exit code, all verified by running them:
+
+| guard | exit |
+|---|---|
+| before this trial's opening date (2026-10-01) | 2 |
+| `docs/results_2026Q4_002.json` already exists | 3 |
+| unknown trial name | 4 |
+| `--force` overrides guard 2 and says so — and voids the trial | — |
+
+`--not-before` can override the date, but an override requires a written
+amendment in this document, as 2026Q4-001's Amendment C is. The guard is not
+paperwork: it is the difference between a trial that ran once on a fixed date
+and one whose timing was a choice.
+
+Every monthly run after the trial completes will legitimately refuse, so the
+step is `continue-on-error`. The result is committed to version control beside
+this document with its provenance — fetch date, per-underlying bar counts after
+the OHLC filter, git commit, the `sigma_source` used, and whether the run was
+forced.

@@ -1716,3 +1716,98 @@ and testing, rather than assumed dead by analogy to the mean.
 Work in progress: an optional `target_sigma` on `simulate_paths`, additive and
 defaulting to today's behaviour so no existing measurement moves. A trial can be
 pre-registered once that exists and is validated — not before.
+
+---
+
+## 6.17 RESULT — 2026Q4-002 (width channel): PASS by the rule, disqualified by the stability analysis (2026-09-27)
+
+**The pre-registered decision rule returns PASS. The stability analysis says
+the PASS is not attributable to width.** Both statements are recorded; the
+frozen rule is not changed after the fact.
+
+### Primary result
+
+| | |
+|---|---|
+| mean ΔLCB_NetEV | **+0.015332** |
+| p (one-sided block bootstrap) | **5.0e-05** |
+| null arm aggregate | -0.142027 |
+| regime_conditional arm aggregate | -0.126695 |
+| falsification arm (both at null sigma) | **-0.021495, p=1.0, shows_effect=False** |
+
+The falsification arm is the one genuinely reassuring number. Neutralising the
+width difference does not merely remove the effect — it **reverses it to
+-0.0215**, almost exactly the -0.0205 that 2026Q4-001 measured for the mean
+channel on the same machinery. Two independently-run trials agreeing to 1e-3 on
+the mean channel is a real internal consistency check.
+
+**Note both arms are negative in absolute terms** (-0.142 and -0.127). The
+trial measured a *difference*, correctly. It does not say anything is
+profitable.
+
+### Why the PASS does not survive scrutiny
+
+**1. The entire effect is one underlying.**
+
+| DAX | NDX | EURUSD | XAU |
+|---|---|---|---|
+| -0.0214 | -0.0188 | **+0.1208** | -0.0163 |
+
+Three of four are negative. The aggregate is EURUSD alone. "No dependence on
+one isolated lucky regime" is a mandatory promotion gate, and this fails it.
+
+**2. Only 39.4% of cells are positive** while the mean is positive — a
+distribution dominated by a few large outliers, not a broad effect.
+
+**3. The mechanism barely engaged, and the headline comes from cells where it
+did not.**
+
+| | null | regime_conditional |
+|---|---|---|
+| mean target sigma | 0.02549 | 0.02662 |
+| mean realised sigma | 0.02813 | 0.02859 |
+| clamped cells | **104,083** | **98,738** |
+
+§6.16 measured `regime_conditional` predicting sigmas **26-38% narrower** than
+the null. In this trial the two arms' realised sigmas differ by **1.6%**, and
+regime's mean *target* is higher than the null's. The reason is the clamping:
+both arms' targets were mostly below the gap-only floor, so both were clamped
+to nearly the same dispersion and the width channel largely did not operate.
+
+Decisive: **`reachable_only_mean_delta_lcb_net_ev = +0.00183`** — on the cells
+where the mechanism actually worked, the effect is an order of magnitude
+smaller than the +0.0153 headline. The headline is produced by clamped cells,
+i.e. by cells in which the tested mechanism was switched off.
+
+Spread sensitivity is stable (+0.01535 / +0.01529), which only confirms the
+effect does not come from the cost assumption either.
+
+### Verdict recorded
+
+**PASS by the frozen rule. Not promotable, and not evidence that forecast width
+carries economic value.** §5's only CONFOUNDED trigger is the falsification
+arm, which did not fire, so the rule has no branch for "the mechanism did not
+engage" — that is a gap in my own pre-registration, recorded rather than
+patched retroactively.
+
+§8 pre-committed that on a PASS the first question would be whether §6.16's
+coverage advantage holds where KO probability moved most. The answer is worse
+than that question assumed: the width difference never reached the paths in
+most cells.
+
+### What this actually establishes
+
+1. **The mean channel is confirmed dead**, twice, by independent runs
+   (-0.0205 and -0.0215).
+2. **The width channel is untested**, not refuted. The gap floor prevented the
+   test. `simulate_paths` cannot scale `gap`, by Master Spec rule 16, so a
+   target below the gap-only floor is unreachable — and for these underlyings
+   and horizons most targets are.
+3. **A real width test needs a different design**, not a rerun: either
+   horizons and barrier distances where the forecast sigma clears the gap
+   floor, or a path engine that can scale gap risk under an explicit
+   distributional assumption, which is a production change and a separate
+   pre-registration.
+
+No promotion. No trial budget consumed beyond the one already recorded. The
+result file with full provenance is `docs/results_2026Q4_002.json`.

@@ -205,3 +205,53 @@ activity.
 Improvement means **better forward economic outcomes on data that did not exist
 when the change was made.** Everything else is a diagnostic — including every
 number in this document.
+
+## 17. What Phase A actually built, item by item
+
+Phase A is infrastructure. It changes no forecast, no gate and no trading
+decision, and it produced no alpha, no model and no research trial. The
+mapping against the roadmap's A1–A11:
+
+| Item | Status | Where |
+| --- | --- | --- |
+| A1 repository overlap audit | done | §2–§16 of this document |
+| A2 `AlphaSource` schema | done | `alpha/schemas.py` |
+| A3 `AlphaRegistry` | done | `alpha/registry.py`, tables `alpha_sources` + `alpha_status_history` |
+| A4 `EdgeAttribution` schema | done | `alpha/schemas.py` |
+| A5 research ledger | **reused, not rebuilt** | see below |
+| A6 data partitions | done | `research/partitions.py` |
+| A7 permanent `ResearchArchive` interface | done | `research/archive.py` |
+| A8 `SystemGeneration` schema | done | `research/generations.py` |
+| A9 alpha lifecycle enum / validation | done | `AlphaStatus`, `ALLOWED_TRANSITIONS`, `transition_allowed` |
+| A10 unit tests | done | `tests/alpha/`, `tests/research/` |
+| A11 documentation | done | this file |
+
+A5 is deliberately absent as new code. The repository already records research
+in three places that between them cover the ledger's job, and a fourth store
+would create the worst failure mode a research ledger can have — two
+disagreeing accounts of what was tested:
+
+* `research_opportunities` + `ResearchQueue` — the question, its priority, its
+  approval and its status.
+* `research_trials` — the trial a question became, with its quarter, which is
+  the denominator of the multiple-testing correction in `GOVERNANCE.md` §11.2.
+* `failed_hypotheses.json` — the permanent, retest-gated record of what did
+  not work.
+
+`AlphaRegistry` deliberately does not duplicate any of them. It records the
+*effect*, links to the trials that measured it through `trial_ids`, and leaves
+the question, the trial and the failure where they already live.
+
+### What Phase A refuses to do
+
+Three refusals are enforced by tests rather than by convention, because each
+one is a way the record could quietly become flattering:
+
+* `AlphaRegistry` has no delete. A registered version cannot be overwritten, a
+  REJECTED alpha cannot be edited, and a status change appends.
+* `PromotionCriteria` has seven unset gates and the module contains no
+  evaluator. Nothing can be promoted by this code, because the bar is not yet
+  fully specified and a partial bar is a lower bar.
+* `ResearchArchive.read_as_of` returns a row only if its declared availability
+  *and* the write time of the file holding it are both at or before the cutoff,
+  and refuses outright to read a table that has no availability column.

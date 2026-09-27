@@ -505,6 +505,15 @@ def label_due_entries(
     Returns:
         Summary counters (`LabelRunResult`).
     """
+    # Local import: `counterfactual` imports `resolve_exit_with_fallback` and
+    # `LabelerConfig` from this module, so a module-level import here closes a
+    # cycle. The dependency direction is deliberate -- counterfactual
+    # evaluation reuses the selected product's own exit rules (§21), so it
+    # depends on the labeler rather than the other way round -- and this is the
+    # one place the labeler needs to call back into it.
+    from turboedge.learning.counterfactual import evaluate_counterfactual
+
+    cfg = config if config is not None else LabelerConfig()
     entries = store.ledger_entries_due_for_labeling(as_of)
     result = LabelRunResult()
     bars_cache: dict[str, Sequence[UnderlyingBar]] = {}
@@ -540,6 +549,26 @@ def label_due_entries(
             exit_date=entry.exit_due,
         )
 
+        # Product-selection counterfactuals (Master Spec §21/§24). These were
+        # hard-coded to None, and `evaluate_counterfactual` -- which computes
+        # them -- was exported but called from nowhere in the pipeline. So the
+        # selection edge, the one economic question in this repository that
+        # needs no forecasting skill at all (did we pick a better turbo than a
+        # random valid one for the same view?), had never been measured on a
+        # single labelled entry.
+        #
+        # Computed here rather than in a later pass because this is where the
+        # entry, its bars and the store are all already in hand, and because
+        # §21 wants the discarded alternatives evaluated under the *same* exit
+        # rules as the selected product -- which is `resolution` above.
+        counterfactual = evaluate_counterfactual(
+            store,
+            entry,
+            underlying_bars=bars,
+            selected_realized_pnl=resolution.realized_pnl,
+            config=cfg,
+        )
+
         label = LedgerLabel(
             entry_id=entry.entry_id,
             labeled_at=as_of,
@@ -549,8 +578,8 @@ def label_due_entries(
             exit_reason=resolution.exit_reason,
             realized_selected_pnl=resolution.realized_pnl,
             underlying_pnl=underlying_pnl,
-            median_turbo_pnl=None,
-            best_turbo_pnl=None,
+            median_turbo_pnl=counterfactual.median_turbo_pnl,
+            best_turbo_pnl=counterfactual.best_turbo_pnl,
             ideal_turbo_pnl=None,
             mfe=resolution.mfe,
             mae=resolution.mae,

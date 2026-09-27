@@ -2380,21 +2380,46 @@ def _run_ev_pipeline(
 def _pick_alternatives(
     isin: str, p: _PricedProduct, priced: dict[str, _PricedProduct], limit: int = 3
 ) -> list[str]:
-    """Up to ``limit`` counterfactual ISINs (Master Spec §24): same
-    direction and leverage bucket, a different issuer, ranked by how close
-    their leverage is to ``isin``'s own."""
-    same_group = [
-        other_isin
-        for other_isin, other in priced.items()
-        if other_isin != isin
-        and other.product.direction == p.product.direction
-        and other.leverage_bucket_value == p.leverage_bucket_value
-        and other.product.issuer != p.product.issuer
-    ]
-    same_group.sort(
-        key=lambda other_isin: abs(priced[other_isin].leverage_value - p.leverage_value)
-    )
-    return same_group[:limit]
+    """Up to ``limit`` counterfactual ISINs (Master Spec §24): same direction
+    and leverage bucket, ranked by how close their leverage is to ``isin``'s.
+
+    **Cross-issuer candidates are preferred, and same-issuer ones are a
+    documented fallback rather than an omission.** The original rule required a
+    *different* issuer, which is the sharper question ("was another dealer
+    quoting this exposure better?"). But BNP is ~92% of the product universe
+    here and Citi quotes no live prices at all, so that rule left **86% of
+    ledger entries with no alternatives at all** -- and since
+    `evaluate_counterfactual` needs them, the product-selection edge could be
+    measured on only 14% of entries, which is how it went unmeasured entirely.
+
+    A same-issuer, different-barrier product in the same leverage bucket is a
+    genuine counterfactual for the same view: it answers "was there a better
+    comparable product" rather than "was there a better dealer". That is the
+    broader and, for a cross-sectional relative-value system, the more relevant
+    question -- the narrower issuer-dislocation reading is recoverable from the
+    recorded issuers, so widening the set loses nothing.
+
+    Cross-issuer candidates come first in the returned list, so an analysis
+    that wants only those can take the prefix and check the issuers.
+    """
+    cross_issuer: list[str] = []
+    same_issuer: list[str] = []
+    for other_isin, other in priced.items():
+        if other_isin == isin:
+            continue
+        if other.product.direction != p.product.direction:
+            continue
+        if other.leverage_bucket_value != p.leverage_bucket_value:
+            continue
+        bucket = cross_issuer if other.product.issuer != p.product.issuer else same_issuer
+        bucket.append(other_isin)
+
+    def _by_leverage_distance(other_isin: str) -> float:
+        return abs(priced[other_isin].leverage_value - p.leverage_value)
+
+    cross_issuer.sort(key=_by_leverage_distance)
+    same_issuer.sort(key=_by_leverage_distance)
+    return (cross_issuer + same_issuer)[:limit]
 
 
 def _financing_cost_for_horizon(priced: _PricedProduct, horizon_days: int, isin: str) -> float:

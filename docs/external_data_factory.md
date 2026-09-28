@@ -424,6 +424,19 @@ error a cube-shaped API invites.
 
 ### PortWatch: the layer that was missed first time round
 
+All eleven PortWatch series were ingested live on 2026-09-28: ten returned
+2,818–2,820 daily observations from 2019-01-01, and one did not.
+
+**`Daily_Trade_Data_WLD` is abandoned.** It looks like the natural home for a
+world aggregate. It returned 481 rows ending 2025-04-25 — 521 days stale —
+while `Daily_Trade_Data_REG` was current to 2026-09-18. The readiness engine
+flagged it `DEGRADED` on the first run, which is the whole point of that
+machinery: a layer that quietly stops being updated looks exactly like a layer
+with no news. The same quantity exists in the live layer as `ISO3=WLD`, now
+2,818 observations, and a test pins the dead service so nobody configures it
+again.
+
+
 The first pass configured only chokepoint transit counts — the geopolitical
 shock channel. `Daily_Trade_Data_REG` carries per-country, per-day seaborne
 import and export tonnage split by vessel type, and filtered to Germany it is

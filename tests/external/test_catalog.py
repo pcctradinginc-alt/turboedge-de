@@ -388,3 +388,16 @@ def test_every_eurostat_series_pins_all_but_time() -> None:
         _dataset, filters = parse_native_identifier(spec.native_identifier)
         assert "freq" in filters, spec.series_id
         assert "geo" in filters, spec.series_id
+
+
+def test_no_portwatch_series_uses_the_abandoned_world_service() -> None:
+    # Daily_Trade_Data_WLD looks like the natural home for a world
+    # aggregate and is dead: measured 2026-09-28 it returned 481 rows
+    # ending 2025-04-25, 521 days stale, while Daily_Trade_Data_REG was
+    # current to 2026-09-18. The same quantity is available there as
+    # ISO3=WLD. A layer that quietly stops updating looks exactly like a
+    # layer with no news, so this is pinned rather than remembered.
+    cfg = load_external_data_config(_REPO_CONFIG)
+
+    for spec in cfg.series_for("portwatch"):
+        assert "Daily_Trade_Data_WLD" not in spec.native_identifier, spec.series_id

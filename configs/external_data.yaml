@@ -1425,13 +1425,21 @@ series:
     category: trade_logistics
     unit: portcalls_per_day
     frequency: daily
-    native_identifier: "Daily_Trade_Data_WLD|portcalls|"
+    native_identifier: "Daily_Trade_Data_REG|portcalls|ISO3=WLD"
     availability_precision: UNKNOWN
     backfill_class: FORWARD_ONLY
     notes: >-
-      Field list verified live 2026-09-28. The aggregate is the control for
-      the chokepoint series: a drop at one strait means something different
-      when world traffic is flat than when it is falling everywhere.
+      The control for the chokepoint series: a drop at one strait means
+      something different when world traffic is flat than when it is
+      falling everywhere.
+
+      Taken from Daily_Trade_Data_REG with ISO3=WLD, NOT from the
+      Daily_Trade_Data_WLD service, which the publisher appears to have
+      abandoned. Measured 2026-09-28: that service returned 481 rows ending
+      2025-04-25, 521 days stale, while the regional layer was current to
+      2026-09-18. The readiness engine flagged it DEGRADED on the first
+      run, which is what that machinery is for -- a layer that quietly
+      stops being updated looks exactly like a layer with no news.
 
   # ---- PortWatch country level: the layer I had missed ---------------
   # Daily_Trade_Data_REG carries per-country, per-day seaborne import and

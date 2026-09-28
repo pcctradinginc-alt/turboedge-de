@@ -231,7 +231,7 @@ configured.
 | source | credential | live probe result |
 | --- | --- | --- |
 | Energy-Charts (Fraunhofer ISE) | **none** | HTTP 200; licence declared in the payload — **live** |
-| IMF PortWatch | **none** | HTTP 200; 28 chokepoints, daily, current to 2026-09-20 |
+| IMF PortWatch | **none** | HTTP 200; 28 chokepoints, daily — **live on operator instruction** |
 | Kiel Trade Indicator | **none** | HTTP 200; only 2 of 13 CSVs still maintained |
 | GIE AGSI (gas storage) | `GIE_API_KEY` | **HTTP 200 with an error body** |
 | GIE ALSI (LNG) | `GIE_API_KEY` | **HTTP 200 with an error body** |
@@ -264,12 +264,19 @@ conflated:
   when it is an omission. **The first CI run is the verification** — a wrong
   facet returns a payload without the column, the adapter reports
   `missing_series`, and readiness shows `BLOCKED` with the reason.
-* **PortWatch, Kiel** — they work without a key, but their reuse terms could
-  not be established. `REVIEW_REQUIRED`. PortWatch's own ArcGIS metadata names
-  `imf.org/external/terms.htm` as its licence, and that page answers HTTP 403
-  to a non-browser agent; it was not circumvented. Kiel states no licence on
-  either the indicator page or the download gallery. Spec §8: do not guess
-  licensing. Both are a minute of reading away from being switched on.
+* **Kiel** — works without a key, but states no licence on either the
+  indicator page or the download gallery. `REVIEW_REQUIRED`. Spec §8: do not
+  guess licensing.
+* **PortWatch** is enabled, and the basis is worth stating precisely. Its
+  ArcGIS item names `imf.org/external/terms.htm` as its licence reference,
+  and that page answers HTTP 403 to a non-browser agent; it was not
+  circumvented, and no machine-readable statement of the terms exists in the
+  item metadata. **The licence was not verified by this system.** It runs on
+  the repository operator's explicit instruction, recorded as
+  `commercial_use_status: CLEARED_BY_OPERATOR` with the reasoning in its
+  `status_note`, and a test asserts that distinction stays in the record —
+  someone reading this in a year must be able to tell "we checked the terms"
+  from "we were told to proceed".
 
 ### Forecast series need their availability inverted
 

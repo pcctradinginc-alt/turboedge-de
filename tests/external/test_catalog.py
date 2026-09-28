@@ -171,7 +171,7 @@ def test_every_blocked_wave_two_source_says_why_and_the_reasons_stay_distinct() 
     cfg = load_external_data_config(_REPO_CONFIG)
 
     credential_blocked = {"entsoe"}
-    licence_blocked = {"portwatch", "kiel_trade"}
+    licence_blocked = {"kiel_trade"}
 
     for source_id in credential_blocked:
         manifest = cfg.sources[source_id]
@@ -187,6 +187,22 @@ def test_every_blocked_wave_two_source_says_why_and_the_reasons_stay_distinct() 
         # These need no key at all -- only a human to read the terms.
         assert not manifest.requires_auth, source_id
         assert manifest.status_note.strip(), source_id
+
+
+def test_portwatch_records_that_its_licence_was_not_machine_verified() -> None:
+    # PortWatch was enabled on the operator's explicit instruction, not on a
+    # licence this system read. The ArcGIS item names
+    # imf.org/external/terms.htm, which answers HTTP 403 to a non-browser
+    # agent and was not circumvented. That distinction has to survive in the
+    # record: someone reading this in a year must be able to tell "we
+    # checked the terms" from "we were told to proceed".
+    cfg = load_external_data_config(_REPO_CONFIG)
+    manifest = cfg.sources["portwatch"]
+
+    assert manifest.enabled
+    assert manifest.commercial_use_status == "CLEARED_BY_OPERATOR"
+    assert "NOT verified by this system" in manifest.status_note
+    assert "operator's explicit instruction" in manifest.status_note
 
 
 def test_estat_series_are_all_narrowed_by_a_filter() -> None:

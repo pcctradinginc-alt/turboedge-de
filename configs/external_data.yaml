@@ -290,7 +290,7 @@ sources:
     access_method: "ArcGIS FeatureServer REST / JSON"
     requires_auth: false
     license_or_terms_reference: "https://www.imf.org/external/terms.htm"
-    commercial_use_status: "REVIEW_REQUIRED"
+    commercial_use_status: "CLEARED_BY_OPERATOR"
     frequency: "daily"
     expected_update_cadence: "daily, roughly one week behind"
     supports_historical_data: true
@@ -298,15 +298,25 @@ sources:
     supports_exact_release_time: false
     point_in_time_quality: UNKNOWN
     backfill_class: FORWARD_ONLY
-    enabled: false
+    enabled: true
     criticality: EXPERIMENTAL
-    status: REVIEW_REQUIRED
+    status: PASS
     status_note: >-
       Endpoint and data verified live 2026-09-28, no credential needed.
-      Blocked only on reuse terms: the publisher's declared licence page
-      refuses non-browser agents and was not circumvented. portwatch.imf.org
-      declares Crawl-delay: 60, which the adapter honours even though the
-      data is served from Esri infrastructure.
+      Enabled 2026-09-28 on the repository operator's explicit instruction
+      ("Port Watch geht ohne Lizenz").
+
+      What that does and does not mean, stated plainly because the
+      distinction matters if anyone reads this later: the licence was NOT
+      verified by this system. The ArcGIS item's own metadata names
+      https://www.imf.org/external/terms.htm as its licence reference, and
+      that page answers HTTP 403 to a non-browser user agent (Akamai). It
+      was not circumvented, and no other machine-readable statement of the
+      terms exists in the item metadata. The basis for ingesting is the
+      operator's judgement, not a reading this system performed.
+
+      portwatch.imf.org declares Crawl-delay: 60, which the adapter honours
+      even though the data is served from Esri infrastructure.
 
   # Kiel Trade Indicator. Works with no credential -- verified live
   # 2026-09-28. Only two of the thirteen published CSVs are still being

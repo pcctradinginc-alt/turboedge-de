@@ -119,7 +119,7 @@ signal beat null this month" is a valid, expected output);
 | | FRED / ALFRED — 11 series; the only source with real vintages | **Live in CI**; key set as a secret |
 | | e-Stat (Japan) — CPI all-items, core, core-core | **Live in CI**; key set as a secret |
 | Wave 2 (energy/logistics) | Energy-Charts (Fraunhofer ISE) — Netzlast, Day-ahead-Prognose, Residuallast, DE-LU-Spotpreis | **Live**; no key, CC BY 4.0 declared in the payload |
-| | IMF PortWatch — 28 chokepoints, daily vessel transits | Verified live, no key needed; `REVIEW_REQUIRED` until reuse terms are read |
+| | IMF PortWatch — Suez, Bab el-Mandeb, Hormuz, Panama, world port calls | **Live**; no key. Licence not machine-verified — enabled on operator instruction |
 | | Kiel Trade Indicator — Red Sea and Cape of Good Hope ship counts | Verified live; only 2 of 13 published CSVs still maintained |
 | | GIE AGSI / ALSI — German gas storage, fill level, withdrawal, LNG | **Live in CI**; one key covers both |
 | | U.S. EIA Open Data v2 — WTI/Brent spot, US crude stocks | Key set as CI secret; runs in CI, series unconfirmed until the first run |

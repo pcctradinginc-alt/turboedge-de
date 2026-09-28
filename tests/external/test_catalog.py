@@ -245,3 +245,46 @@ def test_every_adapter_in_the_table_can_actually_be_built() -> None:
         instance = factory(HttpClient(user_agent="test"))
         assert isinstance(instance, ExternalSeriesAdapter), source_id
         assert instance.source_id == source_id
+
+
+def test_every_source_has_series_or_documents_why_not() -> None:
+    # A source with zero configured series is skipped forever with "no
+    # series configured" -- which reads in the readiness report exactly like
+    # a considered decision when it is usually an omission. EIA sat in that
+    # state with its key already set. So: series, or a stated reason.
+    cfg = load_external_data_config(_REPO_CONFIG)
+
+    #: e-Stat is the one deliberate exception. The Nikkei is disabled in
+    #: configs/universe.yaml, so Japanese macro reaches none of the four
+    #: traded underlyings directly, and no statsDataId has been confirmed
+    #: against the official catalogue. Adding the credential would buy an
+    #: adapter that fetches nothing in particular.
+    documented_empty = {"estat"}
+
+    empty = {m.source_id for m in cfg.sources.values() if not cfg.series_for(m.source_id)}
+    assert empty == documented_empty
+
+
+def test_unverified_series_say_so_in_their_notes() -> None:
+    # Identifiers configured from documentation rather than a live probe
+    # must announce it, so that a wrong facet is read as an open question
+    # and not as a broken feed.
+    cfg = load_external_data_config(_REPO_CONFIG)
+    unverifiable = {"fred", "agsi", "alsi", "eia", "entsoe"}
+
+    for spec in cfg.series:
+        if spec.source in unverifiable:
+            assert "NOT verified" in spec.notes, spec.qualified_id
+
+
+def test_fred_history_is_the_only_pit_safe_backfill() -> None:
+    # ALFRED's realtime windows make `available_at` a recorded fact rather
+    # than a documented assumption. No other configured source can claim
+    # that, and claiming it for one that cannot would put a confirmatory
+    # test on a cutoff that never existed.
+    cfg = load_external_data_config(_REPO_CONFIG)
+    pit_safe = {
+        s.source for s in cfg.series if s.backfill_class is BackfillClass.HISTORICAL_PIT_SAFE
+    }
+
+    assert pit_safe == {"fred"}

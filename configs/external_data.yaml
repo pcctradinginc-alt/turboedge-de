@@ -157,7 +157,11 @@ sources:
     status_note: >-
       FRED_API_KEY is not set. Obtain a free key at
       https://fredaccount.stlouisfed.org/apikeys and add it as a GitHub
-      secret; the adapter never reads a key from a file and never persists one.
+      secret; the adapter never reads a key from a file and never persists
+      one. Eleven series are configured and waiting: the moment the key
+      exists this becomes the only source whose history can carry a
+      confirmatory test, because ALFRED records what was actually knowable
+      on each historical day instead of assuming it.
 
   # --------------------------------------------------------------------
   # EU Business & Consumer Surveys, disseminated through the Eurostat API.
@@ -796,6 +800,283 @@ series:
       Verified live 2026-09-28: 96 points, EUR/MWh, 2026-09-27 00:00 =
       192.07. The price is where the physical grid state becomes a cost to
       German industry.
+
+  # ==== FRED / ALFRED =================================================
+  # The only source in this repository with real vintages. ALFRED's
+  # realtime_start/realtime_end say which value stood on the screen on a
+  # given historical day, so `available_at` here is a recorded fact rather
+  # than a documented assumption -- which is what makes this the only
+  # history that can honestly carry a confirmatory test.
+  #
+  # NOT verified live: FRED_API_KEY is not set anywhere. These are
+  # long-standing, widely published FRED identifiers, not invented ones,
+  # and they are configured rather than withheld so the source does
+  # something the moment a key exists. The first authenticated run is the
+  # verification.
+  #
+  # Eleven, not the adapter's fourteen: RSAFS, PCEPI and BAMLC0A0CM were
+  # dropped as near-duplicates of series already here. Each entry has a
+  # channel to at least one of the four traded underlyings -- US rates,
+  # inflation and credit reach NDX, EUR/USD and XAU directly.
+  - source: fred
+    series_id: FRED.INDPRO
+    name: "US industrial production index"
+    category: real_economy
+    unit: index_2017_100
+    frequency: monthly
+    native_identifier: "INDPRO"
+    availability_precision: EXACT_DATE
+    backfill_class: HISTORICAL_PIT_SAFE
+    conservative_release_lag_hours: 384
+    notes: "NOT verified live -- no FRED_API_KEY present. Released mid-month for the prior month."
+
+  - source: fred
+    series_id: FRED.PAYEMS
+    name: "US nonfarm payroll employment"
+    category: labour
+    unit: thousand_persons
+    frequency: monthly
+    native_identifier: "PAYEMS"
+    availability_precision: EXACT_DATE
+    backfill_class: HISTORICAL_PIT_SAFE
+    conservative_release_lag_hours: 240
+    notes: "NOT verified live -- no FRED_API_KEY present. First Friday of the following month -- the single most market-moving US release."
+
+  - source: fred
+    series_id: FRED.ICSA
+    name: "US initial jobless claims"
+    category: labour
+    unit: persons
+    frequency: weekly
+    native_identifier: "ICSA"
+    availability_precision: EXACT_DATE
+    backfill_class: HISTORICAL_PIT_SAFE
+    conservative_release_lag_hours: 120
+    notes: "NOT verified live -- no FRED_API_KEY present. Weekly, Thursdays, for the prior Saturday. The highest-frequency US labour signal."
+
+  - source: fred
+    series_id: FRED.CPIAUCSL
+    name: "US consumer price index, all urban consumers"
+    category: inflation
+    unit: index_1982_84_100
+    frequency: monthly
+    native_identifier: "CPIAUCSL"
+    availability_precision: EXACT_DATE
+    backfill_class: HISTORICAL_PIT_SAFE
+    conservative_release_lag_hours: 336
+    notes: "NOT verified live -- no FRED_API_KEY present. Mid-month for the prior month."
+
+  - source: fred
+    series_id: FRED.CPILFESL
+    name: "US core consumer price index"
+    category: inflation
+    unit: index_1982_84_100
+    frequency: monthly
+    native_identifier: "CPILFESL"
+    availability_precision: EXACT_DATE
+    backfill_class: HISTORICAL_PIT_SAFE
+    conservative_release_lag_hours: 336
+    notes: "NOT verified live -- no FRED_API_KEY present. Core is what the Fed is judged on, and what the market trades."
+
+  - source: fred
+    series_id: FRED.PCEPILFE
+    name: "US core PCE price index"
+    category: inflation
+    unit: index_2017_100
+    frequency: monthly
+    native_identifier: "PCEPILFE"
+    availability_precision: EXACT_DATE
+    backfill_class: HISTORICAL_PIT_SAFE
+    conservative_release_lag_hours: 720
+    notes: "NOT verified live -- no FRED_API_KEY present. The Fed's own preferred inflation gauge, released about a month later than CPI."
+
+  - source: fred
+    series_id: FRED.DFF
+    name: "US effective federal funds rate"
+    category: policy_rate
+    unit: percent
+    frequency: business_daily
+    native_identifier: "DFF"
+    availability_precision: EXACT_DATE
+    backfill_class: HISTORICAL_PIT_SAFE
+    conservative_release_lag_hours: 36
+    notes: "NOT verified live -- no FRED_API_KEY present."
+
+  - source: fred
+    series_id: FRED.DGS2
+    name: "US 2-year Treasury constant maturity yield"
+    category: yield_curve
+    unit: percent
+    frequency: business_daily
+    native_identifier: "DGS2"
+    availability_precision: EXACT_DATE
+    backfill_class: HISTORICAL_PIT_SAFE
+    conservative_release_lag_hours: 36
+    notes: "NOT verified live -- no FRED_API_KEY present. The policy-expectations end of the curve."
+
+  - source: fred
+    series_id: FRED.DGS10
+    name: "US 10-year Treasury constant maturity yield"
+    category: yield_curve
+    unit: percent
+    frequency: business_daily
+    native_identifier: "DGS10"
+    availability_precision: EXACT_DATE
+    backfill_class: HISTORICAL_PIT_SAFE
+    conservative_release_lag_hours: 36
+    notes: "NOT verified live -- no FRED_API_KEY present. Paired with DGS2 on purpose: the spread between them is the recession signal markets watch."
+
+  - source: fred
+    series_id: FRED.BAMLH0A0HYM2
+    name: "US high-yield corporate bond option-adjusted spread"
+    category: credit
+    unit: percent
+    frequency: business_daily
+    native_identifier: "BAMLH0A0HYM2"
+    availability_precision: EXACT_DATE
+    backfill_class: HISTORICAL_PIT_SAFE
+    conservative_release_lag_hours: 36
+    notes: "NOT verified live -- no FRED_API_KEY present. Credit stress shows here before it shows in equities."
+
+  - source: fred
+    series_id: FRED.NFCI
+    name: "Chicago Fed national financial conditions index"
+    category: credit
+    unit: index
+    frequency: weekly
+    native_identifier: "NFCI"
+    availability_precision: EXACT_DATE
+    backfill_class: HISTORICAL_PIT_SAFE
+    conservative_release_lag_hours: 168
+    notes: "NOT verified live -- no FRED_API_KEY present. A broad financial-conditions aggregate; weekly, Wednesdays."
+
+  # ==== Gas Infrastructure Europe ====================================
+  # Field names taken from GIE's own "User Manual: API access to AGSI/ALSI"
+  # v007 and cross-checked against the live data-definition pages. NOT
+  # verified against live data -- GIE_API_KEY is not set anywhere yet.
+  #
+  # Configured rather than withheld for the same reason as EIA: a source
+  # with zero series is skipped forever with "no series configured", which
+  # looks like a decision and is really an omission. The first authenticated
+  # run is the verification, and a wrong field name surfaces as BLOCKED
+  # readiness with the reason, not as silence.
+  #
+  # Germany only. The channel to a German turbo runs through German gas
+  # costs; twenty countries would be a fishing expedition (spec §9).
+  - source: agsi
+    series_id: AGSI.DE_GAS_IN_STORAGE
+    name: "German gas in storage"
+    category: energy
+    unit: gwh
+    frequency: daily
+    native_identifier: "DE||gasInStorage"
+    availability_precision: CONSERVATIVE_DATE
+    backfill_class: HISTORICAL_CONSERVATIVE
+    conservative_release_lag_hours: 48
+    notes: >-
+      Field confirmed in GIE's v007 manual but NOT verified live. Gas-day based, so a
+      48-hour lag: the gas day ends at 06:00 and the figure follows.
+
+  - source: agsi
+    series_id: AGSI.DE_FULL
+    name: "German gas storage fill level"
+    category: energy
+    unit: percent
+    frequency: daily
+    native_identifier: "DE||full"
+    availability_precision: CONSERVATIVE_DATE
+    backfill_class: HISTORICAL_CONSERVATIVE
+    conservative_release_lag_hours: 48
+    notes: >-
+      Field confirmed in the v007 manual but NOT verified live. The headline number in
+      every German energy-crisis story, which is the point: it is what the
+      market actually reacts to.
+
+  - source: agsi
+    series_id: AGSI.DE_WITHDRAWAL
+    name: "German gas storage withdrawal"
+    category: energy
+    unit: gwh_per_day
+    frequency: daily
+    native_identifier: "DE||withdrawal"
+    availability_precision: CONSERVATIVE_DATE
+    backfill_class: HISTORICAL_CONSERVATIVE
+    conservative_release_lag_hours: 48
+    notes: "Field confirmed in the v007 manual but NOT verified live. The flow behind the level."
+
+  # ALSI: the adapter's own investigation corrected this workstream's brief
+  # -- the inventory field is `inventory`, not `lngInventory`, and ALSI has
+  # no `full` field at all. Confirmed absent from both the v007 manual's
+  # ALSI table and the live data-definition page.
+  - source: alsi
+    series_id: ALSI.DE_LNG_INVENTORY
+    name: "German LNG terminal inventory"
+    category: energy
+    unit: gwh
+    frequency: daily
+    native_identifier: "DE||inventory"
+    availability_precision: CONSERVATIVE_DATE
+    backfill_class: HISTORICAL_CONSERVATIVE
+    conservative_release_lag_hours: 48
+    notes: >-
+      Field name corrected from the brief's `lngInventory` after the
+      adapter's own reading of the v007 manual. NOT verified live.
+
+  - source: alsi
+    series_id: ALSI.DE_SEND_OUT
+    name: "German LNG terminal send-out"
+    category: energy
+    unit: gwh_per_day
+    frequency: daily
+    native_identifier: "DE||sendOut"
+    availability_precision: CONSERVATIVE_DATE
+    backfill_class: HISTORICAL_CONSERVATIVE
+    conservative_release_lag_hours: 48
+    notes: >-
+      Field confirmed in the v007 manual but NOT verified live. LNG send-out is the
+      substitute for the pipeline gas Germany no longer receives, so this
+      and AGSI.DE_WITHDRAWAL together describe where the gas comes from.
+
+  # ==== ENTSO-E ======================================================
+  # Document types and the DE-LU bidding-zone EIC come from the official
+  # Postman collection's own worked examples plus the live 401 probe.
+  # NOT verified against data -- ENTSOE_SECURITY_TOKEN is not set.
+  #
+  # The pair is the point, exactly as the original specification framed it:
+  # actual load against its own day-ahead forecast. Energy-Charts already
+  # serves both, so once a token exists these two become a cross-source
+  # check on the same published quantity against the primary publisher --
+  # the same reason BBK.EURUSD_REF duplicates ECB.EURUSD.
+  - source: entsoe
+    series_id: ENTSOE.LOAD_ACTUAL_DE_LU
+    name: "Actual total load, DE-LU bidding zone"
+    category: energy
+    unit: mw
+    frequency: daily
+    native_identifier: "A65|10Y1001A1001A82H|processType=A16"
+    availability_precision: CONSERVATIVE_DATE
+    backfill_class: HISTORICAL_CONSERVATIVE
+    conservative_release_lag_hours: 36
+    notes: >-
+      Document type and EIC from the official Postman collection and the
+      live 401 probe; NOT verified against data. The primary-source
+      counterpart to EC.LOAD_DE.
+
+  - source: entsoe
+    series_id: ENTSOE.LOAD_FORECAST_DE_LU
+    name: "Day-ahead total load forecast, DE-LU bidding zone"
+    category: energy
+    unit: mw
+    frequency: daily
+    native_identifier: "A65|10Y1001A1001A82H|processType=A01"
+    availability_precision: CONSERVATIVE_DATE
+    backfill_class: FORWARD_ONLY
+    conservative_release_lag_hours: 36
+    forecast_series: true
+    notes: >-
+      NOT verified against data. Marked forecast_series: it describes a
+      period that has not happened, so its availability is anchored to when
+      TurboEdge obtains it, never to the period it predicts.
 
   # ==== U.S. EIA ======================================================
   # EIA_API_KEY is set as a repository secret, so unlike the other

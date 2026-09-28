@@ -324,6 +324,36 @@ infrastructure that publishes no robots.txt of its own, but the declared policy
 is the publisher's and applies to their data, so the adapter waits 60 seconds
 between requests. With paging that is slow by design.
 
+### Every source has series, or a stated reason
+
+A source with zero configured series is skipped forever with "no series
+configured" — which reads in the readiness report exactly like a considered
+decision when it is usually an omission. EIA sat in that state for a day with
+its key already set.
+
+So every source now carries series, configured from official documentation
+where a credential was not available to verify them with, and every such
+series says `NOT verified live` in its notes. The first authenticated run is
+the verification: a wrong identifier returns a payload without the column, the
+adapter reports `missing_series`, and readiness shows `BLOCKED` with the
+reason. A test enforces both invariants.
+
+**e-Stat is the one deliberate exception.** The Nikkei is disabled in
+`configs/universe.yaml`, so Japanese macro reaches none of the four traded
+underlyings directly, and no `statsDataId` has been confirmed against the
+official catalogue. Adding the credential would buy an adapter that fetches
+nothing in particular.
+
+### FRED is the only PIT-safe history
+
+ALFRED's `realtime_start`/`realtime_end` say which value stood on the screen
+on a given historical day, so `available_at` there is a recorded fact rather
+than a documented assumption. Every other source's history rests on a
+conservative rule that could be wrong by a day or two — which matters most in
+exactly the place it would do the most damage, a confirmatory test whose whole
+claim rests on the cutoff. Eleven FRED series are configured and waiting on
+the key. A test asserts no other source claims `HISTORICAL_PIT_SAFE`.
+
 ### Configured series
 
 Six PortWatch (Suez cargo and tanker, Bab el-Mandeb cargo, Hormuz tanker,

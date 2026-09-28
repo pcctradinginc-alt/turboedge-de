@@ -124,6 +124,8 @@ signal beat null this month" is a valid, expected output);
 | | GIE AGSI / ALSI — German gas storage, fill level, withdrawal, LNG | **Live in CI**; one key covers both |
 | | U.S. EIA Open Data v2 — WTI/Brent spot, US crude stocks | Key set as CI secret; runs in CI, series unconfirmed until the first run |
 | | ENTSO-E — actual load, day-ahead forecast (DE-LU) | Needs `ENTSOE_SECURITY_TOKEN`; email request, 3 working days |
+| Freight (all four modes) | PortWatch — German/Dutch seaborne import, export, containers, port calls | Daily, ~1 week behind |
+| | Eurostat — German air freight (monthly), rail freight (quarterly), Rhine inland waterway (quarterly) | Live; no key, CC BY / Decision 2011/833/EU |
 | Manual | CSV import from `state/imports/products/` | Working |
 | Not implemented | Börse Stuttgart, Börse Frankfurt | Blocked (Cloudflare bot management / salted-hash JS headers); neither bypassed; `enabled: false` docs-only entries in `configs/sources.yaml` |
 

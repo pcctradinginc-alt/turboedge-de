@@ -315,3 +315,61 @@ def test_fred_history_is_the_only_pit_safe_backfill() -> None:
     }
 
     assert pit_safe == {"fred"}
+
+
+def test_all_four_freight_modes_are_covered() -> None:
+    # The operator's requirement: reliable, permanent, free data for freight
+    # by ship, air, rail and road. Each mode needs at least one configured
+    # series, and this test is what stops a mode quietly disappearing when
+    # a publisher retires a dataset.
+    cfg = load_external_data_config(_REPO_CONFIG)
+    categories = {s.category for s in cfg.series}
+
+    assert "freight_air" in categories
+    assert "freight_rail" in categories
+    assert "freight_water" in categories
+    # Ship freight is PortWatch's trade_logistics; road is the Destatis
+    # truck-toll index, filed under real_economy because it is a German
+    # activity indicator first and a freight series second.
+    assert "trade_logistics" in categories
+    assert any("TRUCK_TOLL" in s.series_id for s in cfg.series)
+
+
+def test_portwatch_covers_german_trade_not_only_chokepoints() -> None:
+    # The first pass configured only chokepoint transit counts -- the
+    # geopolitical-shock channel. For a system trading DAX the German trade
+    # channel matters more, and it was missing entirely.
+    cfg = load_external_data_config(_REPO_CONFIG)
+    ids = {s.series_id for s in cfg.series_for("portwatch")}
+
+    assert {"PW.DEU_IMPORT", "PW.DEU_EXPORT"} <= ids
+    assert any(s.startswith("PW.SUEZ") for s in ids)
+
+
+def test_no_portwatch_series_stores_a_derived_column() -> None:
+    # Daily_Trade_Data_REG ships `_30MA` and `_yoy_doy` columns. They are
+    # derived and get revised as the AIS data settle. A moving average is
+    # something this repository can compute; a silent revision of someone
+    # else's average is not something it can undo.
+    cfg = load_external_data_config(_REPO_CONFIG)
+
+    for spec in cfg.series_for("portwatch"):
+        assert "30MA" not in spec.native_identifier, spec.series_id
+        assert "yoy" not in spec.native_identifier.lower(), spec.series_id
+
+
+def test_every_eurostat_series_pins_all_but_time() -> None:
+    # A Eurostat dataset is a cube, not a series: avia_gooc alone carries
+    # nine tra_meas, four schedule and nine tra_cov values. An unpinned
+    # identifier returns several cells per period and the adapter would
+    # have to pick one.
+    from turboedge.adapters.eurostat import parse_native_identifier
+
+    cfg = load_external_data_config(_REPO_CONFIG)
+    series = cfg.series_for("eurostat")
+    assert series
+
+    for spec in series:
+        _dataset, filters = parse_native_identifier(spec.native_identifier)
+        assert "freq" in filters, spec.series_id
+        assert "geo" in filters, spec.series_id

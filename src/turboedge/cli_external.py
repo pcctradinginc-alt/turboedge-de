@@ -75,6 +75,7 @@ _ADAPTER_CLASSES: dict[str, tuple[str, str]] = {
     "eia": ("turboedge.adapters.eia", "EiaAdapter"),
     "entsoe": ("turboedge.adapters.entsoe", "EntsoeAdapter"),
     "energy_charts": ("turboedge.adapters.energy_charts", "EnergyChartsAdapter"),
+    "eurostat": ("turboedge.adapters.eurostat", "EurostatAdapter"),
 }
 
 #: Minimum seconds between requests to one host, per source. The project's
@@ -99,6 +100,7 @@ _MIN_INTERVAL_S: dict[str, float] = {
     "eia": 1.0,
     "entsoe": 1.0,
     "energy_charts": 1.0,
+    "eurostat": 1.0,
 }
 
 #: Honest, identifiable, and stating that this system never executes orders.

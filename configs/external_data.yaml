@@ -349,6 +349,39 @@ sources:
       Hope ship counts were current (2026-09-25 / 2026-09-24); eight others
       stop in January 2025 and two return HTTP 404.
 
+  # Eurostat dissemination API, general case. adapters/eu_bcs.py already
+  # speaks to this host, but its identifier format is hard-wired to the
+  # survey cube's own dimensions; freight statistics use different ones and
+  # cannot be expressed in that shape. Same host, same licence, same
+  # verified access path -- a separate source_id only because the
+  # identifier format differs.
+  eurostat:
+    source_id: eurostat
+    display_name: "Eurostat (transport and freight statistics)"
+    official_source: "European Commission / Eurostat"
+    homepage: "https://ec.europa.eu/eurostat/web/transport/database"
+    machine_endpoint: "https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data"
+    access_method: "REST / JSON-stat 2.0"
+    requires_auth: false
+    license_or_terms_reference: "https://ec.europa.eu/eurostat/web/main/help/copyright-notice"
+    commercial_use_status: "PERMITTED_WITH_ATTRIBUTION"
+    frequency: "mixed"
+    expected_update_cadence: "monthly to quarterly, dataset dependent"
+    supports_historical_data: true
+    supports_vintages: false
+    supports_exact_release_time: false
+    point_in_time_quality: CONSERVATIVE_DATE
+    backfill_class: FORWARD_ONLY
+    enabled: true
+    criticality: EXPERIMENTAL
+    status: PASS
+    status_note: >-
+      Datasets verified live 2026-09-28. Same Commission Decision
+      2011/833/EU terms already read for eu_bcs: reuse for commercial or
+      non-commercial purposes is authorised provided the source is
+      acknowledged. FORWARD_ONLY because Eurostat revises transport
+      statistics in place and exposes no vintages.
+
   # Energy-Charts (Fraunhofer ISE). The only Wave 2 source that can go live
   # immediately: no credential, and the licence travels in every response
   # body ("CC BY 4.0 ... from Bundesnetzagentur | SMARD.de"), so there is
@@ -744,6 +777,90 @@ series:
       geo=EA21, verified live 2026-09-28. Bare geo=EA returns an empty
       dimension; the aggregate is renumbered at each accession and this code
       must be re-verified rather than assumed to keep working.
+
+  # ==== Freight: rail, air, inland waterway ===========================
+  # Verified live 2026-09-28. These close the two modes the repository had
+  # no data for at all -- rail and air freight -- and add the Rhine, which
+  # matters more to German industry than its share of tonnage suggests: the
+  # 2018 low-water episode shut down chemical production that no other mode
+  # could serve.
+  #
+  # ROAD is deliberately absent here. Eurostat's road_go_ta_tott is ANNUAL
+  # ONLY (verified), and Destatis' daily truck-toll mileage index is a far
+  # better road indicator and is already live. An annual series would add
+  # nothing but a row in the readiness report.
+  #
+  # Every dimension is pinned. A Eurostat dataset is a cube: avia_gooc
+  # alone has nine tra_meas, four schedule and nine tra_cov values, and an
+  # unpinned identifier would return several cells per period.
+  - source: eurostat
+    series_id: EUROSTAT.DE_AIR_FREIGHT
+    name: "German air freight and mail loaded and unloaded"
+    category: freight_air
+    unit: tonnes
+    frequency: monthly
+    native_identifier: "avia_gooc|freq=M,unit=T,tra_meas=FRM_LD_NLD,schedule=TOTAL,tra_cov=TOTAL,geo=DE"
+    availability_precision: CONSERVATIVE_DATE
+    backfill_class: FORWARD_ONLY
+    conservative_release_lag_hours: 3600
+    notes: >-
+      Verified live 2026-09-28, monthly. The fastest freight mode and the
+      one that carries what is urgent and high-value, so it turns before
+      sea freight does.
+
+      The 150-day lag is measured, not assumed, and the measurement
+      corrected a mistake: an unfiltered probe of avia_gooc showed periods
+      to 2026-08 and suggested a 60-day lag, but with every dimension
+      pinned this cell ends at 2026-05 -- different cells of the cube have
+      different coverage. Claiming 60 days would have asserted the value
+      was usable four months before it existed, which is the one error
+      that cannot be corrected after the fact.
+
+  - source: eurostat
+    series_id: EUROSTAT.DE_RAIL_FREIGHT_T
+    name: "German rail freight, thousand tonnes"
+    category: freight_rail
+    unit: thousand_tonnes
+    frequency: quarterly
+    native_identifier: "rail_go_quartal|freq=Q,unit=THS_T,geo=DE"
+    availability_precision: CONSERVATIVE_DATE
+    backfill_class: FORWARD_ONLY
+    conservative_release_lag_hours: 2160
+    notes: >-
+      Verified live 2026-09-28, latest 2026-Q2. Rail carries bulk -- coal,
+      steel, chemicals, vehicles -- so it tracks heavy industry rather than
+      consumption. A 90-day lag: quarterly transport statistics run roughly
+      one quarter behind.
+
+  - source: eurostat
+    series_id: EUROSTAT.DE_RAIL_FREIGHT_TKM
+    name: "German rail freight, million tonne-kilometres"
+    category: freight_rail
+    unit: million_tonne_km
+    frequency: quarterly
+    native_identifier: "rail_go_quartal|freq=Q,unit=MIO_TKM,geo=DE"
+    availability_precision: CONSERVATIVE_DATE
+    backfill_class: FORWARD_ONLY
+    conservative_release_lag_hours: 2160
+    notes: >-
+      Verified live 2026-09-28. Paired with the tonnage series on purpose:
+      tonne-kilometres divided by tonnes is average haul distance, and the
+      two diverging says the freight mix changed rather than its volume.
+
+  - source: eurostat
+    series_id: EUROSTAT.DE_INLAND_WATERWAY
+    name: "German inland waterway freight, total transport"
+    category: freight_water
+    unit: thousand_tonnes
+    frequency: quarterly
+    native_identifier: "iww_go_qnave|freq=Q,unit=THS_T,natvessr=DE,tra_cov=TOTAL,geo=DE"
+    availability_precision: CONSERVATIVE_DATE
+    backfill_class: FORWARD_ONLY
+    conservative_release_lag_hours: 2160
+    notes: >-
+      Verified live 2026-09-28, latest 2026-Q2. The Rhine. Its share of
+      tonnage understates its importance: the 2018 low-water episode halted
+      chemical production that neither rail nor road could absorb.
 
   # ==== Energy-Charts, verified live 2026-09-28 =======================
   # Four series, deliberately not twenty-one. The pairing is the point:
@@ -1299,6 +1416,92 @@ series:
       Field list verified live 2026-09-28. The aggregate is the control for
       the chokepoint series: a drop at one strait means something different
       when world traffic is flat than when it is falling everywhere.
+
+  # ---- PortWatch country level: the layer I had missed ---------------
+  # Daily_Trade_Data_REG carries per-country, per-day seaborne import and
+  # export volumes in metric tons plus port calls, split by vessel type.
+  # Filtered to Germany this is a DAILY measure of German seaborne trade,
+  # about a week behind -- against 89 days of lag on Bundesbank industrial
+  # production.
+  #
+  # My first pass configured only chokepoint transit counts, which is the
+  # geopolitical-shock channel. For a system trading DAX, the German trade
+  # channel matters more, and it was missing entirely.
+  #
+  # The raw fields only. The layer also ships `_30MA` and `_yoy_doy`
+  # columns, which are convenient and wrong to store: they are derived, and
+  # they get revised as the AIS data settle. A moving average is something
+  # this repository can compute; a silent revision of someone else's
+  # average is not something it can undo.
+  - source: portwatch
+    series_id: PW.DEU_IMPORT
+    name: "German seaborne imports, all cargo"
+    category: trade_logistics
+    unit: metric_tons_per_day
+    frequency: daily
+    native_identifier: "Daily_Trade_Data_REG|import|ISO3=DEU"
+    availability_precision: UNKNOWN
+    backfill_class: FORWARD_ONLY
+    notes: >-
+      Field list verified live 2026-09-28. Daily German seaborne import
+      tonnage -- the most direct high-frequency measure of German trade
+      activity in the whole catalog.
+
+  - source: portwatch
+    series_id: PW.DEU_EXPORT
+    name: "German seaborne exports, all cargo"
+    category: trade_logistics
+    unit: metric_tons_per_day
+    frequency: daily
+    native_identifier: "Daily_Trade_Data_REG|export|ISO3=DEU"
+    availability_precision: UNKNOWN
+    backfill_class: FORWARD_ONLY
+    notes: >-
+      Verified live 2026-09-28. Paired with imports on purpose: Germany is
+      an export economy, and the two moving apart says something the sum
+      does not.
+
+  - source: portwatch
+    series_id: PW.DEU_IMPORT_CONTAINER
+    name: "German seaborne container imports"
+    category: trade_logistics
+    unit: metric_tons_per_day
+    frequency: daily
+    native_identifier: "Daily_Trade_Data_REG|import_container|ISO3=DEU"
+    availability_precision: UNKNOWN
+    backfill_class: FORWARD_ONLY
+    notes: >-
+      Verified live 2026-09-28. Containers carry manufactured goods, so
+      this separates the consumer and intermediate-goods channel from bulk
+      commodities moving in the same aggregate.
+
+  - source: portwatch
+    series_id: PW.DEU_PORTCALLS
+    name: "German port calls, all vessel types"
+    category: trade_logistics
+    unit: portcalls_per_day
+    frequency: daily
+    native_identifier: "Daily_Trade_Data_REG|portcalls|ISO3=DEU"
+    availability_precision: UNKNOWN
+    backfill_class: FORWARD_ONLY
+    notes: >-
+      Verified live 2026-09-28. Vessel count rather than tonnage: the two
+      diverging means ships are sailing fuller or emptier, which is a
+      different fact from more or fewer ships.
+
+  - source: portwatch
+    series_id: PW.NLD_IMPORT_CONTAINER
+    name: "Dutch seaborne container imports"
+    category: trade_logistics
+    unit: metric_tons_per_day
+    frequency: daily
+    native_identifier: "Daily_Trade_Data_REG|import_container|ISO3=NLD"
+    availability_precision: UNKNOWN
+    backfill_class: FORWARD_ONLY
+    notes: >-
+      Rotterdam. More German freight enters Europe through the Netherlands
+      and Belgium than through German ports, so a German-ports-only view
+      would miss most of the country's container trade.
 
   # ==== Kiel Trade Indicator, verified live 2026-09-28 ================
   # ONLY the two files still being maintained. Eight others stop in

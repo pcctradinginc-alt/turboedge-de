@@ -382,6 +382,68 @@ revised as AIS data settle, no publisher records a release timestamp, and
 PortWatch ran about a week behind on the day it was checked. Their history is
 descriptive; only snapshots TurboEdge takes itself are point-in-time evidence.
 
+## Freight coverage: ship, air, rail, road
+
+The four modes, and what carries each:
+
+| mode | source | frequency | lag |
+| --- | --- | --- | --- |
+| **Ship** | PortWatch — German/Dutch seaborne import, export, containers, port calls; Suez, Bab el-Mandeb, Hormuz, Panama transits | daily | ~1 week |
+| **Road** | Destatis truck-toll mileage index | daily | ~1 week, weekly refresh |
+| **Air** | Eurostat `avia_gooc` — freight and mail loaded and unloaded, Germany | monthly | **150 days** |
+| **Rail** | Eurostat `rail_go_quartal` — tonnes and tonne-kilometres, Germany | quarterly | ~90 days |
+| *(inland waterway)* | Eurostat `iww_go_qnave` — the Rhine | quarterly | ~90 days |
+
+Ship and road are daily and near-current. Rail and air are structurally
+slow — that is the publishers' cadence, not a gap in the plumbing, and no
+free source publishes them faster.
+
+**Road is deliberately not on Eurostat.** `road_go_ta_tott` exists and is
+**annual only** (verified 2026-09-28). The Destatis daily truck-toll index is
+a far better road indicator and was already live. An annual series would have
+added a row to the readiness report and nothing else.
+
+**The air freight lag is measured, and the measurement corrected a mistake.**
+An unfiltered probe of `avia_gooc` showed periods to 2026-08 and suggested a
+60-day lag. With every dimension pinned, this cell ends at 2026-05 — different
+cells of the cube have different coverage. Configuring 60 days would have
+asserted the value was usable four months before it existed. That is the one
+error that cannot be corrected after the fact, and it is exactly the class of
+error a cube-shaped API invites.
+
+### PortWatch: the layer that was missed first time round
+
+The first pass configured only chokepoint transit counts — the geopolitical
+shock channel. `Daily_Trade_Data_REG` carries per-country, per-day seaborne
+import and export tonnage split by vessel type, and filtered to Germany it is
+the most direct high-frequency measure of German trade in the whole catalog:
+2,818 daily observations from 2019-01-01, around 500,000 tonnes a day.
+
+Rotterdam is included through `ISO3=NLD` because more German freight enters
+Europe through the Netherlands and Belgium than through German ports; a
+German-ports-only view would miss most of the country's container trade.
+
+The layer also ships `_30MA` and `_yoy_doy` columns. They are not stored, and
+a test enforces that: they are derived, and they get revised as the AIS data
+settle. A moving average is something this repository can compute; a silent
+revision of someone else's average is not something it can undo.
+
+## A note on IMF licence metadata
+
+While surveying `api.imf.org` (221 SDMX dataflows, no credential, including
+explicit `*_VINTAGE` snapshots that would be only the second genuinely
+point-in-time source after ALFRED), the payload turned out to carry a
+machine-readable licence field:
+
+> `LICENSE="© International Monetary Fund Copyright. All Rights Reserved.
+> https://www.imf.org/external/terms.htm"`
+
+That is more restrictive language than any other integrated source declares,
+and it points at the same page that refuses non-browser agents. PortWatch runs
+on the operator's explicit instruction that it is an open platform, twice
+given; this note exists so the basis stays visible rather than being inferred
+later from the fact that it runs. The wider IMF SDMX API is **not** integrated.
+
 ## Deferred
 
 Wave 3 (GDELT, Wikimedia analytics, ECMWF) remains design-only. The adapter

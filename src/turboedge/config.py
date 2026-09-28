@@ -433,6 +433,22 @@ def _read_yaml(path: Path) -> Any:
     return data
 
 
+#: The External Data Factory's catalog. Deliberately NOT part of
+#: `CONFIG_FILES` and therefore not part of `config_hash`: adding a macro
+#: series must not change the hash stamped on every run and every
+#: `SignalSnapshot`, because that hash is how two runs are compared for
+#: reproducibility and a new data series does not make an old forecast
+#: irreproducible. The catalog is loaded on its own by
+#: `external.catalog.load_external_data_config`.
+EXTERNAL_DATA_FILE = "external_data.yaml"
+
+
+def external_data_path(config_dir: str | Path | None = None) -> Path:
+    """Where the external-data catalog lives for a given config directory."""
+    base = Path(config_dir) if config_dir is not None else default_config_dir()
+    return base / EXTERNAL_DATA_FILE
+
+
 def load_config(config_dir: str | Path) -> TurboEdgeConfig:
     """Load and validate every ``configs/*.yaml`` file under ``config_dir``.
 

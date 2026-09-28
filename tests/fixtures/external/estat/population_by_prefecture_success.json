@@ -1,0 +1,60 @@
+{
+  "GET_STATS_DATA": {
+    "RESULT": {
+      "STATUS": 0,
+      "ERROR_MSG": "正常に終了しました。"
+    },
+    "PARAMETER": {
+      "LANG": "E",
+      "STATS_DATA_ID": "0000000000",
+      "DATA_FORMAT": "J",
+      "START_POSITION": 1,
+      "METAGET_FLG": "Y"
+    },
+    "STATISTICAL_DATA": {
+      "RESULT_INF": {
+        "TOTAL_NUMBER": 4,
+        "FROM_NUMBER": 1,
+        "TO_NUMBER": 4
+      },
+      "TABLE_INF": {
+        "@id": "0000000000",
+        "STAT_NAME": {"@code": "00000000", "$": "Example Population Statistics"},
+        "TITLE": {"$": "Prefecture population (hand-built example table)"}
+      },
+      "CLASS_INF": {
+        "CLASS_OBJ": [
+          {
+            "@id": "tab",
+            "@name": "表章項目",
+            "CLASS": {"@code": "001", "@name": "Population", "@level": "1", "@unit": "people"}
+          },
+          {
+            "@id": "area",
+            "@name": "地域",
+            "CLASS": [
+              {"@code": "13000", "@name": "Tokyo-to", "@level": "1"},
+              {"@code": "27000", "@name": "Osaka-fu", "@level": "1"}
+            ]
+          },
+          {
+            "@id": "time",
+            "@name": "時間軸(年次)",
+            "CLASS": [
+              {"@code": "2024000000", "@name": "2024年", "@level": "1"},
+              {"@code": "2025000000", "@name": "2025年", "@level": "1"}
+            ]
+          }
+        ]
+      },
+      "DATA_INF": {
+        "VALUE": [
+          {"@tab": "001", "@area": "13000", "@time": "2024000000", "@unit": "人", "$": "14000000"},
+          {"@tab": "001", "@area": "13000", "@time": "2025000000", "@unit": "人", "$": "14050000"},
+          {"@tab": "001", "@area": "27000", "@time": "2024000000", "@unit": "人", "$": "8800000"},
+          {"@tab": "001", "@area": "27000", "@time": "2025000000", "@unit": "人", "$": ""}
+        ]
+      }
+    }
+  }
+}

@@ -354,6 +354,35 @@ jobs:
       - name: Archive full-depth product universe (research only)
         run: uv run turboedge --log-format json archive products
 
+      # External Data Factory (docs/external_data_factory.md). Runs once a
+      # day in `eod`, never on the scan path: macro publishers update on
+      # their own calendars, and a trading decision must never wait on one
+      # of them.
+      #
+      # `continue-on-error` is deliberate. An external publisher being down
+      # for an evening is normal and must not fail the eod job that also
+      # labels the ledger and compacts retention -- the ingestion loop
+      # already records a per-series failure and keeps the other series.
+      #
+      # FRED_API_KEY and ESTAT_APP_ID are optional. When a secret is absent
+      # the source reports AUTH_MISSING and is skipped cleanly rather than
+      # attempted and failed; add them with `gh secret set` to switch those
+      # two sources on. No credential is ever written to the database, to a
+      # log line, or into an archived request fingerprint.
+      - name: Ingest external economic data (point-in-time archive)
+        continue-on-error: true
+        env:
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+          ESTAT_APP_ID: ${{ secrets.ESTAT_APP_ID }}
+        run: uv run turboedge --log-format json external ingest
+
+      # Read-only. Prints what is usable and, for everything else, exactly
+      # what is still missing -- so nobody has to track by hand when a
+      # dataset has finally accumulated enough evidence (spec §84).
+      - name: Report data readiness
+        continue-on-error: true
+        run: uv run turboedge --log-format json external readiness --json-out reports/eod/readiness.json
+
       - name: Compact product_snapshots retention
         run: uv run turboedge --log-format json db compact
 

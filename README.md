@@ -112,11 +112,22 @@ signal beat null this month" is a valid, expected output);
 | | CFTC Traders in Financial Futures (10,128 observations, 844 weeks, 16.2 years) | Working; **measured, DO NOT PROMOTE** (§6.8) |
 | | Euwax sentiment | Blocked — HTTP 403 including for `robots.txt`; never bypassed |
 | | Eurex positioning | Attempted and abandoned: effective sample ~357 (4% of nominal), too thin to interpret |
+| External Data Factory | ECB Data Portal — policy rate, €STR, M3, EUR/USD, 10y AAA yield, household lending rate | Working; live, six series verified 2026-09-28 |
+| | Deutsche Bundesbank — euro reference rate (`Accept: text/csv` only; SDMX-JSON returns HTTP 406) | Working; live |
+| | EU Business & Consumer Surveys via Eurostat (ESI, consumer confidence) | Working; live |
+| | Destatis daily truck-toll mileage index | Working; live, `FORWARD_ONLY` — its history is not point-in-time evidence |
+| | FRED / ALFRED — the only source with real vintages | Needs `FRED_API_KEY`; reports `AUTH_MISSING` until set |
+| | e-Stat (Japan) | Needs `ESTAT_APP_ID`; reports `AUTH_MISSING` until set |
 | Manual | CSV import from `state/imports/products/` | Working |
 | Not implemented | Börse Stuttgart, Börse Frankfurt | Blocked (Cloudflare bot management / salted-hash JS headers); neither bypassed; `enabled: false` docs-only entries in `configs/sources.yaml` |
 
 Full per-source write-up, pitfalls and issuers checked and found unusable:
 `docs/data_sources.md`.
+
+The External Data Factory tier is point-in-time by construction and decides
+for itself when a dataset has accumulated enough evidence to be worth
+researching — `docs/external_data_factory.md`. A ready dataset is not a found
+alpha, and none of these series has been tested against returns.
 
 ---
 

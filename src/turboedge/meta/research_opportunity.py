@@ -105,6 +105,12 @@ class InformationFamily(StrEnum):
     PATH_STATISTICS = "path_statistics"
     CROSS_ASSET = "cross_asset"
     MICROSTRUCTURE = "microstructure"
+    #: Published macroeconomic and real-economy statistics -- output,
+    #: prices, labour, monetary aggregates, logistics. Added with the
+    #: External Data Factory: these compete with each other for the same
+    #: information and with none of the families above, which is exactly
+    #: what a family is for.
+    MACRO = "macro"
     PRODUCT_SELECTION = "product_selection"
 
 

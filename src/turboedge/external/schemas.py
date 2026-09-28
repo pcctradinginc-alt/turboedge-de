@@ -21,12 +21,23 @@ rather than asserted.
 
 from __future__ import annotations
 
+import re
 from enum import StrEnum
 from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from turboedge.storage.schemas import SCHEMA_VERSION, TzAwareDatetime
+
+#: What a redacted credential looks like once `raw_archive.redact` has run.
+REDACTED_VALUE = "REDACTED"
+
+#: Query parameters whose values must never be persisted. Kept here rather
+#: than in `raw_archive` so the model can enforce the rule even for a caller
+#: that never went through the archive.
+_CREDENTIAL_PARAM_RE = re.compile(
+    r"(?i)\b(api_key|apikey|appid|app_id|access_token|token|password|secret)=([^&\s]*)"
+)
 
 
 class AvailabilityPrecision(StrEnum):
@@ -211,6 +222,15 @@ class SeriesSpec(BaseModel):
     #: `None` means the adapter supplies an exact timestamp itself.
     conservative_release_lag_hours: float | None = Field(default=None, ge=0.0)
 
+    #: True when the publisher emits a value only when something happens,
+    #: rather than on a calendar. The ECB main refinancing rate is the
+    #: canonical case: 48 observations since 1999, one per rate decision
+    #: that changed the rate. Treating such a series as a calendar series
+    #: makes it look 99.3% incomplete when it is in fact complete, and its
+    #: effective sample is the event count -- never the number of days the
+    #: rate happened to stay put (spec §37).
+    event_driven: bool = False
+
     enabled: bool = True
     notes: str = ""
 
@@ -265,11 +285,20 @@ class RawPayload(BaseModel):
 
     @model_validator(mode="after")
     def _no_credentials_in_fingerprint(self) -> Self:
-        lowered = f"{self.request_fingerprint} {self.stored_path}".lower()
-        for marker in ("api_key=", "apikey=", "appid=", "app_id=", "token=", "password="):
-            if marker in lowered:
+        """Reject a credential parameter that still carries a value.
+
+        Checks the value, not the parameter name: a redacted
+        `api_key=REDACTED` is exactly what a correctly handled request looks
+        like, and rejecting it would push callers into stripping the
+        parameter entirely, which loses the fact that a credential was used
+        at all. What must never be stored is the secret itself.
+        """
+        haystack = f"{self.request_fingerprint} {self.stored_path}"
+        for match in _CREDENTIAL_PARAM_RE.finditer(haystack):
+            value = match.group(2)
+            if value and value != REDACTED_VALUE:
                 raise ValueError(
-                    f"{self.source}: refusing to persist a request fingerprint that "
-                    f"contains {marker!r}; redact the credential before archiving"
+                    f"{self.source}: refusing to persist a request fingerprint whose "
+                    f"{match.group(1)!r} still carries a value; redact it before archiving"
                 )
         return self

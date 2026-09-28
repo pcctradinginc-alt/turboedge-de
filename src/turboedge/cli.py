@@ -27,6 +27,7 @@ from turboedge.adapters.registry import (
     build_product_adapters,
     build_reference_healthchecks,
 )
+from turboedge.cli_external import register_external_commands
 from turboedge.cli_learn import register_learn_commands
 from turboedge.cli_state import register_state_commands
 from turboedge.config import ConfigError, config_hash, load_config
@@ -873,6 +874,7 @@ register_state_commands(app, db_app)
 # --- scan-all/label/learn/forecast/backtest/report/research/position
 # reevaluate (turboedge.cli_learn, Contract v3 integration wave) ---
 register_learn_commands(app, position_app)
+register_external_commands(app)
 
 
 @db_app.command("info")

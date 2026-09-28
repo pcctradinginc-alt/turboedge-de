@@ -194,6 +194,10 @@ _FAMILY_PRIMARY_SOURCE: dict[InformationFamily, str] = {
     InformationFamily.SENTIMENT: "sentiment_survey",
     InformationFamily.BREADTH_DISPERSION: "breadth",
     InformationFamily.EVENT_RISK: "macro_calendar",
+    # The External Data Factory's four live sources. ECB is named because it
+    # is the deepest and the only one with six configured series; the others
+    # report their own source health under their own ids.
+    InformationFamily.MACRO: "ecb",
 }
 
 #: Which `DecisionConfidence` axis (or axes) the research in a given family

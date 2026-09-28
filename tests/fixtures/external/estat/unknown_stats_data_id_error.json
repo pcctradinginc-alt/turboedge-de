@@ -1,0 +1,13 @@
+{
+  "GET_STATS_DATA": {
+    "RESULT": {
+      "STATUS": 100,
+      "ERROR_MSG": "指定されたstatsDataIdは存在しません。"
+    },
+    "PARAMETER": {
+      "LANG": "E",
+      "STATS_DATA_ID": "9999999999",
+      "DATA_FORMAT": "J"
+    }
+  }
+}

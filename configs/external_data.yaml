@@ -1,0 +1,525 @@
+# TurboEdge-DE External Data Factory -- curated source and series catalog.
+#
+# Every series here is a deliberate choice, not a bulk download (spec §9).
+# An entry may only be added after its identifier has been VERIFIED against
+# the publisher's live API. Identifiers are never guessed: a wrong series key
+# that happens to return numbers is the worst possible failure, because it
+# produces a plausible dataset describing something else entirely.
+#
+# `enabled: false` sources are never fetched. A source is enabled only once
+# its licence reference, credential requirement and point-in-time class have
+# been written down and its status is not one of AUTH_MISSING /
+# REVIEW_REQUIRED / BLOCKED / DEFERRED.
+
+readiness_policy_version: "1"
+max_missingness: 0.10
+max_staleness_days: 45
+# A monthly series is never fresher than about a month, so the staleness
+# limit scales with the series' own cadence rather than being a flat day
+# count. Measured live 2026-09-28: a flat 45 days wrongly marked ECB.M3
+# (58 days) and ECB.MIR_HH_LENDING (89 days) DEGRADED while both were
+# publishing perfectly normally.
+max_staleness_periods: 2.5
+# A monthly series is never fresher than about a month, so the staleness
+# limit scales with the series' own cadence rather than being a flat day
+# count. Measured 2026-09-28: a flat 45 days wrongly marked ECB.M3 and
+# ECB.MIR_HH_LENDING as DEGRADED while both were publishing normally.
+max_staleness_periods: 2.5
+require_strict_pit_for_confirmation: true
+
+# Conservative initial defaults from spec §35. NOT empirically optimised and
+# never to be tuned against returns (spec §55). Overriding one requires a
+# documented methodological reason, recorded here in a comment.
+readiness_profiles:
+  daily:
+    min_exploratory_observations: 180
+    min_exploratory_span_days: 270
+    min_validation_observations: 60
+    min_confirmation_observations: 60
+    min_forward_span_days: 90
+  business_daily:
+    min_exploratory_observations: 180
+    min_exploratory_span_days: 270
+    min_validation_observations: 60
+    min_confirmation_observations: 60
+    min_forward_span_days: 90
+  weekly:
+    min_exploratory_observations: 52
+    min_exploratory_span_days: 365
+    min_validation_observations: 20
+    min_confirmation_observations: 20
+    min_forward_span_days: 140
+  monthly:
+    min_exploratory_observations: 48
+    min_exploratory_span_days: 1460
+    min_validation_observations: 12
+    min_confirmation_observations: 12
+    min_forward_span_days: 365
+  quarterly:
+    min_exploratory_observations: 32
+    min_exploratory_span_days: 2920
+    min_validation_observations: 8
+    min_confirmation_observations: 8
+    min_forward_span_days: 730
+
+sources:
+  # --------------------------------------------------------------------
+  # ECB Data Portal -- verified live 2026-09-28, six series returned HTTP
+  # 200 with SDMX-JSON. No credential, no anti-bot obstacle.
+  # Vintages are NOT exposed: the API serves the current revision only, so
+  # history is revised in place and cannot serve as strict PIT evidence.
+  # --------------------------------------------------------------------
+  ecb:
+    source_id: ecb
+    display_name: "ECB Data Portal"
+    official_source: "European Central Bank"
+    homepage: "https://data.ecb.europa.eu/"
+    machine_endpoint: "https://data-api.ecb.europa.eu/service/data"
+    access_method: "REST / SDMX-JSON"
+    requires_auth: false
+    license_or_terms_reference: "https://www.ecb.europa.eu/services/disclaimer/html/index.en.html"
+    commercial_use_status: "PERMITTED_WITH_ATTRIBUTION"
+    frequency: "mixed"
+    expected_update_cadence: "daily to monthly, series dependent"
+    supports_historical_data: true
+    supports_vintages: false
+    supports_exact_release_time: false
+    point_in_time_quality: CONSERVATIVE_DATE
+    backfill_class: HISTORICAL_CONSERVATIVE
+    enabled: true
+    criticality: IMPORTANT
+    status: PASS
+    status_note: >-
+      Endpoint and all six series verified live 2026-09-28. Terms read
+      2026-09-28: free use of information obtained from the site provided the
+      ECB is cited as the source and any alterations are stated. The written
+      authorisation requirement applies to authored works (e.g. Working
+      Papers), not to statistical series. Attribution: "Source: European
+      Central Bank".
+
+  # --------------------------------------------------------------------
+  # Deutsche Bundesbank -- verified live 2026-09-28. NOTE: the API returns
+  # HTTP 406 for SDMX-JSON; only `Accept: text/csv` is accepted.
+  # --------------------------------------------------------------------
+  bundesbank:
+    source_id: bundesbank
+    display_name: "Deutsche Bundesbank Zeitreihen-Datenbanken"
+    official_source: "Deutsche Bundesbank"
+    homepage: "https://www.bundesbank.de/de/statistiken/zeitreihen-datenbanken"
+    machine_endpoint: "https://api.statistiken.bundesbank.de/rest/data"
+    access_method: "REST / SDMX, text/csv only"
+    requires_auth: false
+    license_or_terms_reference: "https://www.bundesbank.de/de/startseite/benutzerhinweise/nutzungsbedingungen-fuer-den-allgemeinen-gebrauch-der-website-763554"
+    commercial_use_status: "PERMITTED_WITH_ATTRIBUTION"
+    frequency: "mixed"
+    expected_update_cadence: "daily to monthly, series dependent"
+    supports_historical_data: true
+    supports_vintages: false
+    supports_exact_release_time: false
+    point_in_time_quality: CONSERVATIVE_DATE
+    backfill_class: HISTORICAL_CONSERVATIVE
+    enabled: true
+    criticality: IMPORTANT
+    status: PASS
+    status_note: >-
+      Endpoint verified live 2026-09-28 (Accept: text/csv required, otherwise
+      HTTP 406). Terms read 2026-09-28: self-created information may be
+      stored, shared and reproduced for personal or business use citing
+      "Quelle: Deutsche Bundesbank". The explicit commercial prohibition on
+      that page concerns images and videos, not statistical series.
+
+  # --------------------------------------------------------------------
+  # FRED / ALFRED -- the only Wave 1 source with genuine vintages, which is
+  # what makes its history point-in-time safe rather than merely long.
+  # Cannot be verified here: no API key is present in this environment.
+  # --------------------------------------------------------------------
+  fred:
+    source_id: fred
+    display_name: "FRED / ALFRED (Federal Reserve Bank of St. Louis)"
+    official_source: "Federal Reserve Bank of St. Louis"
+    homepage: "https://fred.stlouisfed.org/"
+    machine_endpoint: "https://api.stlouisfed.org/fred"
+    access_method: "REST / JSON, API key"
+    requires_auth: true
+    auth_environment_variable: "FRED_API_KEY"
+    license_or_terms_reference: "https://fred.stlouisfed.org/legal/"
+    commercial_use_status: "REVIEW_REQUIRED"
+    frequency: "mixed"
+    expected_update_cadence: "series dependent, release-calendar driven"
+    supports_historical_data: true
+    supports_vintages: true
+    supports_exact_release_time: false
+    point_in_time_quality: EXACT_DATE
+    backfill_class: HISTORICAL_PIT_SAFE
+    enabled: false
+    criticality: IMPORTANT
+    status: AUTH_MISSING
+    status_note: >-
+      FRED_API_KEY is not set. Obtain a free key at
+      https://fredaccount.stlouisfed.org/apikeys and add it as a GitHub
+      secret; the adapter never reads a key from a file and never persists one.
+
+  # --------------------------------------------------------------------
+  # EU Business & Consumer Surveys, disseminated through the Eurostat API.
+  # Verified live 2026-09-28: ei_bssi_m_r2 and ei_bsco_m both HTTP 200
+  # (JSON-stat 2.0). Revised in place, no vintages.
+  # --------------------------------------------------------------------
+  eu_bcs:
+    source_id: eu_bcs
+    display_name: "European Commission Business & Consumer Surveys"
+    official_source: "European Commission DG ECFIN / Eurostat dissemination"
+    homepage: "https://economy-finance.ec.europa.eu/economic-forecast-and-surveys/business-and-consumer-surveys_en"
+    machine_endpoint: "https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data"
+    access_method: "REST / JSON-stat 2.0"
+    requires_auth: false
+    license_or_terms_reference: "https://ec.europa.eu/eurostat/web/main/help/copyright-notice"
+    commercial_use_status: "PERMITTED_WITH_ATTRIBUTION"
+    frequency: "monthly"
+    expected_update_cadence: "monthly, near month end"
+    supports_historical_data: true
+    supports_vintages: false
+    supports_exact_release_time: false
+    point_in_time_quality: CONSERVATIVE_DATE
+    backfill_class: HISTORICAL_CONSERVATIVE
+    enabled: true
+    criticality: EXPERIMENTAL
+    status: PASS
+    status_note: >-
+      Datasets verified live 2026-09-28. Terms read 2026-09-28 (Commission
+      Decision of 12 December 2011, 2011/833/EU): reuse of statistical data
+      for commercial or non-commercial purposes is authorised provided the
+      source is acknowledged and changes are indicated. The listed exceptions
+      concern non-EU/EFTA and certain trade data, not EU survey indicators.
+
+  # --------------------------------------------------------------------
+  # Destatis daily truck-toll mileage index. Verified live 2026-09-28: the
+  # statistical report downloads as XLSX (~950 KB, HTTP 200).
+  # robots.txt sets Crawl-delay: 30 -- honoured, not worked around.
+  # Historical release timing is NOT reconstructable, so the history is not
+  # strict PIT evidence and forward archival starts now (spec §12E).
+  # --------------------------------------------------------------------
+  destatis_truck:
+    source_id: destatis_truck
+    display_name: "Destatis täglicher Lkw-Maut-Fahrleistungsindex"
+    official_source: "Statistisches Bundesamt (Destatis)"
+    homepage: "https://www.destatis.de/DE/Themen/Branchen-Unternehmen/Industrie-Verarbeitendes-Gewerbe/Tabellen/Lkw-Maut-Fahrleistungsindex-Daten.html"
+    machine_endpoint: "https://www.destatis.de/DE/Themen/Branchen-Unternehmen/Industrie-Verarbeitendes-Gewerbe/Publikationen/Downloads-Konjunktur"
+    access_method: "HTTPS file download (XLSX)"
+    requires_auth: false
+    license_or_terms_reference: "https://www.destatis.de/EN/Service/Legal-Notice/CopyrightGeneral.html"
+    commercial_use_status: "PERMITTED_WITH_ATTRIBUTION"
+    frequency: "daily"
+    expected_update_cadence: "weekly, Thursdays"
+    supports_historical_data: true
+    supports_vintages: false
+    supports_exact_release_time: false
+    point_in_time_quality: UNKNOWN
+    backfill_class: FORWARD_ONLY
+    enabled: true
+    criticality: IMPORTANT
+    status: PASS
+    status_note: >-
+      File verified live 2026-09-28 (XLSX, ~950 KB). Terms read 2026-09-28:
+      reproduction and distribution permitted with source citation
+      "Statistisches Bundesamt (Destatis)", commercial use unrestricted,
+      modifications must be identified. robots.txt sets Crawl-delay: 30,
+      which the adapter honours. Historical release timing is unrecoverable
+      from the file, hence FORWARD_ONLY: only snapshots TurboEdge takes
+      itself count as point-in-time evidence.
+
+  # --------------------------------------------------------------------
+  # Japan e-Stat. NOT part of the written specification -- added on the
+  # user's direct instruction, who holds an API key to be added as a secret.
+  # --------------------------------------------------------------------
+  estat:
+    source_id: estat
+    display_name: "e-Stat (Portal Site of Official Statistics of Japan)"
+    official_source: "Statistics Bureau of Japan / e-Stat"
+    homepage: "https://www.e-stat.go.jp/"
+    machine_endpoint: "https://api.e-stat.go.jp/rest/3.0/app/json"
+    access_method: "REST / JSON, application ID"
+    requires_auth: true
+    auth_environment_variable: "ESTAT_APP_ID"
+    license_or_terms_reference: "https://www.e-stat.go.jp/api/api-info/api-terms"
+    commercial_use_status: "REVIEW_REQUIRED"
+    frequency: "mixed"
+    expected_update_cadence: "series dependent"
+    supports_historical_data: true
+    supports_vintages: false
+    supports_exact_release_time: false
+    point_in_time_quality: CONSERVATIVE_DATE
+    backfill_class: HISTORICAL_CONSERVATIVE
+    enabled: false
+    criticality: EXPERIMENTAL
+    status: AUTH_MISSING
+    status_note: >-
+      ESTAT_APP_ID is not set. The user holds a key; it must be added as a
+      GitHub secret by the user. Claude never handles the credential.
+
+series:
+  # ==== ECB, all six verified live 2026-09-28 =========================
+  # A 36-hour conservative lag: these are published on the following
+  # business morning, and erring late costs a little power while erring
+  # early invents a forecast the system could not have made.
+  - source: ecb
+    series_id: ECB.MRO_RATE
+    name: "ECB main refinancing operations rate"
+    category: policy_rate
+    unit: percent
+    frequency: business_daily
+    native_identifier: "FM/B.U2.EUR.4F.KR.MRR_FR.LEV"
+    availability_precision: CONSERVATIVE_DATE
+    backfill_class: HISTORICAL_CONSERVATIVE
+    conservative_release_lag_hours: 36
+    event_driven: true
+    notes: >-
+      Verified live 2026-09-28, HTTP 200. The ECB publishes only the change
+      points: 48 observations since 1999, one per decision that moved the
+      rate. Declaring this business_daily made it look 99.3% incomplete when
+      it is in fact complete -- measured on the first live run.
+
+  - source: ecb
+    series_id: ECB.ESTR
+    name: "Euro short-term rate"
+    category: money_market
+    unit: percent
+    frequency: business_daily
+    native_identifier: "EST/B.EU000A2X2A25.WT"
+    availability_precision: CONSERVATIVE_DATE
+    backfill_class: HISTORICAL_CONSERVATIVE
+    conservative_release_lag_hours: 36
+    notes: >-
+      Verified live 2026-09-28. adapters/ecb.py consumes the same series for
+      financing-cost pricing; this entry is the research-archive copy and
+      does not replace it.
+
+  - source: ecb
+    series_id: ECB.M3
+    name: "Euro area M3 monetary aggregate"
+    category: monetary_aggregate
+    unit: eur_million
+    frequency: monthly
+    native_identifier: "BSI/M.U2.Y.V.M30.X.1.U2.2300.Z01.E"
+    availability_precision: CONSERVATIVE_DATE
+    backfill_class: HISTORICAL_CONSERVATIVE
+    conservative_release_lag_hours: 720
+    notes: "Verified live 2026-09-28. ~30-day lag: M3 is released well after month end."
+
+  - source: ecb
+    series_id: ECB.EURUSD
+    name: "US dollar / euro reference rate"
+    category: fx
+    unit: usd_per_eur
+    frequency: business_daily
+    native_identifier: "EXR/D.USD.EUR.SP00.A"
+    availability_precision: CONSERVATIVE_DATE
+    backfill_class: HISTORICAL_CONSERVATIVE
+    conservative_release_lag_hours: 36
+    notes: "Verified live 2026-09-28. Fixed around 16:00 CET; 36h is deliberately late."
+
+  - source: ecb
+    series_id: ECB.YC_AAA_10Y
+    name: "Euro area AAA government spot yield, 10 years"
+    category: yield_curve
+    unit: percent
+    frequency: business_daily
+    native_identifier: "YC/B.U2.EUR.4F.G_N_A.SV_C_YM.SR_10Y"
+    availability_precision: CONSERVATIVE_DATE
+    backfill_class: HISTORICAL_CONSERVATIVE
+    conservative_release_lag_hours: 36
+    notes: "Verified live 2026-09-28, HTTP 200."
+
+  - source: ecb
+    series_id: ECB.MIR_HH_LENDING
+    name: "Bank interest rate on loans to households, euro area"
+    category: credit_conditions
+    unit: percent
+    frequency: monthly
+    native_identifier: "MIR/M.U2.B.A2A.A.R.A.2240.EUR.N"
+    availability_precision: CONSERVATIVE_DATE
+    backfill_class: HISTORICAL_CONSERVATIVE
+    conservative_release_lag_hours: 840
+    notes: >-
+      Verified live 2026-09-28. The variant key ...A2A.AM.R... returns HTTP
+      404 and must not be used.
+
+  # ==== Bundesbank, verified live 2026-09-28 ==========================
+  - source: bundesbank
+    series_id: BBK.EURUSD_REF
+    name: "ECB euro reference rate, USD per EUR (Bundesbank mirror)"
+    category: fx
+    unit: usd_per_eur
+    frequency: business_daily
+    native_identifier: "BBEX3/D.USD.EUR.BB.AC.000"
+    availability_precision: CONSERVATIVE_DATE
+    backfill_class: HISTORICAL_CONSERVATIVE
+    conservative_release_lag_hours: 36
+    notes: >-
+      Verified live 2026-09-28 with Accept: text/csv (SDMX-JSON returns 406).
+      Deliberately overlaps ECB.EURUSD: two independent renderings of the same
+      published quantity are the cheapest available cross-source agreement check.
+
+  # Discovered from the API's own metadata (GET /metadata/dataflow/BBK, then
+  # the relevant datastructure's dimension order and codelists), not guessed,
+  # and each verified with a live single-key request on 2026-09-28. A
+  # guessed key that happens to return numbers is the worst possible
+  # failure: a plausible dataset describing something else.
+  - source: bundesbank
+    series_id: BBK.IP_INDUSTRY
+    name: "German industrial production, industry (B+C), 2021=100, cal. + seas. adj."
+    category: real_economy
+    unit: index_2021_100
+    frequency: monthly
+    native_identifier: "BBDE1/M.DE.Y.BAA1.A2P300000.G.C.I21.A"
+    availability_precision: CONSERVATIVE_DATE
+    backfill_class: HISTORICAL_CONSERVATIVE
+    conservative_release_lag_hours: 1008
+    notes: >-
+      Verified live 2026-09-28, HTTP 200, 2026-07 = 90.1. A 42-day lag:
+      German IP for month m is published in the first half of m+2.
+
+  - source: bundesbank
+    series_id: BBK.ORDERS_INDUSTRY
+    name: "German manufacturing new orders, industry (B+C), constant prices, 2021=100"
+    category: real_economy
+    unit: index_2021_100
+    frequency: monthly
+    native_identifier: "BBDE1/M.DE.Y.AEA1.A2P300000.F.C.I21.A"
+    availability_precision: CONSERVATIVE_DATE
+    backfill_class: HISTORICAL_CONSERVATIVE
+    conservative_release_lag_hours: 1008
+    notes: "Verified live 2026-09-28, HTTP 200, 2026-07 = 95.5."
+
+  - source: bundesbank
+    series_id: BBK.BASE_RATE
+    name: "German statutory base rate (Basiszinssatz, §247 BGB)"
+    category: policy_rate
+    unit: percent
+    frequency: monthly
+    native_identifier: "BBIN1/M.DE.BBK.BBKBAS2.EUR.ME"
+    availability_precision: CONSERVATIVE_DATE
+    backfill_class: HISTORICAL_CONSERVATIVE
+    conservative_release_lag_hours: 168
+    event_driven: true
+    notes: >-
+      Verified live 2026-09-28, HTTP 200, 2026-09 = 1.52. Changes only on
+      1 January and 1 July, so this is an event series stored at monthly
+      frequency; its effective sample is far smaller than its row count.
+
+  # ==== EU BCS ========================================================
+  # Indicator codes read out of the API's own `dimension.indic` metadata and
+  # re-verified live 2026-09-28. Two corrections to the original plan, both
+  # found by querying rather than assuming:
+  #   * BS-EEI-BAL (Employment Expectations) does NOT exist in
+  #     ei_bssi_m_r2 -- the dataset publishes exactly six indicators, listed
+  #     below, and EEI is not among them. Not configured, not invented.
+  #   * `geo=EA` returns an empty dimension. The live code is EA21 ("Euro
+  #     area - 21 countries, from 2026"), which will change again at the
+  #     next accession and must be re-verified then, not assumed.
+  # The seasonally adjusted variant (s_adj=SA) is the cross-country headline
+  # figure and the only one that exists for BS-ESI-I.
+  #
+  # A 336-hour (14-day) conservative lag: BCS results are released in the
+  # last week of the reference month, the dissemination API exposes no
+  # publication time, and this series is revised in place with no vintage
+  # record. Erring two weeks late costs a little power; erring early would
+  # read a survey before it was published.
+  - source: eu_bcs
+    series_id: EUBCS.ESI_DE
+    name: "Economic Sentiment Indicator, Germany"
+    category: survey_sentiment
+    unit: index
+    frequency: monthly
+    native_identifier: "ei_bssi_m_r2|indic=BS-ESI-I|geo=DE|s_adj=SA"
+    availability_precision: UNKNOWN
+    backfill_class: FORWARD_ONLY
+    notes: >-
+      Indicator code verified live 2026-09-28 against the dataset's own
+      dimension metadata. FORWARD_ONLY: Eurostat revises this history in
+      place and exposes no vintages, so only TurboEdge's own snapshots are
+      point-in-time evidence.
+
+  - source: eu_bcs
+    series_id: EUBCS.CONS_CONF_DE
+    name: "Consumer confidence indicator, Germany"
+    category: survey_sentiment
+    unit: balance
+    frequency: monthly
+    native_identifier: "ei_bssi_m_r2|indic=BS-CSMCI-BAL|geo=DE|s_adj=SA"
+    availability_precision: UNKNOWN
+    backfill_class: FORWARD_ONLY
+    notes: >-
+      Taken from ei_bssi_m_r2, not ei_bsco_m. Both datasets carry consumer
+      confidence but under different codes -- BS-CSMCI-BAL here, BS-CSMCI
+      there -- and both were verified live 2026-09-28. Using the sentiment
+      dataset keeps every configured survey series on one cube.
+
+  - source: eu_bcs
+    series_id: EUBCS.IND_CONF_DE
+    name: "Industrial confidence indicator, Germany"
+    category: survey_sentiment
+    unit: balance
+    frequency: monthly
+    native_identifier: "ei_bssi_m_r2|indic=BS-ICI-BAL|geo=DE|s_adj=SA"
+    availability_precision: UNKNOWN
+    backfill_class: FORWARD_ONLY
+    notes: "Indicator code verified live 2026-09-28."
+
+  - source: eu_bcs
+    series_id: EUBCS.SERV_CONF_DE
+    name: "Services confidence indicator, Germany"
+    category: survey_sentiment
+    unit: balance
+    frequency: monthly
+    native_identifier: "ei_bssi_m_r2|indic=BS-SCI-BAL|geo=DE|s_adj=SA"
+    availability_precision: UNKNOWN
+    backfill_class: FORWARD_ONLY
+    notes: "Indicator code verified live 2026-09-28."
+
+  - source: eu_bcs
+    series_id: EUBCS.ESI_EA
+    name: "Economic Sentiment Indicator, euro area"
+    category: survey_sentiment
+    unit: index
+    frequency: monthly
+    native_identifier: "ei_bssi_m_r2|indic=BS-ESI-I|geo=EA21|s_adj=SA"
+    availability_precision: UNKNOWN
+    backfill_class: FORWARD_ONLY
+    notes: >-
+      geo=EA21, verified live 2026-09-28. Bare geo=EA returns an empty
+      dimension; the aggregate is renumbered at each accession and this code
+      must be re-verified rather than assumed to keep working.
+
+  # ==== Destatis, file verified live 2026-09-28 =======================
+  - source: destatis_truck
+    series_id: DESTATIS.TRUCK_TOLL_DAILY
+    name: "Täglicher Lkw-Maut-Fahrleistungsindex, calendar and seasonally adjusted"
+    category: real_economy
+    unit: index_2021_100
+    frequency: daily
+    native_identifier: "Kalender- und saisonbereinigt (KSB)"
+    availability_precision: UNKNOWN
+    backfill_class: FORWARD_ONLY
+    notes: >-
+      The identifier is the file's own Saisonbereinigung column value,
+      verified 2026-09-28 against the real workbook; the other published
+      variant is "unbereinigt". Historical release timing is not recoverable
+      from the file -- it carries no publication timestamp at all -- so the
+      back history to 2008-01-01 is descriptive only. Forward snapshots
+      taken by TurboEdge from its collection start are the point-in-time
+      evidence. The workbook's own Impressum sheet states "Vervielfältigung
+      und Verbreitung, auch auszugsweise, mit Quellenangabe gestattet".
+
+  - source: destatis_truck
+    series_id: DESTATIS.TRUCK_TOLL_DAILY_RAW
+    name: "Täglicher Lkw-Maut-Fahrleistungsindex, unadjusted"
+    category: real_economy
+    unit: index_2021_100
+    frequency: daily
+    native_identifier: "unbereinigt"
+    availability_precision: UNKNOWN
+    backfill_class: FORWARD_ONLY
+    notes: >-
+      The raw counterpart of the adjusted series above. Kept because the
+      adjustment procedure is itself revised, so the two series answer
+      different questions about what was knowable on a given day.

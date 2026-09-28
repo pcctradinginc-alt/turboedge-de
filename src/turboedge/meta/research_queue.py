@@ -37,16 +37,19 @@ and runtime constraint rather than a naming convention:
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from turboedge.external.triggers import ResearchTrigger, TriggerType
 from turboedge.learning import failed_hypotheses
 from turboedge.meta import catalog, research_memory, value_of_information
 from turboedge.meta.catalog import MeasuredOutcome
 from turboedge.meta.research_opportunity import (
     SYSTEM_ASSIGNABLE_STATES,
+    Estimate,
+    InformationFamily,
     ResearchOpportunity,
     ResearchStatus,
     StoredOpportunity,
@@ -269,6 +272,109 @@ class ResearchQueue:
                 continue
             self._store.upsert_research_opportunity(opportunity)
             inserted.append(opportunity.hypothesis_id)
+        return inserted
+
+    def seed_from_data_readiness(
+        self,
+        triggers: Sequence[ResearchTrigger],
+        *,
+        family: InformationFamily = InformationFamily.MACRO,
+        underlyings: Sequence[str] = (),
+        horizons: Sequence[str] = (),
+    ) -> list[tuple[str, str]]:
+        """Propose one research question per newly ready dataset (spec §43).
+
+        The second and last way a new row may appear, deliberately written
+        here rather than in `external/` so that the governance boundary
+        stays in the module that owns it. It obeys exactly the same rules as
+        `seed_from_catalog`:
+
+        * the entry is created in `SYSTEM_ASSIGNABLE_STATES` and nowhere
+          else, so a dataset becoming ready can never produce an approved
+          question;
+        * it is idempotent on `hypothesis_id`, so a re-run adds nothing and
+          resets nothing a human has already done;
+        * every estimate is DECLARED or UNKNOWN with a stated reason. The
+          one thing readiness genuinely measures is sample size, so that is
+          the only estimate this method fills in from data.
+
+        Spec §44 is the point to keep in view: a ready dataset says nothing
+        whatsoever about whether an alpha is there. This creates a question,
+        not an expectation.
+
+        Returns `(hypothesis_id, dedup_key)` for each newly inserted entry,
+        so the caller can mark the trigger handed off.
+        """
+        existing_ids = {
+            s.opportunity.hypothesis_id for s in self._store.list_research_opportunities()
+        }
+        inserted: list[tuple[str, str]] = []
+        for trigger in triggers:
+            if trigger.trigger_type is not TriggerType.EXPLORATORY_DATA_READY:
+                # Only the first milestone creates a question. The later
+                # ones change what an existing question may be tested on,
+                # which is a partition decision, not a new hypothesis.
+                continue
+            hypothesis_id = _readiness_hypothesis_id(trigger)
+            if hypothesis_id in existing_ids:
+                continue
+
+            opportunity = ResearchOpportunity(
+                hypothesis_id=hypothesis_id,
+                description=(
+                    f"Dataset {trigger.source}.{trigger.series_id} became research-ready "
+                    f"on {trigger.emitted_at.date().isoformat()} with an effective sample "
+                    f"of {trigger.effective_n:.0f} over {trigger.calendar_span_days} "
+                    "calendar days. Open question: does it carry incremental "
+                    "out-of-sample information about Turbo net EV after costs, beyond "
+                    "what existing features already capture? No prior evidence either way."
+                ),
+                information_family=family,
+                affected_underlyings=list(underlyings),
+                affected_horizons=list(horizons),
+                expected_information_gain=Estimate.unknown(
+                    "never tested; data readiness measures evidence volume, not "
+                    "predictive content (spec §44)"
+                ),
+                expected_economic_value=Estimate.unknown(
+                    "never tested; the repository's one clean forecasting success was "
+                    "economically worse than doing nothing (docs/measured_results.md §6.15)"
+                ),
+                probability_of_resolving_uncertainty=Estimate.declared(
+                    0.5,
+                    "a first screen on a new dataset either finds a candidate effect or "
+                    "rules the family out; both outcomes resolve something",
+                ),
+                implementation_cost=Estimate.unknown(
+                    "depends on the feature construction, which is not yet specified"
+                ),
+                implementation_complexity=Estimate.unknown(
+                    "depends on the feature construction, which is not yet specified"
+                ),
+                estimated_sample_size=Estimate.measured(
+                    trigger.effective_n,
+                    f"effective sample from the readiness evaluation under policy "
+                    f"{trigger.policy_version}; not the row count",
+                ),
+                current_uncertainty=Estimate.unknown("no measurement exists for this dataset"),
+                data_availability=Estimate.measured(
+                    1.0, "the dataset passed every readiness gate, which is what emitted this"
+                ),
+                leakage_risk=Estimate.unknown(
+                    "depends on the feature construction; the raw series' availability "
+                    "semantics are recorded and enforced, the derived feature's are not "
+                    "yet known"
+                ),
+                overlap_with_existing_research=Estimate.unknown(
+                    "not yet compared against the failed-hypothesis record"
+                ),
+                status=ResearchStatus.PROPOSED,
+            )
+            if opportunity.status not in SYSTEM_ASSIGNABLE_STATES:  # pragma: no cover
+                raise ValueError(f"{hypothesis_id}: refusing to write status {opportunity.status}")
+            self._store.upsert_research_opportunity(opportunity)
+            existing_ids.add(hypothesis_id)
+            inserted.append((hypothesis_id, trigger.dedup_key))
         return inserted
 
     # -- applying already-authorised results ---------------------------
@@ -544,3 +650,14 @@ __all__ = [
     "IllegalTransition",
     "ResearchQueue",
 ]
+
+
+def _readiness_hypothesis_id(trigger: ResearchTrigger) -> str:
+    """Stable id for the question one ready dataset raises.
+
+    Derived from source and series alone -- not from the policy version or
+    the date -- so that re-evaluating under a new policy cannot create a
+    second copy of a question a human may already have approved or rejected.
+    """
+    series = trigger.series_id.replace(".", "-").upper()
+    return f"RO-DATA-{trigger.source.upper()}-{series}"

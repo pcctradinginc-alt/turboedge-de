@@ -81,6 +81,28 @@ class RegimeCoverage(StrEnum):
     BROAD = "BROAD"
 
 
+#: The pseudo-frequency `evidence.build_evidence` assigns to a series whose
+#: publisher emits a value only when something happens.
+EVENT_FREQUENCY = "event"
+
+#: Returned by `staleness_limit_days` when staleness does not apply. Large
+#: rather than `None` so every caller compares the same way and none has to
+#: remember a special case.
+_NO_STALENESS_LIMIT = 10**6
+
+#: Expected calendar days between observations, by declared frequency.
+#: Lives here rather than in `evidence.py` because both the missingness
+#: estimate and the staleness limit need it, and two copies would drift.
+EXPECTED_PERIOD_DAYS: dict[str, float] = {
+    "daily": 1.0,
+    "business_daily": 365.25 / 252.0,
+    "weekly": 7.0,
+    "monthly": 365.25 / 12.0,
+    "quarterly": 365.25 / 4.0,
+    "annual": 365.25,
+}
+
+
 class ReadinessProfile(BaseModel):
     """Thresholds for one observation frequency (spec §35).
 
@@ -121,6 +143,18 @@ DEFAULT_PROFILES: dict[str, ReadinessProfile] = {
         min_confirmation_observations=12,
         min_forward_span_days=365,
     ),
+    # Event series are governed by how many things happened, not by how
+    # long the file is. Deliberately the strictest span requirement here:
+    # 30 policy decisions spread over five years say something about
+    # several regimes, whereas 30 crowded into one easing cycle say one
+    # thing thirty times.
+    "event": ReadinessProfile(
+        min_exploratory_observations=30,
+        min_exploratory_span_days=1825,
+        min_validation_observations=10,
+        min_confirmation_observations=10,
+        min_forward_span_days=730,
+    ),
     "quarterly": ReadinessProfile(
         min_exploratory_observations=32,
         min_exploratory_span_days=2920,
@@ -149,8 +183,42 @@ class ReadinessPolicy(BaseModel):
     max_missingness: float = Field(default=0.10, ge=0.0, le=1.0)
     #: A series whose newest observation is older than this is DEGRADED.
     max_staleness_days: int = Field(default=45, gt=0)
+    #: How many publication periods a series may go without a new
+    #: observation before it counts as stale. Measured live on 2026-09-28:
+    #: a flat 45-day limit marked ECB.M3 (58 days old) and
+    #: ECB.MIR_HH_LENDING (89 days) as DEGRADED while both were publishing
+    #: perfectly normally. A monthly series is never fresher than about a
+    #: month by construction, so a fixed day count silently declares every
+    #: low-frequency macro series broken -- and a readiness engine that
+    #: cries wolf about healthy data is one nobody reads.
+    max_staleness_periods: float = Field(default=2.5, gt=0.0)
     #: Strict-PIT research needs a precision from `STRICT_PIT_PRECISIONS`.
     require_strict_pit_for_confirmation: bool = True
+
+    def staleness_limit_days(self, frequency: str, *, release_lag_days: float = 0.0) -> int:
+        """How old the newest observation may be before the series is DEGRADED.
+
+        A series cannot be fresher than its own cadence plus its own
+        publication lag, so the limit is built from both. Measured live on
+        2026-09-28: German industrial production for July was 89 days old
+        and publishing exactly on schedule -- it is released in the first
+        half of the month after next, so "monthly" alone says nothing about
+        how recent its newest value can be.
+
+        An unknown cadence falls back to the floor, which errs towards
+        flagging rather than towards silence.
+        """
+        if frequency == EVENT_FREQUENCY:
+            # An event series has no cadence to be late against. A policy
+            # rate unchanged for two years is a fact about monetary policy,
+            # not a broken feed, and flagging it DEGRADED would be the
+            # readiness engine misreading silence as absence.
+            return _NO_STALENESS_LIMIT
+        period = EXPECTED_PERIOD_DAYS.get(frequency)
+        if period is None:
+            return self.max_staleness_days
+        allowance = self.max_staleness_periods * period + release_lag_days
+        return max(self.max_staleness_days, round(allowance))
 
     def profile_for(self, frequency: str) -> ReadinessProfile:
         try:
@@ -203,6 +271,10 @@ class SeriesEvidence(BaseModel):
     unresolved_warnings: tuple[str, ...] = ()
 
     regime_coverage: RegimeCoverage = RegimeCoverage.LIMITED
+
+    #: The series' own declared publication lag, in days. Carried here so
+    #: the staleness rule can tell a late publisher from a broken feed.
+    release_lag_days: float = Field(default=0.0, ge=0.0)
 
     @model_validator(mode="after")
     def _effective_cannot_exceed_nominal(self) -> Self:
@@ -365,7 +437,10 @@ def evaluate_readiness(
             freshness_days=freshness_days,
         )
 
-    if freshness_days is not None and freshness_days > policy.max_staleness_days:
+    staleness_limit = policy.staleness_limit_days(
+        evidence.frequency, release_lag_days=evidence.release_lag_days
+    )
+    if freshness_days is not None and freshness_days > staleness_limit:
         return _record(
             evidence,
             policy,
@@ -374,7 +449,7 @@ def evaluate_readiness(
             previous,
             (
                 f"newest observation is {freshness_days} days old, above the "
-                f"{policy.max_staleness_days}-day limit",
+                f"{staleness_limit}-day limit for a {evidence.frequency} series",
             ),
             git_commit,
             config_hash,

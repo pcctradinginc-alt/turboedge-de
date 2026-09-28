@@ -433,6 +433,22 @@ class ExternalObservation(Provenance):
     frequency: str
     source_version: str
 
+    # Point-in-time detail added by the External Data Factory. All optional
+    # and all nullable: the 93,851 Cboe/CFTC rows already in the table
+    # predate these fields and cannot supply them retroactively. A row
+    # without `availability_precision` is treated as UNKNOWN by strict
+    # point-in-time research, never as fine -- see
+    # `external/schemas.py:STRICT_PIT_PRECISIONS`.
+    source_release_time: OptionalTzAwareDatetime = None
+    vintage_time: OptionalTzAwareDatetime = None
+    #: An `external.schemas.AvailabilityPrecision` value. Typed as a plain
+    #: string so that `storage` keeps its position at the bottom of the
+    #: import graph and `external` can depend on it, not the other way round.
+    availability_precision: str | None = None
+    #: 0 = first release, 1 = first revision, ... Distinct from `vintage_time`
+    #: because some publishers revise without dating the revision.
+    revision_index: int | None = None
+
 
 class SourceHealthRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")

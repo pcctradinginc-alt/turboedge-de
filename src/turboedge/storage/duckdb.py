@@ -26,6 +26,20 @@ import duckdb
 import structlog
 
 from turboedge.alpha.schemas import AlphaSource, AlphaStatus
+from turboedge.external.readiness import (
+    AvailabilityPrecision,
+    DataReadinessRecord,
+    ReadinessState,
+    RegimeCoverage,
+)
+from turboedge.external.schemas import (
+    BackfillClass,
+    Criticality,
+    ExternalSourceManifest,
+    RawPayload,
+    SourceStatus,
+)
+from turboedge.external.triggers import ResearchTrigger, TriggerType
 from turboedge.meta.research_opportunity import (
     Estimate,
     InformationFamily,
@@ -214,6 +228,10 @@ _DDL_STATEMENTS: tuple[str, ...] = (
         parser_version VARCHAR NOT NULL,
         is_stale BOOLEAN NOT NULL,
         quality_score DOUBLE NOT NULL,
+        source_release_time TIMESTAMPTZ,
+        vintage_time TIMESTAMPTZ,
+        availability_precision VARCHAR,
+        revision_index INTEGER,
         PRIMARY KEY (source, series_id, observation_time, available_at)
     )
     """,
@@ -323,6 +341,106 @@ _DDL_STATEMENTS: tuple[str, ...] = (
         actor VARCHAR NOT NULL,
         note VARCHAR NOT NULL,
         PRIMARY KEY (alpha_id, version, recorded_at, to_status)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS external_sources (
+        source_id VARCHAR NOT NULL,
+        display_name VARCHAR NOT NULL,
+        official_source VARCHAR NOT NULL,
+        homepage VARCHAR NOT NULL,
+        machine_endpoint VARCHAR NOT NULL,
+        access_method VARCHAR NOT NULL,
+        requires_auth BOOLEAN NOT NULL,
+        auth_environment_variable VARCHAR,
+        license_or_terms_reference VARCHAR NOT NULL,
+        commercial_use_status VARCHAR NOT NULL,
+        frequency VARCHAR NOT NULL,
+        expected_update_cadence VARCHAR NOT NULL,
+        supports_historical_data BOOLEAN NOT NULL,
+        supports_vintages BOOLEAN NOT NULL,
+        supports_exact_release_time BOOLEAN NOT NULL,
+        point_in_time_quality VARCHAR NOT NULL,
+        backfill_class VARCHAR NOT NULL,
+        enabled BOOLEAN NOT NULL,
+        criticality VARCHAR NOT NULL,
+        last_successful_ingestion TIMESTAMPTZ,
+        last_attempt TIMESTAMPTZ,
+        status VARCHAR NOT NULL,
+        status_note VARCHAR NOT NULL,
+        schema_version VARCHAR NOT NULL,
+        PRIMARY KEY (source_id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS raw_payloads (
+        payload_id VARCHAR NOT NULL,
+        source VARCHAR NOT NULL,
+        dataset VARCHAR NOT NULL,
+        request_fingerprint VARCHAR NOT NULL,
+        retrieved_at TIMESTAMPTZ NOT NULL,
+        http_status INTEGER NOT NULL,
+        content_type VARCHAR NOT NULL,
+        content_encoding VARCHAR NOT NULL,
+        byte_size BIGINT NOT NULL,
+        payload_hash VARCHAR NOT NULL,
+        stored_path VARCHAR NOT NULL,
+        parser_version VARCHAR NOT NULL,
+        git_commit VARCHAR,
+        schema_version VARCHAR NOT NULL,
+        PRIMARY KEY (payload_id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS data_readiness (
+        source VARCHAR NOT NULL,
+        series_id VARCHAR NOT NULL,
+        evaluated_at TIMESTAMPTZ NOT NULL,
+        state VARCHAR NOT NULL,
+        previous_state VARCHAR,
+        first_reached_at TIMESTAMPTZ,
+        collection_start TIMESTAMPTZ,
+        research_usable_from DATE,
+        forward_evidence_start DATE,
+        nominal_n INTEGER NOT NULL,
+        effective_n DOUBLE NOT NULL,
+        independent_dates INTEGER NOT NULL,
+        calendar_span_days INTEGER NOT NULL,
+        forward_n INTEGER NOT NULL,
+        forward_effective_n DOUBLE NOT NULL,
+        forward_span_days INTEGER NOT NULL,
+        event_count INTEGER NOT NULL,
+        independent_event_count INTEGER NOT NULL,
+        pit_quality BOOLEAN NOT NULL,
+        availability_precision VARCHAR NOT NULL,
+        completeness DOUBLE NOT NULL,
+        freshness_days INTEGER,
+        regime_coverage VARCHAR NOT NULL,
+        blocking_reasons VARCHAR NOT NULL,
+        policy_version VARCHAR NOT NULL,
+        git_commit VARCHAR,
+        config_hash VARCHAR,
+        schema_version VARCHAR NOT NULL,
+        PRIMARY KEY (source, series_id, evaluated_at)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS research_triggers (
+        dedup_key VARCHAR NOT NULL,
+        source VARCHAR NOT NULL,
+        series_id VARCHAR NOT NULL,
+        trigger_type VARCHAR NOT NULL,
+        emitted_at TIMESTAMPTZ NOT NULL,
+        from_state VARCHAR,
+        to_state VARCHAR NOT NULL,
+        policy_version VARCHAR NOT NULL,
+        effective_n DOUBLE NOT NULL,
+        calendar_span_days INTEGER NOT NULL,
+        handed_off_at TIMESTAMPTZ,
+        hypothesis_id VARCHAR,
+        note VARCHAR NOT NULL,
+        schema_version VARCHAR NOT NULL,
+        PRIMARY KEY (dedup_key)
     )
     """,
     """
@@ -703,6 +821,10 @@ _ALL_TABLES: tuple[str, ...] = (
     "successful_research_patterns",
     "alpha_sources",
     "alpha_status_history",
+    "external_sources",
+    "raw_payloads",
+    "data_readiness",
+    "research_triggers",
     "signals",
     "candidate_sets",
     "source_health",
@@ -1075,8 +1197,9 @@ class Store:
             INSERT INTO external_observations (
                 series_id, observation_time, value, unit, frequency, source_version,
                 available_at, retrieved_at, source_timestamp, source,
-                schema_version, parser_version, is_stale, quality_score
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                schema_version, parser_version, is_stale, quality_score,
+                source_release_time, vintage_time, availability_precision, revision_index
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (source, series_id, observation_time, available_at) DO UPDATE SET
                 value = excluded.value,
                 unit = excluded.unit,
@@ -1087,7 +1210,11 @@ class Store:
                 schema_version = excluded.schema_version,
                 parser_version = excluded.parser_version,
                 is_stale = excluded.is_stale,
-                quality_score = excluded.quality_score
+                quality_score = excluded.quality_score,
+                source_release_time = excluded.source_release_time,
+                vintage_time = excluded.vintage_time,
+                availability_precision = excluded.availability_precision,
+                revision_index = excluded.revision_index
             """,
             rows,
         )
@@ -1120,13 +1247,140 @@ class Store:
             f"""
             SELECT series_id, observation_time, value, unit, frequency, source_version,
                    available_at, retrieved_at, source_timestamp, source,
-                   schema_version, parser_version, is_stale, quality_score
+                   schema_version, parser_version, is_stale, quality_score,
+                   source_release_time, vintage_time, availability_precision, revision_index
             FROM external_observations {where}
             ORDER BY series_id ASC, observation_time ASC, available_at ASC
             """,
             params,
         ).fetchall()
         return [_row_to_external_observation(r) for r in rows]
+
+    # -- external data factory ---------------------------------------------
+
+    def upsert_external_source(self, manifest: ExternalSourceManifest) -> None:
+        """Insert or replace one source manifest entry (spec §8)."""
+        self._conn.execute(
+            f"INSERT OR REPLACE INTO external_sources ({', '.join(_EXTERNAL_SOURCE_COLUMNS)}) "
+            f"VALUES ({', '.join(['?'] * len(_EXTERNAL_SOURCE_COLUMNS))})",
+            _external_source_row(manifest),
+        )
+
+    def list_external_sources(self) -> list[ExternalSourceManifest]:
+        rows = self._conn.execute(
+            f"SELECT {', '.join(_EXTERNAL_SOURCE_COLUMNS)} FROM external_sources "
+            "ORDER BY source_id ASC"
+        ).fetchall()
+        return [_row_to_external_source(r) for r in rows]
+
+    def get_external_source(self, source_id: str) -> ExternalSourceManifest | None:
+        rows = self._conn.execute(
+            f"SELECT {', '.join(_EXTERNAL_SOURCE_COLUMNS)} FROM external_sources "
+            "WHERE source_id = ?",
+            [source_id],
+        ).fetchall()
+        return _row_to_external_source(rows[0]) if rows else None
+
+    def append_raw_payload(self, payload: RawPayload) -> None:
+        """Record one archived upstream response.
+
+        Keyed on `payload_id`, which callers derive from the content hash, so
+        re-fetching an unchanged file records the same row rather than a
+        second copy -- idempotence (spec §7) without deduplicating away a
+        genuine revision, whose bytes differ and whose hash therefore does too.
+        """
+        self._conn.execute(
+            f"INSERT OR REPLACE INTO raw_payloads ({', '.join(_RAW_PAYLOAD_COLUMNS)}) "
+            f"VALUES ({', '.join(['?'] * len(_RAW_PAYLOAD_COLUMNS))})",
+            _raw_payload_row(payload),
+        )
+
+    def list_raw_payloads(
+        self, *, source: str | None = None, limit: int | None = None
+    ) -> list[RawPayload]:
+        where = "WHERE source = ?" if source is not None else ""
+        params: list[Any] = [source] if source is not None else []
+        suffix = "" if limit is None else f" LIMIT {int(limit)}"
+        rows = self._conn.execute(
+            f"SELECT {', '.join(_RAW_PAYLOAD_COLUMNS)} FROM raw_payloads {where} "
+            f"ORDER BY retrieved_at DESC{suffix}",
+            params,
+        ).fetchall()
+        return [_row_to_raw_payload(r) for r in rows]
+
+    def append_readiness_record(self, record: DataReadinessRecord) -> None:
+        """Append one readiness evaluation. History is never overwritten.
+
+        Keyed on `(source, series_id, evaluated_at)`: re-running the same
+        evaluation at the same instant replaces it, but yesterday's verdict
+        stays. "Readiness history must remain auditable" (spec §40) only
+        means anything if a later, more permissive policy cannot erase the
+        stricter answer it replaced.
+        """
+        self._conn.execute(
+            f"INSERT OR REPLACE INTO data_readiness ({', '.join(_READINESS_COLUMNS)}) "
+            f"VALUES ({', '.join(['?'] * len(_READINESS_COLUMNS))})",
+            _readiness_row(record),
+        )
+
+    def latest_readiness(self, source: str, series_id: str) -> DataReadinessRecord | None:
+        rows = self._conn.execute(
+            f"SELECT {', '.join(_READINESS_COLUMNS)} FROM data_readiness "
+            "WHERE source = ? AND series_id = ? ORDER BY evaluated_at DESC LIMIT 1",
+            [source, series_id],
+        ).fetchall()
+        return _row_to_readiness(rows[0]) if rows else None
+
+    def list_latest_readiness(self) -> list[DataReadinessRecord]:
+        """The newest evaluation for each series, one row per series."""
+        rows = self._conn.execute(
+            f"""
+            SELECT {", ".join(_READINESS_COLUMNS)} FROM data_readiness d
+            WHERE evaluated_at = (
+                SELECT max(evaluated_at) FROM data_readiness x
+                WHERE x.source = d.source AND x.series_id = d.series_id
+            )
+            ORDER BY source ASC, series_id ASC
+            """
+        ).fetchall()
+        return [_row_to_readiness(r) for r in rows]
+
+    def list_readiness_history(self, source: str, series_id: str) -> list[DataReadinessRecord]:
+        rows = self._conn.execute(
+            f"SELECT {', '.join(_READINESS_COLUMNS)} FROM data_readiness "
+            "WHERE source = ? AND series_id = ? ORDER BY evaluated_at ASC",
+            [source, series_id],
+        ).fetchall()
+        return [_row_to_readiness(r) for r in rows]
+
+    def upsert_research_trigger(self, trigger: ResearchTrigger) -> None:
+        """Persist one readiness event, keyed on its `dedup_key`.
+
+        The key excludes the timestamp, which is what makes "emit exactly
+        once" (spec §43) a property of the table rather than of the caller
+        remembering to check.
+        """
+        self._conn.execute(
+            f"INSERT OR REPLACE INTO research_triggers ({', '.join(_TRIGGER_COLUMNS)}) "
+            f"VALUES ({', '.join(['?'] * len(_TRIGGER_COLUMNS))})",
+            _trigger_row(trigger),
+        )
+
+    def list_research_triggers(
+        self, *, pending_handoff_only: bool = False
+    ) -> list[ResearchTrigger]:
+        where = "WHERE handed_off_at IS NULL" if pending_handoff_only else ""
+        rows = self._conn.execute(
+            f"SELECT {', '.join(_TRIGGER_COLUMNS)} FROM research_triggers {where} "
+            "ORDER BY emitted_at ASC, dedup_key ASC"
+        ).fetchall()
+        return [_row_to_trigger(r) for r in rows]
+
+    def emitted_trigger_keys(self) -> frozenset[str]:
+        """Every `dedup_key` already persisted -- pass this to
+        `triggers_for_transition` so a daily run cannot re-emit."""
+        rows = self._conn.execute("SELECT dedup_key FROM research_triggers").fetchall()
+        return frozenset(r[0] for r in rows)
 
     # -- meta decisions (shadow layer) -------------------------------------
 
@@ -3337,6 +3591,10 @@ def _external_observation_row(o: ExternalObservation) -> tuple[Any, ...]:
         o.parser_version,
         o.is_stale,
         o.quality_score,
+        o.source_release_time,
+        o.vintage_time,
+        o.availability_precision,
+        o.revision_index,
     )
 
 
@@ -3356,6 +3614,10 @@ def _row_to_external_observation(row: tuple[Any, ...]) -> ExternalObservation:
         parser_version=row[11],
         is_stale=row[12],
         quality_score=row[13],
+        source_release_time=row[14],
+        vintage_time=row[15],
+        availability_precision=row[16],
+        revision_index=row[17],
     )
 
 
@@ -3694,4 +3956,299 @@ def _row_to_alpha_source(row: tuple[Any, ...]) -> AlphaSource:
         config_hash=row[16],
         schema_version=row[17],
         **evidence,
+    )
+
+
+_EXTERNAL_SOURCE_COLUMNS: tuple[str, ...] = (
+    "source_id",
+    "display_name",
+    "official_source",
+    "homepage",
+    "machine_endpoint",
+    "access_method",
+    "requires_auth",
+    "auth_environment_variable",
+    "license_or_terms_reference",
+    "commercial_use_status",
+    "frequency",
+    "expected_update_cadence",
+    "supports_historical_data",
+    "supports_vintages",
+    "supports_exact_release_time",
+    "point_in_time_quality",
+    "backfill_class",
+    "enabled",
+    "criticality",
+    "last_successful_ingestion",
+    "last_attempt",
+    "status",
+    "status_note",
+    "schema_version",
+)
+
+
+def _external_source_row(m: ExternalSourceManifest) -> tuple[Any, ...]:
+    return (
+        m.source_id,
+        m.display_name,
+        m.official_source,
+        m.homepage,
+        m.machine_endpoint,
+        m.access_method,
+        m.requires_auth,
+        m.auth_environment_variable,
+        m.license_or_terms_reference,
+        m.commercial_use_status,
+        m.frequency,
+        m.expected_update_cadence,
+        m.supports_historical_data,
+        m.supports_vintages,
+        m.supports_exact_release_time,
+        str(m.point_in_time_quality),
+        str(m.backfill_class),
+        m.enabled,
+        str(m.criticality),
+        m.last_successful_ingestion,
+        m.last_attempt,
+        str(m.status),
+        m.status_note,
+        m.schema_version,
+    )
+
+
+def _row_to_external_source(row: tuple[Any, ...]) -> ExternalSourceManifest:
+    return ExternalSourceManifest(
+        source_id=row[0],
+        display_name=row[1],
+        official_source=row[2],
+        homepage=row[3],
+        machine_endpoint=row[4],
+        access_method=row[5],
+        requires_auth=row[6],
+        auth_environment_variable=row[7],
+        license_or_terms_reference=row[8],
+        commercial_use_status=row[9],
+        frequency=row[10],
+        expected_update_cadence=row[11],
+        supports_historical_data=row[12],
+        supports_vintages=row[13],
+        supports_exact_release_time=row[14],
+        point_in_time_quality=AvailabilityPrecision(row[15]),
+        backfill_class=BackfillClass(row[16]),
+        enabled=row[17],
+        criticality=Criticality(row[18]),
+        last_successful_ingestion=row[19],
+        last_attempt=row[20],
+        status=SourceStatus(row[21]),
+        status_note=row[22],
+        schema_version=row[23],
+    )
+
+
+_RAW_PAYLOAD_COLUMNS: tuple[str, ...] = (
+    "payload_id",
+    "source",
+    "dataset",
+    "request_fingerprint",
+    "retrieved_at",
+    "http_status",
+    "content_type",
+    "content_encoding",
+    "byte_size",
+    "payload_hash",
+    "stored_path",
+    "parser_version",
+    "git_commit",
+    "schema_version",
+)
+
+
+def _raw_payload_row(p: RawPayload) -> tuple[Any, ...]:
+    return (
+        p.payload_id,
+        p.source,
+        p.dataset,
+        p.request_fingerprint,
+        p.retrieved_at,
+        p.http_status,
+        p.content_type,
+        p.content_encoding,
+        p.byte_size,
+        p.payload_hash,
+        p.stored_path,
+        p.parser_version,
+        p.git_commit,
+        p.schema_version,
+    )
+
+
+def _row_to_raw_payload(row: tuple[Any, ...]) -> RawPayload:
+    return RawPayload(
+        payload_id=row[0],
+        source=row[1],
+        dataset=row[2],
+        request_fingerprint=row[3],
+        retrieved_at=row[4],
+        http_status=row[5],
+        content_type=row[6],
+        content_encoding=row[7],
+        byte_size=row[8],
+        payload_hash=row[9],
+        stored_path=row[10],
+        parser_version=row[11],
+        git_commit=row[12],
+        schema_version=row[13],
+    )
+
+
+_READINESS_COLUMNS: tuple[str, ...] = (
+    "source",
+    "series_id",
+    "evaluated_at",
+    "state",
+    "previous_state",
+    "first_reached_at",
+    "collection_start",
+    "research_usable_from",
+    "forward_evidence_start",
+    "nominal_n",
+    "effective_n",
+    "independent_dates",
+    "calendar_span_days",
+    "forward_n",
+    "forward_effective_n",
+    "forward_span_days",
+    "event_count",
+    "independent_event_count",
+    "pit_quality",
+    "availability_precision",
+    "completeness",
+    "freshness_days",
+    "regime_coverage",
+    "blocking_reasons",
+    "policy_version",
+    "git_commit",
+    "config_hash",
+    "schema_version",
+)
+
+
+def _readiness_row(r: DataReadinessRecord) -> tuple[Any, ...]:
+    return (
+        r.source,
+        r.series_id,
+        r.evaluated_at,
+        str(r.state),
+        None if r.previous_state is None else str(r.previous_state),
+        r.first_reached_at,
+        r.collection_start,
+        r.research_usable_from,
+        r.forward_evidence_start,
+        r.nominal_n,
+        r.effective_n,
+        r.independent_dates,
+        r.calendar_span_days,
+        r.forward_n,
+        r.forward_effective_n,
+        r.forward_span_days,
+        r.event_count,
+        r.independent_event_count,
+        r.pit_quality,
+        str(r.availability_precision),
+        r.completeness,
+        r.freshness_days,
+        str(r.regime_coverage),
+        json.dumps(list(r.blocking_reasons)),
+        r.policy_version,
+        r.git_commit,
+        r.config_hash,
+        r.schema_version,
+    )
+
+
+def _row_to_readiness(row: tuple[Any, ...]) -> DataReadinessRecord:
+    return DataReadinessRecord(
+        source=row[0],
+        series_id=row[1],
+        evaluated_at=row[2],
+        state=ReadinessState(row[3]),
+        previous_state=None if row[4] is None else ReadinessState(row[4]),
+        first_reached_at=row[5],
+        collection_start=row[6],
+        research_usable_from=row[7],
+        forward_evidence_start=row[8],
+        nominal_n=row[9],
+        effective_n=row[10],
+        independent_dates=row[11],
+        calendar_span_days=row[12],
+        forward_n=row[13],
+        forward_effective_n=row[14],
+        forward_span_days=row[15],
+        event_count=row[16],
+        independent_event_count=row[17],
+        pit_quality=row[18],
+        availability_precision=AvailabilityPrecision(row[19]),
+        completeness=row[20],
+        freshness_days=row[21],
+        regime_coverage=RegimeCoverage(row[22]),
+        blocking_reasons=tuple(json.loads(row[23])),
+        policy_version=row[24],
+        git_commit=row[25],
+        config_hash=row[26],
+        schema_version=row[27],
+    )
+
+
+_TRIGGER_COLUMNS: tuple[str, ...] = (
+    "dedup_key",
+    "source",
+    "series_id",
+    "trigger_type",
+    "emitted_at",
+    "from_state",
+    "to_state",
+    "policy_version",
+    "effective_n",
+    "calendar_span_days",
+    "handed_off_at",
+    "hypothesis_id",
+    "note",
+    "schema_version",
+)
+
+
+def _trigger_row(t: ResearchTrigger) -> tuple[Any, ...]:
+    return (
+        t.dedup_key,
+        t.source,
+        t.series_id,
+        str(t.trigger_type),
+        t.emitted_at,
+        None if t.from_state is None else str(t.from_state),
+        str(t.to_state),
+        t.policy_version,
+        t.effective_n,
+        t.calendar_span_days,
+        t.handed_off_at,
+        t.hypothesis_id,
+        t.note,
+        t.schema_version,
+    )
+
+
+def _row_to_trigger(row: tuple[Any, ...]) -> ResearchTrigger:
+    return ResearchTrigger(
+        source=row[1],
+        series_id=row[2],
+        trigger_type=TriggerType(row[3]),
+        emitted_at=row[4],
+        from_state=None if row[5] is None else ReadinessState(row[5]),
+        to_state=ReadinessState(row[6]),
+        policy_version=row[7],
+        effective_n=row[8],
+        calendar_span_days=row[9],
+        handed_off_at=row[10],
+        hypothesis_id=row[11],
+        note=row[12],
+        schema_version=row[13],
     )

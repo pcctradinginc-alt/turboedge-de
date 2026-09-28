@@ -338,11 +338,14 @@ the verification: a wrong identifier returns a payload without the column, the
 adapter reports `missing_series`, and readiness shows `BLOCKED` with the
 reason. A test enforces both invariants.
 
-**e-Stat is the one deliberate exception.** The Nikkei is disabled in
-`configs/universe.yaml`, so Japanese macro reaches none of the four traded
-underlyings directly, and no `statsDataId` has been confirmed against the
-official catalogue. Adding the credential would buy an adapter that fetches
-nothing in particular.
+**e-Stat needed one extra guard.** An e-Stat table is not a series:
+`0003427113` carries every CPI item for every region for every month, and the
+adapter turns each dimension combination into its own `series_id`. An
+unfiltered fetch would write an uncontrolled number of series from a single
+request, so `native_identifier` now takes a `cd*` filter segment and a test
+asserts every configured e-Stat series uses one. The codes
+(`cdArea=00000`, `cdCat01=0001/0161/0178`) come from e-Stat's own official
+code list, `2020DBcode.xlsx`, linked from the API's base-revision notice.
 
 ### FRED is the only PIT-safe history
 

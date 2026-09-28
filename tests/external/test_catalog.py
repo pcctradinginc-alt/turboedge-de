@@ -170,7 +170,7 @@ def test_every_blocked_wave_two_source_says_why_and_the_reasons_stay_distinct() 
     # Collapsing them would hide which ones a key would fix.
     cfg = load_external_data_config(_REPO_CONFIG)
 
-    credential_blocked = {"agsi", "alsi", "entsoe"}
+    credential_blocked = {"entsoe"}
     licence_blocked = {"portwatch", "kiel_trade"}
 
     for source_id in credential_blocked:
@@ -187,6 +187,24 @@ def test_every_blocked_wave_two_source_says_why_and_the_reasons_stay_distinct() 
         # These need no key at all -- only a human to read the terms.
         assert not manifest.requires_auth, source_id
         assert manifest.status_note.strip(), source_id
+
+
+def test_estat_series_are_all_narrowed_by_a_filter() -> None:
+    # An e-Stat table is not a series. 0003427113 carries every CPI item for
+    # every region for every month, and the adapter turns each dimension
+    # combination into its own series_id -- so an unfiltered identifier
+    # would write an uncontrolled number of series from a single request.
+    from turboedge.adapters.estat import parse_native_identifier
+
+    cfg = load_external_data_config(_REPO_CONFIG)
+    series = cfg.series_for("estat")
+    assert series
+
+    for spec in series:
+        _stats_data_id, filters = parse_native_identifier(spec.native_identifier)
+        assert filters, f"{spec.qualified_id} fetches a whole e-Stat table unfiltered"
+        assert "cdArea" in filters, spec.qualified_id
+        assert "cdCat01" in filters, spec.qualified_id
 
 
 def test_eia_is_live_on_a_ci_secret_and_says_its_series_are_unconfirmed() -> None:
@@ -254,15 +272,8 @@ def test_every_source_has_series_or_documents_why_not() -> None:
     # state with its key already set. So: series, or a stated reason.
     cfg = load_external_data_config(_REPO_CONFIG)
 
-    #: e-Stat is the one deliberate exception. The Nikkei is disabled in
-    #: configs/universe.yaml, so Japanese macro reaches none of the four
-    #: traded underlyings directly, and no statsDataId has been confirmed
-    #: against the official catalogue. Adding the credential would buy an
-    #: adapter that fetches nothing in particular.
-    documented_empty = {"estat"}
-
     empty = {m.source_id for m in cfg.sources.values() if not cfg.series_for(m.source_id)}
-    assert empty == documented_empty
+    assert empty == set()
 
 
 def test_unverified_series_say_so_in_their_notes() -> None:
@@ -270,7 +281,7 @@ def test_unverified_series_say_so_in_their_notes() -> None:
     # must announce it, so that a wrong facet is read as an open question
     # and not as a broken feed.
     cfg = load_external_data_config(_REPO_CONFIG)
-    unverifiable = {"fred", "agsi", "alsi", "eia", "entsoe"}
+    unverifiable = {"fred", "agsi", "alsi", "eia", "entsoe", "estat"}
 
     for spec in cfg.series:
         if spec.source in unverifiable:

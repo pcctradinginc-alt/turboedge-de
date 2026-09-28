@@ -114,6 +114,7 @@ _PARSE_ERROR_TYPES = (ValueError, KeyError, TypeError, IndexError)
 __all__ = [
     "EstatAdapter",
     "EstatCredentialError",
+    "parse_native_identifier",
     "parse_stats_data",
 ]
 
@@ -389,6 +390,43 @@ def parse_stats_data(
     return ParseResult(observations=observations, warnings=tuple(warnings), missing_series=())
 
 
+def parse_native_identifier(raw: str) -> tuple[str, dict[str, str]]:
+    """`"<statsDataId>"` or `"<statsDataId>|<cdKey=value,cdKey=value>"`.
+
+    The filter segment exists because an e-Stat table is not a series. The
+    2020-base CPI table (`0003427113`) carries every item, every region and
+    every month at once, and this adapter turns each distinct dimension
+    combination into its own `series_id`. Fetching it unfiltered would write
+    an uncontrolled number of series from a single request -- so the catalog
+    narrows it, and an entry that does not narrow it says so deliberately.
+
+    Only `cd*` parameters are accepted. Anything else is either a paging
+    control this adapter owns, or the credential, and neither belongs in a
+    configured identifier.
+    """
+    head, _, tail = raw.partition("|")
+    stats_data_id = head.strip()
+    if not stats_data_id:
+        raise AdapterError(f"estat: native_identifier {raw!r} has no statsDataId")
+    filters: dict[str, str] = {}
+    for chunk in tail.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        key, sep, value = chunk.partition("=")
+        key, value = key.strip(), value.strip()
+        if not sep or not key or not value:
+            raise AdapterError(f"estat: filter {chunk!r} in {raw!r} is not 'cdKey=value'")
+        if not key.startswith("cd"):
+            raise AdapterError(
+                f"estat: only 'cd*' filters may be configured, not {key!r}; "
+                "paging is this adapter's own concern and the credential is never "
+                "part of an identifier"
+            )
+        filters[key] = value
+    return stats_data_id, filters
+
+
 class EstatAdapter:
     """Fetches one e-Stat `statsDataId` table's full data.
 
@@ -411,7 +449,8 @@ class EstatAdapter:
         return _PARSER_VERSION
 
     def fetch(self, spec: SeriesSpec, *, since: date | None = None) -> FetchedPayload:
-        """Retrieve one e-Stat table's full data.
+        """Retrieve one e-Stat table, narrowed by whatever filters the
+        `native_identifier` declares.
 
         `since` is accepted for protocol compliance but not translated into
         a `cdTimeFrom` filter: e-Stat's `@time` codes are table-specific
@@ -424,7 +463,8 @@ class EstatAdapter:
         return less than since onwards" contract still holds.
         """
         app_id = _require_app_id()
-        public_params: dict[str, str] = {"statsDataId": spec.native_identifier}
+        stats_data_id, filters = parse_native_identifier(spec.native_identifier)
+        public_params: dict[str, str] = {"statsDataId": stats_data_id, **filters}
         request_params = {**public_params, "appId": app_id}
 
         retrieved_at = datetime.now(UTC)

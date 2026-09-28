@@ -116,14 +116,14 @@ signal beat null this month" is a valid, expected output);
 | | Deutsche Bundesbank — euro reference rate (`Accept: text/csv` only; SDMX-JSON returns HTTP 406) | Working; live |
 | | EU Business & Consumer Surveys via Eurostat (ESI, consumer confidence) | Working; live |
 | | Destatis daily truck-toll mileage index | Working; live, `FORWARD_ONLY` — its history is not point-in-time evidence |
-| | FRED / ALFRED — the only source with real vintages | Needs `FRED_API_KEY`; reports `AUTH_MISSING` until set |
-| | e-Stat (Japan) | Needs `ESTAT_APP_ID`; reports `AUTH_MISSING` until set |
+| | FRED / ALFRED — 11 series; the only source with real vintages | **Live in CI**; key set as a secret |
+| | e-Stat (Japan) — CPI all-items, core, core-core | **Live in CI**; key set as a secret |
 | Wave 2 (energy/logistics) | Energy-Charts (Fraunhofer ISE) — Netzlast, Day-ahead-Prognose, Residuallast, DE-LU-Spotpreis | **Live**; no key, CC BY 4.0 declared in the payload |
 | | IMF PortWatch — 28 chokepoints, daily vessel transits | Verified live, no key needed; `REVIEW_REQUIRED` until reuse terms are read |
 | | Kiel Trade Indicator — Red Sea and Cape of Good Hope ship counts | Verified live; only 2 of 13 published CSVs still maintained |
-| | GIE AGSI / ALSI — European gas storage and LNG | Needs `GIE_API_KEY` (one key, both datasets) |
+| | GIE AGSI / ALSI — German gas storage, fill level, withdrawal, LNG | **Live in CI**; one key covers both |
 | | U.S. EIA Open Data v2 — WTI/Brent spot, US crude stocks | Key set as CI secret; runs in CI, series unconfirmed until the first run |
-| | ENTSO-E Transparency Platform | Needs `ENTSOE_SECURITY_TOKEN` |
+| | ENTSO-E — actual load, day-ahead forecast (DE-LU) | Needs `ENTSOE_SECURITY_TOKEN`; email request, 3 working days |
 | Manual | CSV import from `state/imports/products/` | Working |
 | Not implemented | Börse Stuttgart, Börse Frankfurt | Blocked (Cloudflare bot management / salted-hash JS headers); neither bypassed; `enabled: false` docs-only entries in `configs/sources.yaml` |
 

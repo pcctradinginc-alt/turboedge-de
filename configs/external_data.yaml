@@ -151,17 +151,16 @@ sources:
     supports_exact_release_time: false
     point_in_time_quality: EXACT_DATE
     backfill_class: HISTORICAL_PIT_SAFE
-    enabled: false
+    enabled: true
     criticality: IMPORTANT
-    status: AUTH_MISSING
+    status: PASS
     status_note: >-
-      FRED_API_KEY is not set. Obtain a free key at
-      https://fredaccount.stlouisfed.org/apikeys and add it as a GitHub
-      secret; the adapter never reads a key from a file and never persists
-      one. Eleven series are configured and waiting: the moment the key
-      exists this becomes the only source whose history can carry a
-      confirmatory test, because ALFRED records what was actually knowable
-      on each historical day instead of assuming it.
+      FRED_API_KEY set as a repository secret 2026-09-28, so this runs in
+      CI. Not present in the authoring environment, so the eleven series
+      could not be confirmed live -- the first CI run is the verification.
+      This is the only source whose history can carry a confirmatory test:
+      ALFRED records what was actually knowable on each historical day
+      instead of assuming it.
 
   # --------------------------------------------------------------------
   # EU Business & Consumer Surveys, disseminated through the Eurostat API.
@@ -253,12 +252,15 @@ sources:
     supports_exact_release_time: false
     point_in_time_quality: CONSERVATIVE_DATE
     backfill_class: HISTORICAL_CONSERVATIVE
-    enabled: false
+    enabled: true
     criticality: EXPERIMENTAL
-    status: AUTH_MISSING
+    status: PASS
     status_note: >-
-      ESTAT_APP_ID is not set. The user holds a key; it must be added as a
-      GitHub secret by the user. Claude never handles the credential.
+      ESTAT_APP_ID set as a repository secret 2026-09-28; activated on the
+      user's instruction. Three CPI series configured, all of them narrowed
+      by cd* filters taken from e-Stat's own official code list -- an
+      e-Stat table is not a series, and an unfiltered fetch of 0003427113
+      would write an uncontrolled number of them from one request.
 
   # ====================================================================
   # WAVE 2. Registered 2026-09-28. Every endpoint below was probed live
@@ -403,13 +405,14 @@ sources:
     supports_exact_release_time: false
     point_in_time_quality: CONSERVATIVE_DATE
     backfill_class: HISTORICAL_CONSERVATIVE
-    enabled: false
+    enabled: true
     criticality: EXPERIMENTAL
-    status: AUTH_MISSING
+    status: PASS
     status_note: >-
-      GIE_API_KEY is not set. Free registration at https://agsi.gie.eu/.
-      One key covers AGSI and ALSI. The key travels in the x-key header and
-      is never persisted.
+      GIE_API_KEY set as a repository secret 2026-09-28; one key covers
+      AGSI and ALSI. Runs in CI only -- not present in the authoring
+      environment, so the three series are unconfirmed until the first run.
+      The key travels in the x-key header and is never persisted.
 
   alsi:
     source_id: alsi
@@ -429,10 +432,12 @@ sources:
     supports_exact_release_time: false
     point_in_time_quality: CONSERVATIVE_DATE
     backfill_class: HISTORICAL_CONSERVATIVE
-    enabled: false
+    enabled: true
     criticality: EXPERIMENTAL
-    status: AUTH_MISSING
-    status_note: "Shares GIE_API_KEY with AGSI. Not set."
+    status: PASS
+    status_note: >-
+      Shares GIE_API_KEY with AGSI, set 2026-09-28. Runs in CI; the two
+      series are unconfirmed until the first authenticated run.
 
   # U.S. EIA Open Data v2. Verified live 2026-09-28 without a key:
   # HTTP 403 with {"error":{"code":"API_KEY_MISSING", ...}} -- an honest,
@@ -800,6 +805,70 @@ series:
       Verified live 2026-09-28: 96 points, EUR/MWh, 2026-09-27 00:00 =
       192.07. The price is where the physical grid state becomes a cost to
       German industry.
+
+  # ==== e-Stat (Japan) ================================================
+  # Activated on the user's instruction. I had advised against it -- the
+  # Nikkei is disabled in configs/universe.yaml, so the channel to the four
+  # traded underlyings runs only through BoJ policy and the yen carry --
+  # and the user decided otherwise. Recorded here rather than argued again.
+  #
+  # Every identifier below comes from e-Stat's OWN official code list
+  # (2020DBcode.xlsx, linked from the API's CPI base-revision notice), not
+  # from a guess:
+  #   statsDataId 0003427113  2020-base Consumer Price Index
+  #   cdArea=00000            全国 (all Japan)
+  #   cdCat01=0001            総合 (all items)
+  #   cdCat01=0161            生鮮食品を除く総合 (ex fresh food -- the BoJ's
+  #                           own target measure)
+  #   cdCat01=0178            生鮮食品及びエネルギーを除く総合 (core-core)
+  #
+  # The filters are not optional here. An e-Stat table is not a series:
+  # 0003427113 carries every item for every region for every month, and the
+  # adapter turns each dimension combination into its own series_id. An
+  # unfiltered fetch would write an uncontrolled number of series from one
+  # request, which is why `parse_native_identifier` now takes a cd* filter
+  # segment.
+  - source: estat
+    series_id: ESTAT.JP_CPI_ALL
+    name: "Japan consumer price index, all items, nationwide"
+    category: inflation
+    unit: index_2020_100
+    frequency: monthly
+    native_identifier: "0003427113|cdArea=00000,cdCat01=0001"
+    availability_precision: CONSERVATIVE_DATE
+    backfill_class: HISTORICAL_CONSERVATIVE
+    conservative_release_lag_hours: 504
+    notes: >-
+      Codes verified against e-Stat's own 2020DBcode.xlsx, but the series
+      itself is NOT verified live -- no ESTAT_APP_ID in the authoring
+      environment. Released about three weeks after month end.
+
+  - source: estat
+    series_id: ESTAT.JP_CPI_CORE
+    name: "Japan core consumer price index, excluding fresh food"
+    category: inflation
+    unit: index_2020_100
+    frequency: monthly
+    native_identifier: "0003427113|cdArea=00000,cdCat01=0161"
+    availability_precision: CONSERVATIVE_DATE
+    backfill_class: HISTORICAL_CONSERVATIVE
+    conservative_release_lag_hours: 504
+    notes: >-
+      Codes verified against 2020DBcode.xlsx; NOT verified live. This is the
+      measure the Bank of Japan is judged on, so it is the one with an
+      actual channel to the yen and therefore to global carry.
+
+  - source: estat
+    series_id: ESTAT.JP_CPI_CORE_CORE
+    name: "Japan core-core CPI, excluding fresh food and energy"
+    category: inflation
+    unit: index_2020_100
+    frequency: monthly
+    native_identifier: "0003427113|cdArea=00000,cdCat01=0178"
+    availability_precision: CONSERVATIVE_DATE
+    backfill_class: HISTORICAL_CONSERVATIVE
+    conservative_release_lag_hours: 504
+    notes: "Codes verified against 2020DBcode.xlsx; NOT verified live."
 
   # ==== FRED / ALFRED =================================================
   # The only source in this repository with real vintages. ALFRED's

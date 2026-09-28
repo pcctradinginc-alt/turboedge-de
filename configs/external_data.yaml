@@ -256,6 +256,239 @@ sources:
       ESTAT_APP_ID is not set. The user holds a key; it must be added as a
       GitHub secret by the user. Claude never handles the credential.
 
+  # ====================================================================
+  # WAVE 2. Registered 2026-09-28. Every endpoint below was probed live
+  # before it was written down; what could not be established is recorded
+  # as unresolved rather than assumed.
+  #
+  # NONE of these is enabled yet, for two distinct reasons that must not
+  # be conflated:
+  #   * agsi / alsi / eia / entsoe -- no credential present (AUTH_MISSING).
+  #   * portwatch / kiel_trade -- endpoints work without a key, but their
+  #     reuse terms could not be read (REVIEW_REQUIRED). Spec §8: do not
+  #     guess licensing.
+  # ====================================================================
+
+  # IMF PortWatch. Works with no credential -- verified live 2026-09-28,
+  # 28 chokepoints, daily, current to 2026-09-20 (Suez Canal n_cargo=23).
+  # The ArcGIS item's own metadata declares its licence reference as
+  # https://www.imf.org/external/terms.htm, and that page answers HTTP 403
+  # to a non-browser user agent (Akamai). Not bypassed. A human can read
+  # it in a browser in under a minute; until then this stays disabled.
+  portwatch:
+    source_id: portwatch
+    display_name: "IMF PortWatch"
+    official_source: "International Monetary Fund"
+    homepage: "https://portwatch.imf.org/"
+    machine_endpoint: "https://services9.arcgis.com/weJ1QsnbMYJlCHdG/arcgis/rest/services"
+    access_method: "ArcGIS FeatureServer REST / JSON"
+    requires_auth: false
+    license_or_terms_reference: "https://www.imf.org/external/terms.htm"
+    commercial_use_status: "REVIEW_REQUIRED"
+    frequency: "daily"
+    expected_update_cadence: "daily, roughly one week behind"
+    supports_historical_data: true
+    supports_vintages: false
+    supports_exact_release_time: false
+    point_in_time_quality: UNKNOWN
+    backfill_class: FORWARD_ONLY
+    enabled: false
+    criticality: EXPERIMENTAL
+    status: REVIEW_REQUIRED
+    status_note: >-
+      Endpoint and data verified live 2026-09-28, no credential needed.
+      Blocked only on reuse terms: the publisher's declared licence page
+      refuses non-browser agents and was not circumvented. portwatch.imf.org
+      declares Crawl-delay: 60, which the adapter honours even though the
+      data is served from Esri infrastructure.
+
+  # Kiel Trade Indicator. Works with no credential -- verified live
+  # 2026-09-28. Only two of the thirteen published CSVs are still being
+  # maintained; the rest are frozen at January 2025 and two 404. No licence
+  # statement exists on the indicator's own page or the download gallery.
+  kiel_trade:
+    source_id: kiel_trade
+    display_name: "Kiel Trade Indicator"
+    official_source: "Kiel Institute for the World Economy (IfW Kiel)"
+    homepage: "https://www.kielinstitut.de/topics/international-trade/kiel-trade-indicator/"
+    machine_endpoint: "https://trade.kielinstitut.de/KTI"
+    access_method: "HTTPS CSV download"
+    requires_auth: false
+    license_or_terms_reference: "https://www.kielinstitut.de/en/legal-notice/"
+    commercial_use_status: "REVIEW_REQUIRED"
+    frequency: "daily"
+    expected_update_cadence: "daily for the maintained series; monthly around the 5th for the indicator itself"
+    supports_historical_data: true
+    supports_vintages: false
+    supports_exact_release_time: false
+    point_in_time_quality: UNKNOWN
+    backfill_class: FORWARD_ONLY
+    enabled: false
+    criticality: EXPERIMENTAL
+    status: REVIEW_REQUIRED
+    status_note: >-
+      Files verified live 2026-09-28. Neither the indicator page nor the
+      download gallery states any licence, so terms are unresolved. Note
+      that most published CSVs are stale: only the Red Sea and Cape of Good
+      Hope ship counts were current (2026-09-25 / 2026-09-24); eight others
+      stop in January 2025 and two return HTTP 404.
+
+  # Energy-Charts (Fraunhofer ISE). The only Wave 2 source that can go live
+  # immediately: no credential, and the licence travels in every response
+  # body ("CC BY 4.0 ... from Bundesnetzagentur | SMARD.de"), so there is
+  # nothing left at REVIEW_REQUIRED. Verified live 2026-09-28.
+  #
+  # A SECONDARY source: Fraunhofer re-serves ENTSO-E and Bundesnetzagentur
+  # data. One more hop that can break, and undocumented revision behaviour,
+  # hence HISTORICAL_CONSERVATIVE rather than PIT-safe. When the ENTSO-E
+  # token arrives, running both gives a cross-source check on the same
+  # published quantity -- the same reason BBK.EURUSD_REF duplicates
+  # ECB.EURUSD.
+  #
+  # Note: the response carries `generated_at`, which is NOT a publication
+  # timestamp. Measured 2026-09-28: identical across two calls two seconds
+  # apart (server cache), then equal to the new request time two minutes
+  # later. It is response-generation time, so availability stays
+  # CONSERVATIVE_DATE.
+  energy_charts:
+    source_id: energy_charts
+    display_name: "Energy-Charts (Fraunhofer ISE)"
+    official_source: "Fraunhofer Institute for Solar Energy Systems ISE"
+    homepage: "https://energy-charts.info/"
+    machine_endpoint: "https://api.energy-charts.info"
+    access_method: "REST / JSON v2, no credential"
+    requires_auth: false
+    license_or_terms_reference: "https://creativecommons.org/licenses/by/4.0/"
+    commercial_use_status: "PERMITTED_WITH_ATTRIBUTION"
+    frequency: "daily"
+    expected_update_cadence: "intraday, PT15M resolution"
+    supports_historical_data: true
+    supports_vintages: false
+    supports_exact_release_time: false
+    point_in_time_quality: CONSERVATIVE_DATE
+    backfill_class: HISTORICAL_CONSERVATIVE
+    enabled: true
+    criticality: EXPERIMENTAL
+    status: PASS
+    status_note: >-
+      Verified live 2026-09-28. Licence declared in every response body as
+      CC BY 4.0 with attribution to energy-charts.info / Bundesnetzagentur /
+      SMARD.de; the adapter re-checks it on every parse and warns if it
+      changes. Attribution: "Data: Energy-Charts (Fraunhofer ISE), CC BY 4.0".
+
+  # Gas Infrastructure Europe. One key (GIE_API_KEY) covers both datasets.
+  # CRITICAL, verified live 2026-09-28: both answer HTTP 200 for a missing
+  # key and report the failure only in the body ("Invalid or missing API
+  # key"), so a status-code-only check would read an auth failure as a
+  # legitimately empty day.
+  agsi:
+    source_id: agsi
+    display_name: "GIE AGSI (European gas storage)"
+    official_source: "Gas Infrastructure Europe"
+    homepage: "https://agsi.gie.eu/"
+    machine_endpoint: "https://agsi.gie.eu/api"
+    access_method: "REST / JSON, x-key header"
+    requires_auth: true
+    auth_environment_variable: "GIE_API_KEY"
+    license_or_terms_reference: "https://www.gie.eu/transparency-platform/GIE_API_documentation/"
+    commercial_use_status: "REVIEW_REQUIRED"
+    frequency: "daily"
+    expected_update_cadence: "daily, gas-day based"
+    supports_historical_data: true
+    supports_vintages: false
+    supports_exact_release_time: false
+    point_in_time_quality: CONSERVATIVE_DATE
+    backfill_class: HISTORICAL_CONSERVATIVE
+    enabled: false
+    criticality: EXPERIMENTAL
+    status: AUTH_MISSING
+    status_note: >-
+      GIE_API_KEY is not set. Free registration at https://agsi.gie.eu/.
+      One key covers AGSI and ALSI. The key travels in the x-key header and
+      is never persisted.
+
+  alsi:
+    source_id: alsi
+    display_name: "GIE ALSI (European LNG terminals)"
+    official_source: "Gas Infrastructure Europe"
+    homepage: "https://alsi.gie.eu/"
+    machine_endpoint: "https://alsi.gie.eu/api"
+    access_method: "REST / JSON, x-key header"
+    requires_auth: true
+    auth_environment_variable: "GIE_API_KEY"
+    license_or_terms_reference: "https://www.gie.eu/transparency-platform/GIE_API_documentation/"
+    commercial_use_status: "REVIEW_REQUIRED"
+    frequency: "daily"
+    expected_update_cadence: "daily, gas-day based"
+    supports_historical_data: true
+    supports_vintages: false
+    supports_exact_release_time: false
+    point_in_time_quality: CONSERVATIVE_DATE
+    backfill_class: HISTORICAL_CONSERVATIVE
+    enabled: false
+    criticality: EXPERIMENTAL
+    status: AUTH_MISSING
+    status_note: "Shares GIE_API_KEY with AGSI. Not set."
+
+  # U.S. EIA Open Data v2. Verified live 2026-09-28 without a key:
+  # HTTP 403 with {"error":{"code":"API_KEY_MISSING", ...}} -- an honest,
+  # unambiguous failure, unlike GIE's.
+  eia:
+    source_id: eia
+    display_name: "U.S. Energy Information Administration Open Data v2"
+    official_source: "U.S. Energy Information Administration"
+    homepage: "https://www.eia.gov/opendata/"
+    machine_endpoint: "https://api.eia.gov/v2"
+    access_method: "REST / JSON, api_key query parameter"
+    requires_auth: true
+    auth_environment_variable: "EIA_API_KEY"
+    license_or_terms_reference: "https://www.eia.gov/about/copyrights_reuse.php"
+    commercial_use_status: "REVIEW_REQUIRED"
+    frequency: "mixed"
+    expected_update_cadence: "weekly to monthly, series dependent"
+    supports_historical_data: true
+    supports_vintages: false
+    supports_exact_release_time: false
+    point_in_time_quality: CONSERVATIVE_DATE
+    backfill_class: HISTORICAL_CONSERVATIVE
+    enabled: false
+    criticality: EXPERIMENTAL
+    status: AUTH_MISSING
+    status_note: >-
+      EIA_API_KEY is not set. Free registration at
+      https://www.eia.gov/opendata/register.php. The key is a query
+      parameter, so it is redacted before anything is archived.
+
+  # ENTSO-E Transparency Platform. Verified live 2026-09-28 without a
+  # token: HTTP 401 with an XML Acknowledgement_MarketDocument.
+  entsoe:
+    source_id: entsoe
+    display_name: "ENTSO-E Transparency Platform"
+    official_source: "European Network of Transmission System Operators for Electricity"
+    homepage: "https://transparency.entsoe.eu/"
+    machine_endpoint: "https://web-api.tp.entsoe.eu/api"
+    access_method: "REST / SDMX-flavoured XML, securityToken"
+    requires_auth: true
+    auth_environment_variable: "ENTSOE_SECURITY_TOKEN"
+    license_or_terms_reference: "https://transparency.entsoe.eu/content/static_content/Static%20content/terms%20and%20conditions/terms%20and%20conditions.html"
+    commercial_use_status: "REVIEW_REQUIRED"
+    frequency: "daily"
+    expected_update_cadence: "intraday to daily, document-type dependent"
+    supports_historical_data: true
+    supports_vintages: false
+    supports_exact_release_time: true
+    point_in_time_quality: CONSERVATIVE_DATE
+    backfill_class: HISTORICAL_CONSERVATIVE
+    enabled: false
+    criticality: EXPERIMENTAL
+    status: AUTH_MISSING
+    status_note: >-
+      ENTSOE_SECURITY_TOKEN is not set. Free: register at
+      transparency.entsoe.eu and request API access from the helpdesk.
+      Note that ENTSO-E also returns an Acknowledgement document with HTTP
+      200 for a no-data query, so the adapter checks the root element, not
+      just the status code.
+
 series:
   # ==== ECB, all six verified live 2026-09-28 =========================
   # A 36-hour conservative lag: these are published on the following
@@ -489,6 +722,189 @@ series:
       geo=EA21, verified live 2026-09-28. Bare geo=EA returns an empty
       dimension; the aggregate is renumbered at each accession and this code
       must be re-verified rather than assumed to keep working.
+
+  # ==== Energy-Charts, verified live 2026-09-28 =======================
+  # Four series, deliberately not twenty-one. The pairing is the point:
+  # actual load against its own day-ahead forecast is a surprise measure,
+  # and surprises move markets where levels do not. Residual load (demand
+  # minus wind and solar) is the scarcity measure that drives the price.
+  #
+  # Raw resolution is PT15M -- 96 observations a day, all stored. But 96
+  # quarter-hours of one day are not 96 independent observations, so the
+  # declared frequency is daily and the effective sample counts days
+  # (spec §36).
+  #
+  # A 36-hour conservative lag: the grid data settle within a day and the
+  # publisher exposes no release time.
+  - source: energy_charts
+    series_id: EC.LOAD_DE
+    name: "German public electricity load, actual"
+    category: energy
+    unit: mw
+    frequency: daily
+    native_identifier: "v2/public_power|country=de|load"
+    availability_precision: CONSERVATIVE_DATE
+    backfill_class: HISTORICAL_CONSERVATIVE
+    conservative_release_lag_hours: 36
+    notes: >-
+      Verified live 2026-09-28: 96 points/day at PT15M. A direct physical
+      measurement of German industrial activity, available the same day --
+      against 89 days of lag on the Bundesbank's industrial production.
+
+  - source: energy_charts
+    series_id: EC.LOAD_FORECAST_DE
+    name: "German electricity load, day-ahead forecast"
+    category: energy
+    unit: mw
+    frequency: daily
+    native_identifier: "v2/public_power_forecast|country=de,forecast_type=day-ahead,production_type=load|load"
+    availability_precision: CONSERVATIVE_DATE
+    backfill_class: FORWARD_ONLY
+    conservative_release_lag_hours: 36
+    forecast_series: true
+    notes: >-
+      Verified live 2026-09-28: 192 points covering today and tomorrow. The
+      counterpart to EC.LOAD_DE. Their difference is the grid operators'
+      forecast error -- an unplanned deviation, not a level.
+
+  - source: energy_charts
+    series_id: EC.RESIDUAL_LOAD_DE
+    name: "German residual load (demand less wind and solar)"
+    category: energy
+    unit: mw
+    frequency: daily
+    native_identifier: "v2/public_power|country=de|residual_load"
+    availability_precision: CONSERVATIVE_DATE
+    backfill_class: HISTORICAL_CONSERVATIVE
+    conservative_release_lag_hours: 36
+    notes: "Series id verified live 2026-09-28 in the endpoint's own series list."
+
+  - source: energy_charts
+    series_id: EC.PRICE_DE_LU
+    name: "Day-ahead spot electricity price, DE-LU bidding zone"
+    category: energy
+    unit: eur_per_mwh
+    frequency: daily
+    native_identifier: "v2/price|bzn=DE-LU|day_ahead_price"
+    availability_precision: CONSERVATIVE_DATE
+    backfill_class: HISTORICAL_CONSERVATIVE
+    conservative_release_lag_hours: 36
+    notes: >-
+      Verified live 2026-09-28: 96 points, EUR/MWh, 2026-09-27 00:00 =
+      192.07. The price is where the physical grid state becomes a cost to
+      German industry.
+
+  # ==== IMF PortWatch, verified live 2026-09-28 =======================
+  # Four chokepoints chosen for their bearing on European energy and goods
+  # flows, plus the world aggregate. Not all 28: each configured series is
+  # a hypothesis-in-waiting, and 28 of them would be a fishing expedition
+  # whose multiple-testing denominator nobody could state (spec §9).
+  #
+  # FORWARD_ONLY and UNKNOWN precision: the daily file is revised as AIS
+  # data settle, the publisher records no release timestamp, and the
+  # series ran about a week behind on the day it was checked. Only
+  # snapshots TurboEdge takes itself are point-in-time evidence.
+  - source: portwatch
+    series_id: PW.SUEZ_CARGO
+    name: "Suez Canal, daily cargo vessel transits"
+    category: trade_logistics
+    unit: vessels_per_day
+    frequency: daily
+    native_identifier: "Daily_Chokepoints_Data|n_cargo|portname=Suez Canal"
+    availability_precision: UNKNOWN
+    backfill_class: FORWARD_ONLY
+    notes: "Verified live 2026-09-28: 2026-09-20 = 23 cargo transits."
+
+  - source: portwatch
+    series_id: PW.SUEZ_TANKER
+    name: "Suez Canal, daily tanker transits"
+    category: trade_logistics
+    unit: vessels_per_day
+    frequency: daily
+    native_identifier: "Daily_Chokepoints_Data|n_tanker|portname=Suez Canal"
+    availability_precision: UNKNOWN
+    backfill_class: FORWARD_ONLY
+    notes: "Verified live 2026-09-28: 2026-09-20 = 19 tanker transits."
+
+  - source: portwatch
+    series_id: PW.BAB_EL_MANDEB_CARGO
+    name: "Bab el-Mandeb Strait, daily cargo vessel transits"
+    category: trade_logistics
+    unit: vessels_per_day
+    frequency: daily
+    native_identifier: "Daily_Chokepoints_Data|n_cargo|portname=Bab el-Mandeb Strait"
+    availability_precision: UNKNOWN
+    backfill_class: FORWARD_ONLY
+    notes: >-
+      Chokepoint name verified live 2026-09-28 against the layer's own
+      distinct values. Paired with Suez on purpose: divergence between the
+      two is the observable signature of Red Sea rerouting.
+
+  - source: portwatch
+    series_id: PW.HORMUZ_TANKER
+    name: "Strait of Hormuz, daily tanker transits"
+    category: trade_logistics
+    unit: vessels_per_day
+    frequency: daily
+    native_identifier: "Daily_Chokepoints_Data|n_tanker|portname=Strait of Hormuz"
+    availability_precision: UNKNOWN
+    backfill_class: FORWARD_ONLY
+    notes: "Chokepoint name verified live 2026-09-28."
+
+  - source: portwatch
+    series_id: PW.PANAMA_CARGO
+    name: "Panama Canal, daily cargo vessel transits"
+    category: trade_logistics
+    unit: vessels_per_day
+    frequency: daily
+    native_identifier: "Daily_Chokepoints_Data|n_cargo|portname=Panama Canal"
+    availability_precision: UNKNOWN
+    backfill_class: FORWARD_ONLY
+    notes: "Chokepoint name verified live 2026-09-28."
+
+  - source: portwatch
+    series_id: PW.WORLD_PORTCALLS
+    name: "World total daily port calls"
+    category: trade_logistics
+    unit: portcalls_per_day
+    frequency: daily
+    native_identifier: "Daily_Trade_Data_WLD|portcalls|"
+    availability_precision: UNKNOWN
+    backfill_class: FORWARD_ONLY
+    notes: >-
+      Field list verified live 2026-09-28. The aggregate is the control for
+      the chokepoint series: a drop at one strait means something different
+      when world traffic is flat than when it is falling everywhere.
+
+  # ==== Kiel Trade Indicator, verified live 2026-09-28 ================
+  # ONLY the two files still being maintained. Eight others stop in
+  # January 2025 and two return HTTP 404; configuring those would fill the
+  # readiness report with DEGRADED rows that say nothing about the data
+  # and everything about the publisher.
+  - source: kiel_trade
+    series_id: KIEL.SHIPS_RED_SEA
+    name: "Ships in the Red Sea, daily count"
+    category: trade_logistics
+    unit: vessels
+    frequency: daily
+    native_identifier: "plot_ships_red_sea|n|"
+    availability_precision: UNKNOWN
+    backfill_class: FORWARD_ONLY
+    notes: "Verified live 2026-09-28: last value 2026-09-25 = 46."
+
+  - source: kiel_trade
+    series_id: KIEL.SHIPS_CAPE_GOOD_HOPE
+    name: "Ships at the Cape of Good Hope, daily count"
+    category: trade_logistics
+    unit: vessels
+    frequency: daily
+    native_identifier: "plot_ships_cape_good_hope|n|"
+    availability_precision: UNKNOWN
+    backfill_class: FORWARD_ONLY
+    notes: >-
+      Verified live 2026-09-28: last value 2026-09-24 = 29. The natural
+      counterpart to the Red Sea count -- traffic that avoids Suez appears
+      here.
 
   # ==== Destatis, file verified live 2026-09-28 =======================
   - source: destatis_truck

@@ -151,7 +151,19 @@ def build_evidence(
     pit_integrity = True
     precisions: set[str] = set()
     for obs in deduped:
-        if obs.available_at < obs.observation_time:
+        # For ordinary data, holding a value before the period it describes
+        # is look-ahead and the ordering is an invariant worth enforcing.
+        #
+        # A forecast has no such invariant in either direction. It is
+        # published before its target period, so available_at precedes
+        # observation_time by design; and one issue covers periods that
+        # have already elapsed as well (the day-ahead load forecast fetched
+        # this afternoon still carries this morning's intervals), so
+        # available_at follows observation_time for those. Neither is a
+        # defect. What protects a forecast study from look-ahead is the
+        # read-time filter `available_at <= prediction_time`, which is
+        # correct in both directions and needs no help here.
+        if not spec.forecast_series and obs.available_at < obs.observation_time:
             pit_integrity = False
             warnings.append(
                 f"{obs.series_id}: available_at {obs.available_at.isoformat()} precedes "

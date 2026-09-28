@@ -118,6 +118,12 @@ signal beat null this month" is a valid, expected output);
 | | Destatis daily truck-toll mileage index | Working; live, `FORWARD_ONLY` — its history is not point-in-time evidence |
 | | FRED / ALFRED — the only source with real vintages | Needs `FRED_API_KEY`; reports `AUTH_MISSING` until set |
 | | e-Stat (Japan) | Needs `ESTAT_APP_ID`; reports `AUTH_MISSING` until set |
+| Wave 2 (energy/logistics) | Energy-Charts (Fraunhofer ISE) — Netzlast, Day-ahead-Prognose, Residuallast, DE-LU-Spotpreis | **Live**; no key, CC BY 4.0 declared in the payload |
+| | IMF PortWatch — 28 chokepoints, daily vessel transits | Verified live, no key needed; `REVIEW_REQUIRED` until reuse terms are read |
+| | Kiel Trade Indicator — Red Sea and Cape of Good Hope ship counts | Verified live; only 2 of 13 published CSVs still maintained |
+| | GIE AGSI / ALSI — European gas storage and LNG | Needs `GIE_API_KEY` (one key, both datasets) |
+| | U.S. EIA Open Data v2 | Needs `EIA_API_KEY` |
+| | ENTSO-E Transparency Platform | Needs `ENTSOE_SECURITY_TOKEN` |
 | Manual | CSV import from `state/imports/products/` | Working |
 | Not implemented | Börse Stuttgart, Börse Frankfurt | Blocked (Cloudflare bot management / salted-hash JS headers); neither bypassed; `enabled: false` docs-only entries in `configs/sources.yaml` |
 

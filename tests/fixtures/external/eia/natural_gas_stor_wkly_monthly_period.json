@@ -1,0 +1,30 @@
+{
+  "response": {
+    "total": "2",
+    "dateFormat": "YYYY-MM",
+    "frequency": "monthly",
+    "data": [
+      {
+        "period": "2026-07",
+        "duoarea": "NUS",
+        "value": 3120.5,
+        "value-units": "BCF"
+      },
+      {
+        "period": "2026-08",
+        "duoarea": "NUS",
+        "value": 3350,
+        "value-units": "BCF"
+      }
+    ]
+  },
+  "request": {
+    "command": "/v2/natural-gas/stor/wkly/data/",
+    "params": {
+      "frequency": "monthly",
+      "data[0]": "value",
+      "facets[duoarea][]": "NUS"
+    }
+  },
+  "apiVersion": "2.1.12"
+}

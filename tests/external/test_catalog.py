@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from turboedge.adapters.base import HttpClient
 from turboedge.config import external_data_path
 from turboedge.external.catalog import ExternalDataConfig, load_external_data_config
 from turboedge.external.schemas import (
@@ -161,3 +162,66 @@ def test_policy_merges_overrides_onto_the_defaults() -> None:
 
     assert policy.profile_for("monthly").min_exploratory_observations == 48
     assert policy.profile_for("business_daily").min_exploratory_observations == 180
+
+
+def test_no_wave_two_source_is_enabled_and_each_says_why() -> None:
+    # Two distinct reasons that must not be conflated: a missing credential
+    # is a fact about this machine, an unread licence is a fact about the
+    # publisher. Collapsing them would hide which ones a key would fix.
+    cfg = load_external_data_config(_REPO_CONFIG)
+    wave_two = {"portwatch", "kiel_trade", "agsi", "alsi", "eia", "entsoe"}
+
+    for source_id in wave_two:
+        manifest = cfg.sources[source_id]
+        assert not manifest.enabled, source_id
+        assert manifest.status in NON_INGESTING_STATUSES, source_id
+        assert manifest.status_note.strip(), source_id
+
+    credentialed = {"agsi", "alsi", "eia", "entsoe"}
+    for source_id in credentialed:
+        assert cfg.sources[source_id].status is SourceStatus.AUTH_MISSING
+        assert cfg.sources[source_id].auth_environment_variable
+    for source_id in {"portwatch", "kiel_trade"}:
+        # These need no key at all -- only a human to read the terms.
+        assert cfg.sources[source_id].status is SourceStatus.REVIEW_REQUIRED
+        assert not cfg.sources[source_id].requires_auth
+
+
+def test_agsi_and_alsi_share_one_credential() -> None:
+    cfg = load_external_data_config(_REPO_CONFIG)
+
+    assert (
+        cfg.sources["agsi"].auth_environment_variable
+        == cfg.sources["alsi"].auth_environment_variable
+        == "GIE_API_KEY"
+    )
+
+
+def test_every_configured_series_has_an_adapter_registered() -> None:
+    # A configured series whose source has no entry in the CLI's adapter
+    # table is skipped with "no adapter registered" -- which reads exactly
+    # like "not ready yet" in the readiness report. Wave 1 lost a source to
+    # a mistyped class name this way.
+    from turboedge.cli_external import _ADAPTER_CLASSES
+
+    cfg = load_external_data_config(_REPO_CONFIG)
+    missing = sorted({s.source for s in cfg.series} - set(_ADAPTER_CLASSES))
+
+    assert missing == []
+
+
+def test_every_adapter_in_the_table_can_actually_be_built() -> None:
+    # The table maps source ids to module and class names as strings, so a
+    # renamed class fails only at runtime. This catches it in CI instead.
+    import importlib
+
+    from turboedge.cli_external import _ADAPTER_CLASSES
+    from turboedge.external.adapter import ExternalSeriesAdapter
+
+    for source_id, (module_name, class_name) in _ADAPTER_CLASSES.items():
+        module = importlib.import_module(module_name)
+        factory = getattr(module, class_name, None)
+        assert factory is not None, f"{source_id}: {module_name} has no {class_name}"
+        instance = factory(HttpClient(user_agent="test"))
+        assert isinstance(instance, ExternalSeriesAdapter), source_id
+        assert instance.source_id == source_id

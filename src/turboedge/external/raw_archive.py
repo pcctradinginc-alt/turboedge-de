@@ -22,30 +22,17 @@ from __future__ import annotations
 
 import gzip
 import hashlib
-import re
 from pathlib import Path
 
 from turboedge.external.adapter import FetchedPayload
-from turboedge.external.schemas import RawPayload
+from turboedge.external.schemas import _CREDENTIAL_PARAM_RE, RawPayload
 from turboedge.provenance import git_commit
 
-#: Query parameters whose values are redacted before anything is persisted.
-#: Matched case-insensitively against the parameter name.
-_SECRET_PARAMS: tuple[str, ...] = (
-    "api_key",
-    "apikey",
-    "appid",
-    "app_id",
-    "token",
-    "access_token",
-    "password",
-    "secret",
-    "key",
-)
-
-_SECRET_RE = re.compile(
-    r"(?i)\b(" + "|".join(re.escape(p) for p in _SECRET_PARAMS) + r")=([^&\s]*)"
-)
+#: The redaction pattern is the model's own, imported rather than
+#: redefined: `RawPayload` rejects what this misses, so a second list here
+#: would guarantee the two drift apart -- which is precisely how
+#: `securityToken=` and `x-key=` stayed unredacted until 2026-09-28.
+_SECRET_RE = _CREDENTIAL_PARAM_RE
 
 #: Payloads at or above this size are gzipped on disk. Below it the gzip
 #: header is a meaningful fraction of the file and costs more than it saves.

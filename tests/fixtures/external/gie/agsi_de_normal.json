@@ -1,0 +1,67 @@
+{
+  "last_page": 1,
+  "total": 4,
+  "dataset": "<a href=\"/data-overview/eu\">EU</a> > DE",
+  "gas_day": "2026-09-27",
+  "data": [
+    {
+      "name": "Germany",
+      "code": "DE",
+      "consumption": "995.2753",
+      "consumptionFull": "6.44",
+      "url": "DE",
+      "gasDayStart": "2026-09-24",
+      "gasInStorage": "853.4219",
+      "injection": "238.66",
+      "netWithdrawal": "-238.66",
+      "withdrawal": "0.00",
+      "workingGasVolume": "1022.7059",
+      "injectionCapacity": "9973.17",
+      "withdrawalCapacity": "17599.82",
+      "status": "C",
+      "trend": "0.23",
+      "full": "83.45",
+      "info": []
+    },
+    {
+      "name": "Germany",
+      "code": "DE",
+      "consumption": "994.10",
+      "consumptionFull": "6.41",
+      "url": "DE",
+      "gasDayStart": "2026-09-25",
+      "gasInStorage": "854.1000",
+      "injection": "200.00",
+      "netWithdrawal": "-100.00",
+      "withdrawal": "100.00",
+      "workingGasVolume": "1022.7059",
+      "injectionCapacity": "9973.17",
+      "withdrawalCapacity": "17599.82",
+      "status": "E",
+      "trend": "0.10",
+      "full": "83.51",
+      "info": []
+    },
+    {
+      "name": "Germany",
+      "code": "DE",
+      "url": "DE",
+      "gasDayStart": "2026-09-26",
+      "workingGasVolume": "1022.7059",
+      "status": "N",
+      "info": []
+    },
+    {
+      "name": "Germany",
+      "code": "DE",
+      "url": "DE",
+      "gasDayStart": "2026-09-27",
+      "gasInStorage": null,
+      "workingGasVolume": "1022.7059",
+      "status": "C",
+      "trend": "0.00",
+      "full": "83.60",
+      "info": []
+    }
+  ]
+}

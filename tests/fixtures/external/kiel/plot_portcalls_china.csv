@@ -1,0 +1,161 @@
+timestamp,portname,n
+2024-04-14,Shanghai,267
+2024-04-14,Hong Kong,316
+2024-04-14,Ningbo,108
+2024-04-14,Shenzhen,135
+2024-04-21,Shanghai,272
+2024-04-21,Hong Kong,377
+2024-04-21,Ningbo,121
+2024-04-21,Shenzhen,155
+2024-04-28,Shanghai,249
+2024-04-28,Hong Kong,378
+2024-04-28,Shenzhen,154
+2024-04-28,Ningbo,121
+2024-05-05,Shanghai,260
+2024-05-05,Hong Kong,365
+2024-05-05,Ningbo,115
+2024-05-05,Shenzhen,158
+2024-05-12,Shanghai,268
+2024-05-12,Hong Kong,284
+2024-05-12,Shenzhen,124
+2024-05-12,Ningbo,92
+2024-05-19,Shanghai,241
+2024-05-19,Hong Kong,278
+2024-05-19,Ningbo,88
+2024-05-19,Shenzhen,122
+2024-05-26,Shanghai,257
+2024-05-26,Hong Kong,294
+2024-05-26,Shenzhen,136
+2024-05-26,Ningbo,92
+2024-06-02,Shanghai,229
+2024-06-02,Hong Kong,299
+2024-06-02,Ningbo,92
+2024-06-02,Shenzhen,134
+2024-06-09,Shanghai,271
+2024-06-09,Hong Kong,306
+2024-06-09,Ningbo,86
+2024-06-09,Shenzhen,149
+2024-06-16,Shanghai,232
+2024-06-16,Ningbo,92
+2024-06-16,Hong Kong,272
+2024-06-16,Shenzhen,119
+2024-06-23,Shanghai,227
+2024-06-23,Hong Kong,263
+2024-06-23,Shenzhen,119
+2024-06-23,Ningbo,89
+2024-06-30,Shanghai,257
+2024-06-30,Hong Kong,259
+2024-06-30,Shenzhen,131
+2024-06-30,Ningbo,82
+2024-07-07,Shanghai,259
+2024-07-07,Hong Kong,273
+2024-07-07,Ningbo,86
+2024-07-07,Shenzhen,140
+2024-07-14,Shanghai,274
+2024-07-14,Hong Kong,285
+2024-07-14,Ningbo,98
+2024-07-14,Shenzhen,132
+2024-07-21,Shanghai,231
+2024-07-21,Hong Kong,231
+2024-07-21,Ningbo,69
+2024-07-21,Shenzhen,110
+2024-07-28,Shanghai,253
+2024-07-28,Hong Kong,272
+2024-07-28,Shenzhen,136
+2024-07-28,Ningbo,100
+2024-08-04,Shanghai,265
+2024-08-04,Hong Kong,278
+2024-08-04,Ningbo,97
+2024-08-04,Shenzhen,137
+2024-08-11,Shanghai,250
+2024-08-11,Hong Kong,301
+2024-08-11,Shenzhen,134
+2024-08-11,Ningbo,102
+2024-08-18,Shanghai,267
+2024-08-18,Hong Kong,304
+2024-08-18,Shenzhen,128
+2024-08-18,Ningbo,96
+2024-08-25,Shanghai,241
+2024-08-25,Hong Kong,287
+2024-08-25,Ningbo,88
+2024-08-25,Shenzhen,124
+2024-09-01,Shanghai,257
+2024-09-01,Hong Kong,235
+2024-09-01,Ningbo,76
+2024-09-01,Shenzhen,79
+2024-09-08,Shanghai,229
+2024-09-08,Hong Kong,314
+2024-09-08,Shenzhen,135
+2024-09-08,Ningbo,115
+2024-09-15,Shanghai,187
+2024-09-15,Hong Kong,269
+2024-09-15,Ningbo,89
+2024-09-15,Shenzhen,127
+2024-09-22,Shanghai,249
+2024-09-22,Hong Kong,310
+2024-09-22,Ningbo,94
+2024-09-22,Shenzhen,133
+2024-09-29,Shanghai,238
+2024-09-29,Hong Kong,295
+2024-09-29,Shenzhen,126
+2024-09-29,Ningbo,94
+2024-10-06,Shanghai,249
+2024-10-06,Hong Kong,390
+2024-10-06,Shenzhen,168
+2024-10-06,Ningbo,116
+2024-10-13,Shanghai,242
+2024-10-13,Hong Kong,338
+2024-10-13,Ningbo,107
+2024-10-13,Shenzhen,151
+2024-10-20,Shanghai,243
+2024-10-20,Hong Kong,347
+2024-10-20,Ningbo,100
+2024-10-20,Shenzhen,149
+2024-10-27,Shanghai,200
+2024-10-27,Hong Kong,341
+2024-10-27,Ningbo,100
+2024-10-27,Shenzhen,140
+2024-11-03,Shanghai,241
+2024-11-03,Shenzhen,151
+2024-11-03,Hong Kong,345
+2024-11-03,Ningbo,113
+2024-11-10,Shanghai,250
+2024-11-10,Hong Kong,366
+2024-11-10,Ningbo,115
+2024-11-10,Shenzhen,138
+2024-11-17,Shanghai,245
+2024-11-17,Hong Kong,378
+2024-11-17,Ningbo,113
+2024-11-17,Shenzhen,161
+2024-11-24,Shanghai,239
+2024-11-24,Hong Kong,364
+2024-11-24,Ningbo,113
+2024-11-24,Shenzhen,165
+2024-12-01,Shanghai,246
+2024-12-01,Ningbo,117
+2024-12-01,Hong Kong,354
+2024-12-01,Shenzhen,147
+2024-12-08,Shanghai,262
+2024-12-08,Hong Kong,367
+2024-12-08,Shenzhen,156
+2024-12-08,Ningbo,113
+2024-12-15,Ningbo,122
+2024-12-15,Shanghai,253
+2024-12-15,Hong Kong,342
+2024-12-15,Shenzhen,151
+2024-12-22,Shanghai,234
+2024-12-22,Hong Kong,374
+2024-12-22,Ningbo,118
+2024-12-22,Shenzhen,167
+2024-12-29,Hong Kong,373
+2024-12-29,Shanghai,249
+2024-12-29,Shenzhen,156
+2024-12-29,Ningbo,114
+2025-01-05,Shanghai,236
+2025-01-05,Hong Kong,380
+2025-01-05,Shenzhen,165
+2025-01-05,Ningbo,126
+2025-01-12,Shanghai,239
+2025-01-12,Hong Kong,337
+2025-01-12,Ningbo,106
+2025-01-12,Shenzhen,158

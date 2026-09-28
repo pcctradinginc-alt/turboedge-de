@@ -1,0 +1,46 @@
+{
+  "response": {
+    "total": "4",
+    "dateFormat": "YYYY-MM-DD",
+    "frequency": "weekly",
+    "data": [
+      {
+        "period": "2026-09-05",
+        "series": "WCESTUS1",
+        "series-description": "Weekly U.S. Ending Stocks excluding SPR of Crude Oil",
+        "value": "419876",
+        "value-units": "MBBL"
+      },
+      {
+        "period": "2026-09-12",
+        "series": "WCESTUS1",
+        "series-description": "Weekly U.S. Ending Stocks excluding SPR of Crude Oil",
+        "value": null,
+        "value-units": "MBBL"
+      },
+      {
+        "period": "2026-09-19",
+        "series": "WCESTUS1",
+        "series-description": "Weekly U.S. Ending Stocks excluding SPR of Crude Oil",
+        "value": "421345",
+        "value-units": "MBBL"
+      },
+      {
+        "period": "2026-09-19",
+        "series": "WCRSTUS1",
+        "series-description": "Weekly U.S. Ending Stocks of Total Gasoline",
+        "value": "225110",
+        "value-units": "MBBL"
+      }
+    ]
+  },
+  "request": {
+    "command": "/v2/petroleum/stoc/wstk/data/",
+    "params": {
+      "frequency": "weekly",
+      "data[0]": "value",
+      "facets[series][]": "WCESTUS1"
+    }
+  },
+  "apiVersion": "2.1.12"
+}

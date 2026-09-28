@@ -1,0 +1,288 @@
+[
+ {
+  "objectIdFieldName": "ObjectId",
+  "uniqueIdField": {
+   "name": "ObjectId",
+   "isSystemMaintained": true
+  },
+  "globalIdFieldName": "",
+  "fields": [
+   {
+    "name": "date",
+    "type": "esriFieldTypeDateOnly",
+    "alias": "date",
+    "sqlType": "sqlTypeDate",
+    "domain": null,
+    "defaultValue": null
+   },
+   {
+    "name": "portname",
+    "type": "esriFieldTypeString",
+    "alias": "portname",
+    "sqlType": "sqlTypeNVarchar",
+    "length": 4000,
+    "domain": null,
+    "defaultValue": null
+   },
+   {
+    "name": "n_cargo",
+    "type": "esriFieldTypeInteger",
+    "alias": "n_cargo",
+    "sqlType": "sqlTypeInteger",
+    "domain": null,
+    "defaultValue": null
+   },
+   {
+    "name": "n_tanker",
+    "type": "esriFieldTypeInteger",
+    "alias": "n_tanker",
+    "sqlType": "sqlTypeInteger",
+    "domain": null,
+    "defaultValue": null
+   }
+  ],
+  "exceededTransferLimit": true,
+  "features": [
+   {
+    "attributes": {
+     "date": "2026-09-20",
+     "portname": "Suez Canal",
+     "n_cargo": 23,
+     "n_tanker": 19
+    }
+   },
+   {
+    "attributes": {
+     "date": "2026-09-19",
+     "portname": "Suez Canal",
+     "n_cargo": 30,
+     "n_tanker": 13
+    }
+   },
+   {
+    "attributes": {
+     "date": "2026-09-18",
+     "portname": "Suez Canal",
+     "n_cargo": 26,
+     "n_tanker": 25
+    }
+   },
+   {
+    "attributes": {
+     "date": "2026-09-17",
+     "portname": "Suez Canal",
+     "n_cargo": 25,
+     "n_tanker": 12
+    }
+   },
+   {
+    "attributes": {
+     "date": "2026-09-16",
+     "portname": "Suez Canal",
+     "n_cargo": 25,
+     "n_tanker": 12
+    }
+   },
+   {
+    "attributes": {
+     "date": "2026-09-15",
+     "portname": "Suez Canal",
+     "n_cargo": 21,
+     "n_tanker": 11
+    }
+   },
+   {
+    "attributes": {
+     "date": "2026-09-14",
+     "portname": "Suez Canal",
+     "n_cargo": 24,
+     "n_tanker": 27
+    }
+   },
+   {
+    "attributes": {
+     "date": "2026-09-13",
+     "portname": "Suez Canal",
+     "n_cargo": 14,
+     "n_tanker": 7
+    }
+   },
+   {
+    "attributes": {
+     "date": "2026-09-12",
+     "portname": "Suez Canal",
+     "n_cargo": 25,
+     "n_tanker": 15
+    }
+   },
+   {
+    "attributes": {
+     "date": "2026-09-11",
+     "portname": "Suez Canal",
+     "n_cargo": 25,
+     "n_tanker": 23
+    }
+   },
+   {
+    "attributes": {
+     "date": "2026-09-10",
+     "portname": "Suez Canal",
+     "n_cargo": 24,
+     "n_tanker": 13
+    }
+   },
+   {
+    "attributes": {
+     "date": "2026-09-09",
+     "portname": "Suez Canal",
+     "n_cargo": 19,
+     "n_tanker": 18
+    }
+   },
+   {
+    "attributes": {
+     "date": "2026-09-08",
+     "portname": "Suez Canal",
+     "n_cargo": 28,
+     "n_tanker": 15
+    }
+   },
+   {
+    "attributes": {
+     "date": "2026-09-07",
+     "portname": "Suez Canal",
+     "n_cargo": 19,
+     "n_tanker": 20
+    }
+   },
+   {
+    "attributes": {
+     "date": "2026-09-06",
+     "portname": "Suez Canal",
+     "n_cargo": 14,
+     "n_tanker": 16
+    }
+   },
+   {
+    "attributes": {
+     "date": "2026-09-05",
+     "portname": "Suez Canal",
+     "n_cargo": 23,
+     "n_tanker": 19
+    }
+   },
+   {
+    "attributes": {
+     "date": "2026-09-04",
+     "portname": "Suez Canal",
+     "n_cargo": 42,
+     "n_tanker": 14
+    }
+   },
+   {
+    "attributes": {
+     "date": "2026-09-03",
+     "portname": "Suez Canal",
+     "n_cargo": 24,
+     "n_tanker": 17
+    }
+   },
+   {
+    "attributes": {
+     "date": "2026-09-02",
+     "portname": "Suez Canal",
+     "n_cargo": 26,
+     "n_tanker": 15
+    }
+   },
+   {
+    "attributes": {
+     "date": "2026-09-01",
+     "portname": "Suez Canal",
+     "n_cargo": 37,
+     "n_tanker": 14
+    }
+   },
+   {
+    "attributes": {
+     "date": "2026-08-31",
+     "portname": "Suez Canal",
+     "n_cargo": 18,
+     "n_tanker": 12
+    }
+   },
+   {
+    "attributes": {
+     "date": "2026-08-30",
+     "portname": "Suez Canal",
+     "n_cargo": 24,
+     "n_tanker": 29
+    }
+   },
+   {
+    "attributes": {
+     "date": "2026-08-29",
+     "portname": "Suez Canal",
+     "n_cargo": 22,
+     "n_tanker": 16
+    }
+   },
+   {
+    "attributes": {
+     "date": "2026-08-28",
+     "portname": "Suez Canal",
+     "n_cargo": 29,
+     "n_tanker": 10
+    }
+   },
+   {
+    "attributes": {
+     "date": "2026-08-27",
+     "portname": "Suez Canal",
+     "n_cargo": 21,
+     "n_tanker": 12
+    }
+   },
+   {
+    "attributes": {
+     "date": "2026-08-26",
+     "portname": "Suez Canal",
+     "n_cargo": 22,
+     "n_tanker": 19
+    }
+   },
+   {
+    "attributes": {
+     "date": "2026-08-25",
+     "portname": "Suez Canal",
+     "n_cargo": 32,
+     "n_tanker": 19
+    }
+   },
+   {
+    "attributes": {
+     "date": "2026-08-24",
+     "portname": "Suez Canal",
+     "n_cargo": 31,
+     "n_tanker": 15
+    }
+   },
+   {
+    "attributes": {
+     "date": "2026-08-23",
+     "portname": "Suez Canal",
+     "n_cargo": 24,
+     "n_tanker": 13
+    }
+   },
+   {
+    "attributes": {
+     "date": "2026-08-22",
+     "portname": "Suez Canal",
+     "n_cargo": 22,
+     "n_tanker": 17
+    }
+   }
+  ]
+ }
+]

@@ -32,11 +32,40 @@ from turboedge.storage.schemas import SCHEMA_VERSION, TzAwareDatetime
 #: What a redacted credential looks like once `raw_archive.redact` has run.
 REDACTED_VALUE = "REDACTED"
 
-#: Query parameters whose values must never be persisted. Kept here rather
-#: than in `raw_archive` so the model can enforce the rule even for a caller
-#: that never went through the archive.
+#: Parameter-name fragments whose values must never be persisted. The single
+#: source of truth: `raw_archive.redact` imports this list rather than
+#: keeping its own, because two divergent lists is exactly how the gap below
+#: went unnoticed.
+CREDENTIAL_PARAM_FRAGMENTS: tuple[str, ...] = (
+    "api_key",
+    "apikey",
+    "appid",
+    "app_id",
+    "access_token",
+    "securitytoken",
+    "security_token",
+    "token",
+    "password",
+    "secret",
+    "key",
+)
+
+#: Matched against a parameter name and the value that follows it.
+#:
+#: The leading `[A-Za-z0-9_-]*` is the whole point, and replaces an earlier
+#: `\b` that did not work. Measured 2026-09-28, all three slipped through the
+#: previous pattern: `securityToken=` (ENTSO-E) has no word boundary between
+#: "y" and "T"; `securitytoken=` has none between "y" and "t" either; and
+#: `x-key=` (Gas Infrastructure Europe) was missed because `key` was in
+#: `raw_archive`'s list but had never been added to this one. Two of the six
+#: Wave 2 sources were therefore entirely unprotected by this backstop.
+#:
+#: Over-matching is deliberate. A benign `monkey=1` is redacted, which costs
+#: nothing, while a missed credential costs a rotated key and a rewritten
+#: history. Redaction runs before validation in the real path, so an
+#: over-matched parameter is redacted and then passes.
 _CREDENTIAL_PARAM_RE = re.compile(
-    r"(?i)\b(api_key|apikey|appid|app_id|access_token|token|password|secret)=([^&\s]*)"
+    r"(?i)([A-Za-z0-9_-]*(?:" + "|".join(CREDENTIAL_PARAM_FRAGMENTS) + r"))=([^&\s]*)"
 )
 
 
@@ -230,6 +259,18 @@ class SeriesSpec(BaseModel):
     #: effective sample is the event count -- never the number of days the
     #: rate happened to stay put (spec §37).
     event_driven: bool = False
+
+    #: True when `observation_time` is a *target* time in the future rather
+    #: than a period that already happened -- a day-ahead load forecast, a
+    #: weather forecast, a scheduled flow. For these the usual availability
+    #: rule is exactly backwards: the value is published *before* the period
+    #: it describes, so deriving `available_at` from the observation day
+    #: would record a forecast as knowable only after the fact, which makes
+    #: it worthless. Measured 2026-09-28: the day-ahead load forecast for
+    #: 2026-09-29 23:45 was stored as available from 2026-09-30 14:00.
+    #: See `adapter.resolve_forecast_available_at`. The spec's requirement
+    #: to keep forecast_issue_time and forecast_valid_time apart is this.
+    forecast_series: bool = False
 
     enabled: bool = True
     notes: str = ""

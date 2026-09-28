@@ -153,3 +153,55 @@ def test_hash_is_of_the_original_bytes(tmp_path: Path) -> None:
     record = store_payload(_payload(content), state_dir=tmp_path, parser_version="1")
 
     assert record.payload_hash == payload_hash(content)
+
+
+@pytest.mark.parametrize(
+    ("fingerprint", "secret"),
+    [
+        # Each of these slipped through the original `\b(...)=` pattern,
+        # measured 2026-09-28. The first two have no word boundary inside a
+        # camelCase or run-together name; `x-key` was missed because `key`
+        # lived in the redaction list but never in the model's own. Two of
+        # the six Wave 2 sources were therefore entirely unprotected.
+        ("GET /api?securityToken=SECRETVALUE", "SECRETVALUE"),
+        ("GET /api?securitytoken=SECRETVALUE", "SECRETVALUE"),
+        ("GET /api?x-key=SECRETVALUE", "SECRETVALUE"),
+        ("GET /api?ENTSOE_TOKEN=SECRETVALUE", "SECRETVALUE"),
+        ("GET /api?myApiKey=SECRETVALUE", "SECRETVALUE"),
+        ("GET /api?appId=SECRETVALUE", "SECRETVALUE"),
+    ],
+)
+def test_camelcase_and_prefixed_credential_names_are_caught(fingerprint: str, secret: str) -> None:
+    assert secret not in redact(fingerprint)
+
+    with pytest.raises(ValueError, match="still carries a value"):
+        RawPayload(
+            payload_id="p",
+            source="entsoe",
+            dataset="d",
+            request_fingerprint=fingerprint,
+            retrieved_at=_NOW,
+            http_status=200,
+            content_type="application/xml",
+            byte_size=1,
+            payload_hash="h",
+            stored_path="/tmp/x.xml",
+            parser_version="1",
+        )
+
+
+def test_the_redactor_and_the_model_share_one_pattern() -> None:
+    # Two lists is how `securityToken=` and `x-key=` stayed unredacted: the
+    # archive redacted one set of names and the model checked another.
+    from turboedge.external import raw_archive, schemas
+
+    assert raw_archive._SECRET_RE is schemas._CREDENTIAL_PARAM_RE
+
+
+def test_over_redaction_is_preferred_to_a_miss() -> None:
+    # A benign parameter containing "key" is redacted. That costs nothing;
+    # a missed credential costs a rotated key and a rewritten history.
+    assert "REDACTED" in redact("GET /x?monkey=1")
+    # And a genuinely unrelated parameter survives, so the fingerprint stays
+    # readable enough to debug with.
+    assert "series_id=INDPRO" in redact("GET /x?api_key=S&series_id=INDPRO")

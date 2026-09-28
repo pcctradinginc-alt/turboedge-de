@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  HAND-BUILT FIXTURE (tests/adapters/test_entsoe.py). NOT a captured live
+  response - no ENTSOE_SECURITY_TOKEN was available in this environment.
+  This is a trimmed transcription of the structure of ENTSO-E's own worked
+  Postman-collection example for "6.1.A Actual Total Load"
+  (documentType=A65, processType=A16, outBiddingZone_Domain equal to the
+  Czech bidding zone EIC code viewed on that example page),
+  viewed live in a browser on 2026-09-28 - mRID/createdDateTime kept as in
+  the viewed example; the Period has been shortened to 4 hourly points and
+  one position (3) deliberately omitted to exercise the missing-position
+  ("gap, never interpolated") handling. See adapters/entsoe.py module
+  docstring "VERIFIED VS DOCUMENTED".
+-->
+<GL_MarketDocument xmlns="urn:iec62325.351:tc57wg16:451-6:generationloaddocument:3:0">
+    <mRID>deca862df0c9487d990a7878242c1361</mRID>
+    <revisionNumber>1</revisionNumber>
+    <type>A65</type>
+    <process.processType>A16</process.processType>
+    <sender_MarketParticipant.mRID codingScheme="A01">10X1001A1001A450</sender_MarketParticipant.mRID>
+    <sender_MarketParticipant.marketRole.type>A32</sender_MarketParticipant.marketRole.type>
+    <receiver_MarketParticipant.mRID codingScheme="A01">10X1001A1001A450</receiver_MarketParticipant.mRID>
+    <receiver_MarketParticipant.marketRole.type>A33</receiver_MarketParticipant.marketRole.type>
+    <createdDateTime>2023-08-18T12:18:45Z</createdDateTime>
+    <time_Period.timeInterval>
+        <start>2023-03-03T00:00Z</start>
+        <end>2023-03-03T04:00Z</end>
+    </time_Period.timeInterval>
+    <TimeSeries>
+        <mRID>1</mRID>
+        <businessType>A04</businessType>
+        <objectAggregation>A01</objectAggregation>
+        <outBiddingZone_Domain.mRID codingScheme="A01">10YCZ-CEPS-----N</outBiddingZone_Domain.mRID>
+        <quantity_Measure_Unit.name>MAW</quantity_Measure_Unit.name>
+        <curveType>A01</curveType>
+        <Period>
+            <timeInterval>
+                <start>2023-03-03T00:00Z</start>
+                <end>2023-03-03T04:00Z</end>
+            </timeInterval>
+            <resolution>PT60M</resolution>
+            <Point>
+                <position>1</position>
+                <quantity>7146</quantity>
+            </Point>
+            <Point>
+                <position>2</position>
+                <quantity>7100</quantity>
+            </Point>
+            <Point>
+                <position>4</position>
+                <quantity>7050</quantity>
+            </Point>
+        </Period>
+    </TimeSeries>
+</GL_MarketDocument>

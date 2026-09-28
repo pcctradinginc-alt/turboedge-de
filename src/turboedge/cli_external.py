@@ -67,6 +67,14 @@ _ADAPTER_CLASSES: dict[str, tuple[str, str]] = {
     "eu_bcs": ("turboedge.adapters.eu_bcs", "EuBcsAdapter"),
     "destatis_truck": ("turboedge.adapters.destatis_truck", "DestatisTruckAdapter"),
     "estat": ("turboedge.adapters.estat", "EstatAdapter"),
+    # Wave 2
+    "portwatch": ("turboedge.adapters.portwatch", "PortWatchAdapter"),
+    "kiel_trade": ("turboedge.adapters.kiel_trade", "KielTradeAdapter"),
+    "agsi": ("turboedge.adapters.gie", "AgsiAdapter"),
+    "alsi": ("turboedge.adapters.gie", "AlsiAdapter"),
+    "eia": ("turboedge.adapters.eia", "EiaAdapter"),
+    "entsoe": ("turboedge.adapters.entsoe", "EntsoeAdapter"),
+    "energy_charts": ("turboedge.adapters.energy_charts", "EnergyChartsAdapter"),
 }
 
 #: Minimum seconds between requests to one host, per source. The project's
@@ -81,6 +89,16 @@ _MIN_INTERVAL_S: dict[str, float] = {
     "eu_bcs": 1.0,
     "destatis_truck": 30.0,
     "estat": 1.0,
+    # portwatch.imf.org declares Crawl-delay: 60. The data is served from
+    # Esri infrastructure that publishes no robots.txt of its own, but the
+    # declared policy is the publisher's and applies to their data.
+    "portwatch": 60.0,
+    "kiel_trade": 1.0,
+    "agsi": 1.0,
+    "alsi": 1.0,
+    "eia": 1.0,
+    "entsoe": 1.0,
+    "energy_charts": 1.0,
 }
 
 #: Honest, identifiable, and stating that this system never executes orders.
@@ -90,7 +108,9 @@ USER_AGENT = "TurboEdge-DE-Research/0.1 (+research-only; no-execution)"
 def _http_for(source_id: str) -> HttpClient:
     return HttpClient(
         user_agent=USER_AGENT,
-        timeout_s=90.0 if source_id == "destatis_truck" else 30.0,
+        # Destatis serves a ~1 MB workbook; PortWatch and ENTSO-E assemble
+        # a long series from several paged requests.
+        timeout_s=90.0 if source_id in {"destatis_truck", "portwatch", "entsoe"} else 30.0,
         min_interval_s=_MIN_INTERVAL_S.get(source_id, 1.0),
     )
 

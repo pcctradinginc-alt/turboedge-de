@@ -374,6 +374,9 @@ jobs:
         env:
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
           ESTAT_APP_ID: ${{ secrets.ESTAT_APP_ID }}
+          GIE_API_KEY: ${{ secrets.GIE_API_KEY }}
+          EIA_API_KEY: ${{ secrets.EIA_API_KEY }}
+          ENTSOE_SECURITY_TOKEN: ${{ secrets.ENTSOE_SECURITY_TOKEN }}
         run: uv run turboedge --log-format json external ingest
 
       # Read-only. Prints what is usable and, for everything else, exactly

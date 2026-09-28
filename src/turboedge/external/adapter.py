@@ -155,6 +155,33 @@ def resolve_available_at(
     return conservative_available_at(observation_day, lag_hours=lag), precision
 
 
+def resolve_forecast_available_at(
+    spec: SeriesSpec, issued_at: datetime
+) -> tuple[datetime, AvailabilityPrecision]:
+    """When a forecast became usable -- the moment it was obtained.
+
+    A forecast describes a period that has not happened yet, so the normal
+    rule (observation day plus a publication lag) records it as knowable
+    only after the thing it predicts, which is worse than useless: a
+    point-in-time read would surface every forecast too late to have acted
+    on it.
+
+    The honest anchor is the moment TurboEdge actually held the value.
+    That is conservative with respect to the publisher's own issue time,
+    which is always earlier and is rarely stated, so the precision is
+    CONSERVATIVE_DATE rather than EXACT_TIMESTAMP: the timestamp is exact,
+    but it is *our* acquisition, not their release.
+    """
+    if not spec.forecast_series:
+        raise ValueError(
+            f"{spec.qualified_id}: resolve_forecast_available_at is only for a "
+            "series declared forecast_series=True"
+        )
+    if issued_at.tzinfo is None or issued_at.utcoffset() is None:
+        raise ValueError(f"{spec.qualified_id}: issued_at must be timezone-aware")
+    return issued_at.astimezone(UTC), AvailabilityPrecision.CONSERVATIVE_DATE
+
+
 def deduplicate_observations(
     observations: Sequence[ExternalObservation],
 ) -> list[ExternalObservation]:

@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  HAND-BUILT FIXTURE (tests/adapters/test_entsoe.py). NOT a captured live
+  response, and NOT a directly-viewed A11 example either (see
+  adapters/entsoe.py module docstring "VERIFIED VS DOCUMENTED" - this
+  session could not get the documentation site to render 12.1.G's own
+  response body). Structure instead transcribes the *sibling*
+  Publication_MarketDocument examples "11.1 Implicit Allocations" and
+  "12.1.E Congestion Income" (same Market folder, same
+  Publication_MarketDocument namespace and identical TimeSeries/Period/
+  Point shape, in_Domain.mRID/out_Domain.mRID naming), which WERE viewed
+  live, combined with 12.1.G's own confirmed request-parameter list
+  (documentType=A11, out_Domain, in_Domain, periodStart, periodEnd, no
+  processType) and root element name. Reported as documented, not
+  verified, for this exact document type.
+-->
+<Publication_MarketDocument xmlns="urn:iec62325.351:tc57wg16:451-3:publicationdocument:7:0">
+    <mRID>79370360668c4bb6a243d5083abeb785</mRID>
+    <revisionNumber>1</revisionNumber>
+    <type>A11</type>
+    <sender_MarketParticipant.mRID codingScheme="A01">10X1001A1001A450</sender_MarketParticipant.mRID>
+    <sender_MarketParticipant.marketRole.type>A32</sender_MarketParticipant.marketRole.type>
+    <receiver_MarketParticipant.mRID codingScheme="A01">10X1001A1001A450</receiver_MarketParticipant.mRID>
+    <receiver_MarketParticipant.marketRole.type>A33</receiver_MarketParticipant.marketRole.type>
+    <createdDateTime>2023-08-25T16:53:42Z</createdDateTime>
+    <period.timeInterval>
+        <start>2023-08-23T22:00Z</start>
+        <end>2023-08-24T22:00Z</end>
+    </period.timeInterval>
+    <TimeSeries>
+        <mRID>1</mRID>
+        <businessType>A11</businessType>
+        <in_Domain.mRID codingScheme="A01">10YBE----------2</in_Domain.mRID>
+        <out_Domain.mRID codingScheme="A01">10YDE-RWENET---I</out_Domain.mRID>
+        <quantity_Measure_Unit.name>MAW</quantity_Measure_Unit.name>
+        <curveType>A01</curveType>
+        <Period>
+            <timeInterval>
+                <start>2023-08-23T22:00Z</start>
+                <end>2023-08-24T01:00Z</end>
+            </timeInterval>
+            <resolution>PT60M</resolution>
+            <Point>
+                <position>1</position>
+                <quantity>340</quantity>
+            </Point>
+            <Point>
+                <position>2</position>
+                <quantity>355</quantity>
+            </Point>
+            <Point>
+                <position>3</position>
+                <quantity>310</quantity>
+            </Point>
+        </Period>
+    </TimeSeries>
+</Publication_MarketDocument>

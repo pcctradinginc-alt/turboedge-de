@@ -1,0 +1,211 @@
+[
+ {
+  "objectIdFieldName": "ObjectId",
+  "uniqueIdField": {
+   "name": "ObjectId",
+   "isSystemMaintained": true
+  },
+  "globalIdFieldName": "",
+  "fields": [
+   {
+    "name": "date",
+    "type": "esriFieldTypeDateOnly",
+    "alias": "date",
+    "sqlType": "sqlTypeDate",
+    "domain": null,
+    "defaultValue": null
+   },
+   {
+    "name": "portcalls",
+    "type": "esriFieldTypeInteger",
+    "alias": "portcalls",
+    "sqlType": "sqlTypeInteger",
+    "domain": null,
+    "defaultValue": null
+   }
+  ],
+  "exceededTransferLimit": true,
+  "features": [
+   {
+    "attributes": {
+     "date": "2025-04-25",
+     "portcalls": 4676
+    }
+   },
+   {
+    "attributes": {
+     "date": "2025-04-24",
+     "portcalls": 4856
+    }
+   },
+   {
+    "attributes": {
+     "date": "2025-04-23",
+     "portcalls": 4615
+    }
+   },
+   {
+    "attributes": {
+     "date": "2025-04-22",
+     "portcalls": 4833
+    }
+   },
+   {
+    "attributes": {
+     "date": "2025-04-21",
+     "portcalls": 4934
+    }
+   },
+   {
+    "attributes": {
+     "date": "2025-04-20",
+     "portcalls": 4205
+    }
+   },
+   {
+    "attributes": {
+     "date": "2025-04-19",
+     "portcalls": 4393
+    }
+   },
+   {
+    "attributes": {
+     "date": "2025-04-18",
+     "portcalls": 4637
+    }
+   },
+   {
+    "attributes": {
+     "date": "2025-04-17",
+     "portcalls": 4506
+    }
+   },
+   {
+    "attributes": {
+     "date": "2025-04-16",
+     "portcalls": 4674
+    }
+   },
+   {
+    "attributes": {
+     "date": "2025-04-15",
+     "portcalls": 4614
+    }
+   },
+   {
+    "attributes": {
+     "date": "2025-04-14",
+     "portcalls": 4997
+    }
+   },
+   {
+    "attributes": {
+     "date": "2025-04-13",
+     "portcalls": 4048
+    }
+   },
+   {
+    "attributes": {
+     "date": "2025-04-12",
+     "portcalls": 3957
+    }
+   },
+   {
+    "attributes": {
+     "date": "2025-04-11",
+     "portcalls": 4359
+    }
+   },
+   {
+    "attributes": {
+     "date": "2025-04-10",
+     "portcalls": 4802
+    }
+   },
+   {
+    "attributes": {
+     "date": "2025-04-09",
+     "portcalls": 4744
+    }
+   },
+   {
+    "attributes": {
+     "date": "2025-04-08",
+     "portcalls": 4783
+    }
+   },
+   {
+    "attributes": {
+     "date": "2025-04-07",
+     "portcalls": 5040
+    }
+   },
+   {
+    "attributes": {
+     "date": "2025-04-06",
+     "portcalls": 4430
+    }
+   },
+   {
+    "attributes": {
+     "date": "2025-04-05",
+     "portcalls": 4475
+    }
+   },
+   {
+    "attributes": {
+     "date": "2025-04-04",
+     "portcalls": 4715
+    }
+   },
+   {
+    "attributes": {
+     "date": "2025-04-03",
+     "portcalls": 4713
+    }
+   },
+   {
+    "attributes": {
+     "date": "2025-04-02",
+     "portcalls": 4636
+    }
+   },
+   {
+    "attributes": {
+     "date": "2025-04-01",
+     "portcalls": 4554
+    }
+   },
+   {
+    "attributes": {
+     "date": "2025-03-31",
+     "portcalls": 4826
+    }
+   },
+   {
+    "attributes": {
+     "date": "2025-03-30",
+     "portcalls": 4199
+    }
+   },
+   {
+    "attributes": {
+     "date": "2025-03-29",
+     "portcalls": 4372
+    }
+   },
+   {
+    "attributes": {
+     "date": "2025-03-28",
+     "portcalls": 4724
+    }
+   },
+   {
+    "attributes": {
+     "date": "2025-03-27",
+     "portcalls": 4902
+    }
+   }
+  ]
+ }
+]

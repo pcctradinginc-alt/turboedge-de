@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -199,7 +199,7 @@ def _ingest_one(
 ) -> SeriesResult:
     out = SeriesResult(series_id=spec.series_id, source=spec.source)
     try:
-        payload = adapter.fetch(spec)
+        payload = adapter.fetch(spec, since=_incremental_since(spec, store=store))
         out.fetched = True
         out.payload_bytes = len(payload.content)
         # Archive before parsing: a parser that raises must still leave the
@@ -244,6 +244,36 @@ def _ingest_one(
             effective_n=trigger.effective_n,
         )
     return out
+
+
+#: How far back an incremental fetch reaches beyond the newest stored
+#: observation. A publisher that revises the last few days would otherwise
+#: never have those revisions seen again -- and a revision that is never
+#: re-fetched is a vintage this archive silently misses.
+INCREMENTAL_OVERLAP_DAYS = 14
+
+
+def _incremental_since(spec: SeriesSpec, *, store: Store) -> date | None:
+    """Where to resume fetching this series, or `None` for "everything".
+
+    Without this, an adapter whose endpoint windows on dates re-downloads
+    its entire history on every run. For Energy-Charts that is 56 MB a day
+    (measured 2026-09-28: 96,092 points for a three-year window), which the
+    content-addressed raw archive would store afresh each time because one
+    appended day changes the hash.
+
+    Returns `None` until something is stored, so the first run still takes
+    the full backfill.
+    """
+    stored = [
+        o
+        for o in store.list_external_observations(series_id=spec.series_id)
+        if o.source == spec.source
+    ]
+    if not stored:
+        return None
+    newest = max(o.observation_time for o in stored).astimezone(UTC).date()
+    return newest - timedelta(days=INCREMENTAL_OVERLAP_DAYS)
 
 
 def _evaluate_and_persist(

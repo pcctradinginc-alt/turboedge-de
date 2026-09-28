@@ -222,12 +222,124 @@ Adding a macro series must not change the hash stamped on every run and every
 `SignalSnapshot`: that hash is how two runs are compared for reproducibility,
 and a new data series does not make an old forecast irreproducible.
 
+## Wave 2: energy, logistics and trade
+
+Integrated 2026-09-28 on the user's instruction, which supersedes the original
+plan's "design only". Every endpoint was probed live before anything was
+configured.
+
+| source | credential | live probe result |
+| --- | --- | --- |
+| Energy-Charts (Fraunhofer ISE) | **none** | HTTP 200; licence declared in the payload — **live** |
+| IMF PortWatch | **none** | HTTP 200; 28 chokepoints, daily, current to 2026-09-20 |
+| Kiel Trade Indicator | **none** | HTTP 200; only 2 of 13 CSVs still maintained |
+| GIE AGSI (gas storage) | `GIE_API_KEY` | **HTTP 200 with an error body** |
+| GIE ALSI (LNG) | `GIE_API_KEY` | **HTTP 200 with an error body** |
+| U.S. EIA Open Data v2 | `EIA_API_KEY` | HTTP 403, `API_KEY_MISSING` |
+| ENTSO-E Transparency | `ENTSOE_SECURITY_TOKEN` | HTTP 401, XML acknowledgement |
+
+**Energy-Charts is live.** It is the only source in either wave that needed
+neither a credential nor a licence decision: every response carries
+`"license": "CC BY 4.0 (creativecommons.org/licenses/by/4.0) from
+Bundesnetzagentur | SMARD.de"`, and the adapter re-checks that string on every
+parse and warns if it changes. Four series: actual load, day-ahead load
+forecast, residual load, DE-LU day-ahead price. First backfill measured
+2026-09-28: 112,678 observations, three series straight to
+`CONFIRMATION_READY`.
+
+It is a **secondary** source — Fraunhofer re-serves ENTSO-E and
+Bundesnetzagentur data — so it is `HISTORICAL_CONSERVATIVE`, not PIT-safe.
+Running ENTSO-E alongside it later gives a cross-source check on the same
+published quantity, the same reason `BBK.EURUSD_REF` duplicates `ECB.EURUSD`.
+
+**None of the other six is enabled**, for two reasons that must not be
+conflated:
+
+* **AGSI, ALSI, EIA, ENTSO-E** — no credential present. `AUTH_MISSING`.
+* **PortWatch, Kiel** — they work without a key, but their reuse terms could
+  not be established. `REVIEW_REQUIRED`. PortWatch's own ArcGIS metadata names
+  `imf.org/external/terms.htm` as its licence, and that page answers HTTP 403
+  to a non-browser agent; it was not circumvented. Kiel states no licence on
+  either the indicator page or the download gallery. Spec §8: do not guess
+  licensing. Both are a minute of reading away from being switched on.
+
+### Forecast series need their availability inverted
+
+A day-ahead load forecast describes a period that has not happened yet. The
+ordinary rule — observation day plus a publication lag — records it as
+knowable *after* the thing it predicts, which makes it worthless: a
+point-in-time read would surface every forecast too late to have acted on.
+Measured 2026-09-28: the forecast for 2026-09-29 23:45 was first stored as
+available from 2026-09-30 14:00.
+
+`SeriesSpec.forecast_series` now marks these, and
+`adapter.resolve_forecast_available_at` anchors availability to the moment
+TurboEdge obtained the value. That is conservative with respect to the
+publisher's own issue time, which is earlier and rarely stated.
+
+A forecast has **no** ordering invariant in either direction, so
+`evidence.build_evidence` checks none for it: one issue covers future periods
+*and* periods that have already elapsed (the forecast fetched this afternoon
+still carries this morning's intervals). What protects a forecast study from
+look-ahead is the read-time filter `available_at <= prediction_time`, which is
+correct both ways round.
+
+### Four traps worth knowing
+
+**GIE returns HTTP 200 for a missing key.** The failure is only in the body:
+`{"error":"access denied","message":"Invalid or missing API key","data":[]}`.
+An adapter that trusts the status code reads this as "the publisher had no data
+today" — silent, plausible, and it would make the readiness engine report a
+healthy empty series. The adapter inspects the body and raises.
+
+**Most Kiel CSVs are dead.** Only `plot_ships_red_sea` (2026-09-25) and
+`plot_ships_cape_good_hope` (2026-09-24) are current; eight others stop in
+January 2025 and two return HTTP 404. Only the two live ones are configured —
+configuring the rest would fill the readiness report with `DEGRADED` rows that
+say nothing about the data and everything about the publisher.
+
+**`generated_at` is not a publication timestamp.** Energy-Charts returns one,
+and it looks exactly like what a point-in-time archive wants. Measured
+2026-09-28: two calls two seconds apart returned an identical value (a short
+server cache), a call two minutes later returned the new request time. It is
+response-generation time. Treating it as a release timestamp would have
+produced an `EXACT_TIMESTAMP` claim that is simply false.
+
+**`start` without `end` returns one day.** Energy-Charts answers a bounded
+query happily and an unbounded one with today only — 96 points, silently, no
+error. The adapter always sends both bounds; the first fetch takes 400 days
+and later ones resume from the newest stored observation, with a 14-day
+overlap so revisions are re-seen.
+
+**PortWatch declares `Crawl-delay: 60`.** The data is served from Esri
+infrastructure that publishes no robots.txt of its own, but the declared policy
+is the publisher's and applies to their data, so the adapter waits 60 seconds
+between requests. With paging that is slow by design.
+
+### Configured series
+
+Six PortWatch (Suez cargo and tanker, Bab el-Mandeb cargo, Hormuz tanker,
+Panama cargo, world port calls) and two Kiel (Red Sea and Cape of Good Hope
+ship counts). Not all 28 chokepoints: each configured series is a
+hypothesis-in-waiting, and 28 would be a fishing expedition whose
+multiple-testing denominator nobody could state (spec §9).
+
+The pairings are deliberate. Suez against Bab el-Mandeb, and Red Sea against
+Cape of Good Hope, are the observable signature of Red Sea rerouting; world
+port calls is the control, because a drop at one strait means something
+different when global traffic is flat than when it is falling everywhere.
+
+All eight are `FORWARD_ONLY` with `UNKNOWN` precision: the daily files are
+revised as AIS data settle, no publisher records a release timestamp, and
+PortWatch ran about a week behind on the day it was checked. Their history is
+descriptive; only snapshots TurboEdge takes itself are point-in-time evidence.
+
 ## Deferred
 
-Wave 2 (ENTSO-E, gas storage AGSI/ALSI, EIA, Kiel Trade Indicator, IMF
-PortWatch) and Wave 3 (GDELT, Wikimedia analytics, ECMWF) are design-only. The
-adapter protocol in `external/adapter.py` is what they will implement; nothing
-about them is built, and no alpha test involving them has been run.
+Wave 3 (GDELT, Wikimedia analytics, ECMWF) remains design-only. The adapter
+protocol in `external/adapter.py` is what they will implement; nothing about
+them is built, and no alpha test involving any Wave 2 or Wave 3 source has been
+run.
 
 Cboe and CFTC are **not** reopened. Their measured results stand as research
 history and are not reinterpreted, re-run or recombined with Wave 1 data.

@@ -1,0 +1,148 @@
+[
+ {
+  "objectIdFieldName": "ObjectId",
+  "uniqueIdField": {
+   "name": "ObjectId",
+   "isSystemMaintained": true
+  },
+  "globalIdFieldName": "",
+  "fields": [
+   {
+    "name": "date",
+    "type": "esriFieldTypeDateOnly",
+    "alias": "date",
+    "sqlType": "sqlTypeDate",
+    "domain": null,
+    "defaultValue": null
+   },
+   {
+    "name": "portname",
+    "type": "esriFieldTypeString",
+    "alias": "portname",
+    "sqlType": "sqlTypeNVarchar",
+    "length": 4000,
+    "domain": null,
+    "defaultValue": null
+   },
+   {
+    "name": "n_cargo",
+    "type": "esriFieldTypeInteger",
+    "alias": "n_cargo",
+    "sqlType": "sqlTypeInteger",
+    "domain": null,
+    "defaultValue": null
+   }
+  ],
+  "exceededTransferLimit": true,
+  "features": [
+   {
+    "attributes": {
+     "date": "2019-01-01",
+     "portname": "Suez Canal",
+     "n_cargo": 43
+    }
+   },
+   {
+    "attributes": {
+     "date": "2019-01-02",
+     "portname": "Suez Canal",
+     "n_cargo": 40
+    }
+   },
+   {
+    "attributes": {
+     "date": "2019-01-03",
+     "portname": "Suez Canal",
+     "n_cargo": 38
+    }
+   },
+   {
+    "attributes": {
+     "date": "2019-01-04",
+     "portname": "Suez Canal",
+     "n_cargo": 32
+    }
+   },
+   {
+    "attributes": {
+     "date": "2019-01-05",
+     "portname": "Suez Canal",
+     "n_cargo": 30
+    }
+   }
+  ]
+ },
+ {
+  "objectIdFieldName": "ObjectId",
+  "uniqueIdField": {
+   "name": "ObjectId",
+   "isSystemMaintained": true
+  },
+  "globalIdFieldName": "",
+  "fields": [
+   {
+    "name": "date",
+    "type": "esriFieldTypeDateOnly",
+    "alias": "date",
+    "sqlType": "sqlTypeDate",
+    "domain": null,
+    "defaultValue": null
+   },
+   {
+    "name": "portname",
+    "type": "esriFieldTypeString",
+    "alias": "portname",
+    "sqlType": "sqlTypeNVarchar",
+    "length": 4000,
+    "domain": null,
+    "defaultValue": null
+   },
+   {
+    "name": "n_cargo",
+    "type": "esriFieldTypeInteger",
+    "alias": "n_cargo",
+    "sqlType": "sqlTypeInteger",
+    "domain": null,
+    "defaultValue": null
+   }
+  ],
+  "exceededTransferLimit": true,
+  "features": [
+   {
+    "attributes": {
+     "date": "2019-01-06",
+     "portname": "Suez Canal",
+     "n_cargo": 31
+    }
+   },
+   {
+    "attributes": {
+     "date": "2019-01-07",
+     "portname": "Suez Canal",
+     "n_cargo": 31
+    }
+   },
+   {
+    "attributes": {
+     "date": "2019-01-08",
+     "portname": "Suez Canal",
+     "n_cargo": 38
+    }
+   },
+   {
+    "attributes": {
+     "date": "2019-01-09",
+     "portname": "Suez Canal",
+     "n_cargo": 38
+    }
+   },
+   {
+    "attributes": {
+     "date": "2019-01-10",
+     "portname": "Suez Canal",
+     "n_cargo": 33
+    }
+   }
+  ]
+ }
+]

@@ -1,0 +1,41 @@
+{
+  "last_page": 1,
+  "total": 3,
+  "dataset": "<a href=\"/data-overview/eu\">EU</a> > BE",
+  "gas_day": "2026-09-27",
+  "data": [
+    {
+      "name": "Belgium",
+      "code": "BE",
+      "url": "BE",
+      "gasDayStart": "2026-09-25",
+      "inventory": "253.42",
+      "sendOut": "120.6",
+      "dtmi": "660.00",
+      "dtrs": "300.0",
+      "Info": []
+    },
+    {
+      "name": "Belgium",
+      "code": "BE",
+      "url": "BE",
+      "gasDayStart": "2026-09-26",
+      "inventory": "260.10",
+      "sendOut": null,
+      "dtmi": "660.00",
+      "dtrs": "300.0",
+      "Info": []
+    },
+    {
+      "name": "Belgium",
+      "code": "BE",
+      "url": "BE",
+      "gasDayStart": "2026-09-27",
+      "inventory": "270.55",
+      "sendOut": "95.4",
+      "dtmi": "660.00",
+      "dtrs": "300.0",
+      "Info": []
+    }
+  ]
+}

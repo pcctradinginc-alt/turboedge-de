@@ -1,0 +1,42 @@
+{
+  "last_page": 1,
+  "total": 2,
+  "dataset": "<a href=\"/data-overview/eu\">EU</a> > DE > astora",
+  "gas_day": "2026-09-27",
+  "data": [
+    {
+      "name": "UGS Haidach (astora)",
+      "code": "21W000000000078N",
+      "url": "21W000000000078N/DE/21X000000001160J",
+      "gasDayStart": "2026-09-26",
+      "gasInStorage": "12.3400",
+      "injection": "5.00",
+      "netWithdrawal": "-5.00",
+      "withdrawal": "0.00",
+      "workingGasVolume": "30.0000",
+      "injectionCapacity": "100.00",
+      "withdrawalCapacity": "150.00",
+      "status": "C",
+      "trend": "0.17",
+      "full": "41.13",
+      "info": []
+    },
+    {
+      "name": "UGS Haidach (astora)",
+      "code": "21W000000000078N",
+      "url": "21W000000000078N/DE/21X000000001160J",
+      "gasDayStart": "2026-09-27",
+      "gasInStorage": "12.5000",
+      "injection": "6.00",
+      "netWithdrawal": "-6.00",
+      "withdrawal": "0.00",
+      "workingGasVolume": "30.0000",
+      "injectionCapacity": "100.00",
+      "withdrawalCapacity": "150.00",
+      "status": "C",
+      "trend": "0.20",
+      "full": "41.67",
+      "info": []
+    }
+  ]
+}

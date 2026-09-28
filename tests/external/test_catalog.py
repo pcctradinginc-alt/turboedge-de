@@ -171,8 +171,6 @@ def test_every_blocked_wave_two_source_says_why_and_the_reasons_stay_distinct() 
     cfg = load_external_data_config(_REPO_CONFIG)
 
     credential_blocked = {"entsoe"}
-    licence_blocked = {"kiel_trade"}
-
     for source_id in credential_blocked:
         manifest = cfg.sources[source_id]
         assert not manifest.enabled, source_id
@@ -180,13 +178,30 @@ def test_every_blocked_wave_two_source_says_why_and_the_reasons_stay_distinct() 
         assert manifest.auth_environment_variable, source_id
         assert manifest.status_note.strip(), source_id
 
-    for source_id in licence_blocked:
-        manifest = cfg.sources[source_id]
-        assert not manifest.enabled, source_id
-        assert manifest.status is SourceStatus.REVIEW_REQUIRED, source_id
-        # These need no key at all -- only a human to read the terms.
-        assert not manifest.requires_auth, source_id
-        assert manifest.status_note.strip(), source_id
+    # No source is left blocked on an unread licence. Kiel's was resolved on
+    # the institute's own Impressum; PortWatch runs on the operator's
+    # instruction. Anything new that lands in REVIEW_REQUIRED has to be
+    # dealt with rather than accumulating.
+    unresolved = [
+        m.source_id for m in cfg.sources.values() if m.status is SourceStatus.REVIEW_REQUIRED
+    ]
+    assert unresolved == []
+
+
+def test_kiel_records_the_licence_clause_that_permits_this_use() -> None:
+    # The Kiel licence was genuinely resolved, unlike PortWatch's, and the
+    # permission it grants is conditional: scientific use yes, provision of
+    # the data as a product no. The condition is satisfied only because no
+    # observation data is committed -- state/*.duckdb and state/snapshots/
+    # are gitignored. If that ever changes, this source breaches its terms,
+    # so the clause is kept in the record rather than summarised away.
+    cfg = load_external_data_config(_REPO_CONFIG)
+    manifest = cfg.sources["kiel_trade"]
+
+    assert manifest.enabled
+    assert manifest.commercial_use_status == "RESEARCH_USE_PERMITTED_NO_REDISTRIBUTION"
+    assert "wissenschaftliche" in manifest.status_note
+    assert "Weiterveräußerung" in manifest.status_note
 
 
 def test_portwatch_records_that_its_licence_was_not_machine_verified() -> None:

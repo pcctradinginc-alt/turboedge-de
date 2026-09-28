@@ -330,8 +330,8 @@ sources:
     machine_endpoint: "https://trade.kielinstitut.de/KTI"
     access_method: "HTTPS CSV download"
     requires_auth: false
-    license_or_terms_reference: "https://www.kielinstitut.de/en/legal-notice/"
-    commercial_use_status: "REVIEW_REQUIRED"
+    license_or_terms_reference: "https://www.kielinstitut.de/de/impressum/"
+    commercial_use_status: "RESEARCH_USE_PERMITTED_NO_REDISTRIBUTION"
     frequency: "daily"
     expected_update_cadence: "daily for the maintained series; monthly around the 5th for the indicator itself"
     supports_historical_data: true
@@ -339,15 +339,31 @@ sources:
     supports_exact_release_time: false
     point_in_time_quality: UNKNOWN
     backfill_class: FORWARD_ONLY
-    enabled: false
+    enabled: true
     criticality: EXPERIMENTAL
-    status: REVIEW_REQUIRED
+    status: PASS
     status_note: >-
-      Files verified live 2026-09-28. Neither the indicator page nor the
-      download gallery states any licence, so terms are unresolved. Note
-      that most published CSVs are stale: only the Red Sea and Cape of Good
-      Hope ship counts were current (2026-09-25 / 2026-09-24); eight others
-      stop in January 2025 and two return HTTP 404.
+      Files verified live 2026-09-28. The licence WAS resolved, on the
+      institute's own Impressum rather than on the indicator page or the
+      download gallery, which both state nothing. Verbatim: "Die Nutzung
+      von Datensätzen und Graphiken ist, sofern nicht abweichend durch eine
+      entsprechende Lizenz geregelt, ausschließlich für journalistische,
+      wissenschaftliche und redaktionelle Zwecke erlaubt. Nicht gestattet
+      ist die Weiterveräußerung, Lizenzierung oder Bereitstellung der Daten
+      und Graphiken als eigenständiges Produkt oder innerhalb kommerzieller
+      Datenbanken oder Plattformen."
+
+      Scientific use is therefore explicitly permitted, which is what this
+      system does. The prohibition is on redistribution as a product, and
+      it is satisfied by construction: no observation data is committed --
+      `state/*.duckdb` and `state/snapshots/` are gitignored and state
+      archives are encrypted, verified 2026-09-28. That condition must keep
+      holding; publishing these series would breach it.
+
+      Note that most published CSVs are stale: only the Red Sea and Cape of
+      Good Hope ship counts were current (2026-09-25 / 2026-09-24); eight
+      others stop in January 2025 and two return HTTP 404. Only the two
+      live ones are configured.
 
   # Eurostat dissemination API, general case. adapters/eu_bcs.py already
   # speaks to this host, but its identifier format is hard-wired to the

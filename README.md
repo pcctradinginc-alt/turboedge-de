@@ -120,7 +120,7 @@ signal beat null this month" is a valid, expected output);
 | | e-Stat (Japan) — CPI all-items, core, core-core | **Live in CI**; key set as a secret |
 | Wave 2 (energy/logistics) | Energy-Charts (Fraunhofer ISE) — Netzlast, Day-ahead-Prognose, Residuallast, DE-LU-Spotpreis | **Live**; no key, CC BY 4.0 declared in the payload |
 | | IMF PortWatch — Suez, Bab el-Mandeb, Hormuz, Panama, world port calls | **Live**; no key. Licence not machine-verified — enabled on operator instruction |
-| | Kiel Trade Indicator — Red Sea and Cape of Good Hope ship counts | Verified live; only 2 of 13 published CSVs still maintained |
+| | Kiel Trade Indicator — Red Sea and Cape of Good Hope ship counts | **Live**; research use permitted, redistribution not (see docs) |
 | | GIE AGSI / ALSI — German gas storage, fill level, withdrawal, LNG | **Live in CI**; one key covers both |
 | | U.S. EIA Open Data v2 — WTI/Brent spot, US crude stocks | Key set as CI secret; runs in CI, series unconfirmed until the first run |
 | | ENTSO-E — actual load, day-ahead forecast (DE-LU) | Needs `ENTSOE_SECURITY_TOKEN`; email request, 3 working days |

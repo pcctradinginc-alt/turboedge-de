@@ -232,7 +232,7 @@ configured.
 | --- | --- | --- |
 | Energy-Charts (Fraunhofer ISE) | **none** | HTTP 200; licence declared in the payload — **live** |
 | IMF PortWatch | **none** | HTTP 200; 28 chokepoints, daily — **live on operator instruction** |
-| Kiel Trade Indicator | **none** | HTTP 200; only 2 of 13 CSVs still maintained |
+| Kiel Trade Indicator | **none** | HTTP 200; **live**, licence resolved on the Impressum; only 2 of 13 CSVs maintained |
 | GIE AGSI (gas storage) | `GIE_API_KEY` | **HTTP 200 with an error body** |
 | GIE ALSI (LNG) | `GIE_API_KEY` | **HTTP 200 with an error body** |
 | U.S. EIA Open Data v2 | `EIA_API_KEY` | HTTP 403 without a key; **key is a CI secret, so live in CI** |
@@ -264,9 +264,20 @@ conflated:
   when it is an omission. **The first CI run is the verification** — a wrong
   facet returns a payload without the column, the adapter reports
   `missing_series`, and readiness shows `BLOCKED` with the reason.
-* **Kiel** — works without a key, but states no licence on either the
-  indicator page or the download gallery. `REVIEW_REQUIRED`. Spec §8: do not
-  guess licensing.
+* **Kiel** is enabled, and its licence was genuinely resolved — not on the
+  indicator page or the download gallery, which state nothing, but on the
+  institute's own Impressum. Verbatim: *"Die Nutzung von Datensätzen und
+  Graphiken ist … ausschließlich für journalistische, wissenschaftliche und
+  redaktionelle Zwecke erlaubt. Nicht gestattet ist die Weiterveräußerung,
+  Lizenzierung oder Bereitstellung der Daten und Graphiken als eigenständiges
+  Produkt oder innerhalb kommerzieller Datenbanken oder Plattformen."*
+
+  Scientific use is explicitly permitted, which is what this system does. The
+  prohibition is on redistribution as a product, and it holds **by
+  construction**: no observation data is committed — `state/*.duckdb` and
+  `state/snapshots/` are gitignored and state archives are encrypted
+  (verified 2026-09-28). That condition has to keep holding. Publishing these
+  series would breach it.
 * **PortWatch** is enabled, and the basis is worth stating precisely. Its
   ArcGIS item names `imf.org/external/terms.htm` as its licence reference,
   and that page answers HTTP 403 to a non-browser agent; it was not

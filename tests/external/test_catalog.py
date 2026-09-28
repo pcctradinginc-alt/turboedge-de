@@ -164,27 +164,47 @@ def test_policy_merges_overrides_onto_the_defaults() -> None:
     assert policy.profile_for("business_daily").min_exploratory_observations == 180
 
 
-def test_no_wave_two_source_is_enabled_and_each_says_why() -> None:
-    # Two distinct reasons that must not be conflated: a missing credential
-    # is a fact about this machine, an unread licence is a fact about the
-    # publisher. Collapsing them would hide which ones a key would fix.
+def test_every_blocked_wave_two_source_says_why_and_the_reasons_stay_distinct() -> None:
+    # Two reasons that must not be conflated: a missing credential is a fact
+    # about this machine, an unread licence is a fact about the publisher.
+    # Collapsing them would hide which ones a key would fix.
     cfg = load_external_data_config(_REPO_CONFIG)
-    wave_two = {"portwatch", "kiel_trade", "agsi", "alsi", "eia", "entsoe"}
 
-    for source_id in wave_two:
+    credential_blocked = {"agsi", "alsi", "entsoe"}
+    licence_blocked = {"portwatch", "kiel_trade"}
+
+    for source_id in credential_blocked:
         manifest = cfg.sources[source_id]
         assert not manifest.enabled, source_id
-        assert manifest.status in NON_INGESTING_STATUSES, source_id
+        assert manifest.status is SourceStatus.AUTH_MISSING, source_id
+        assert manifest.auth_environment_variable, source_id
         assert manifest.status_note.strip(), source_id
 
-    credentialed = {"agsi", "alsi", "eia", "entsoe"}
-    for source_id in credentialed:
-        assert cfg.sources[source_id].status is SourceStatus.AUTH_MISSING
-        assert cfg.sources[source_id].auth_environment_variable
-    for source_id in {"portwatch", "kiel_trade"}:
+    for source_id in licence_blocked:
+        manifest = cfg.sources[source_id]
+        assert not manifest.enabled, source_id
+        assert manifest.status is SourceStatus.REVIEW_REQUIRED, source_id
         # These need no key at all -- only a human to read the terms.
-        assert cfg.sources[source_id].status is SourceStatus.REVIEW_REQUIRED
-        assert not cfg.sources[source_id].requires_auth
+        assert not manifest.requires_auth, source_id
+        assert manifest.status_note.strip(), source_id
+
+
+def test_eia_is_live_on_a_ci_secret_and_says_its_series_are_unconfirmed() -> None:
+    # EIA_API_KEY exists as a repository secret but not in the authoring
+    # environment, so its series were configured from documentation and the
+    # first CI run is their verification. That has to be stated, not implied
+    # by silence -- otherwise a wrong facet looks like a quiet source.
+    cfg = load_external_data_config(_REPO_CONFIG)
+    manifest = cfg.sources["eia"]
+
+    assert manifest.enabled
+    assert manifest.status is SourceStatus.PASS
+    assert "not present in the authoring environment" in manifest.status_note
+
+    series = cfg.series_for("eia")
+    assert series
+    for spec in series:
+        assert "NOT verified live" in spec.notes, spec.series_id
 
 
 def test_agsi_and_alsi_share_one_credential() -> None:

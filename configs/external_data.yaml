@@ -451,13 +451,16 @@ sources:
     supports_exact_release_time: false
     point_in_time_quality: CONSERVATIVE_DATE
     backfill_class: HISTORICAL_CONSERVATIVE
-    enabled: false
+    enabled: true
     criticality: EXPERIMENTAL
-    status: AUTH_MISSING
+    status: PASS
     status_note: >-
-      EIA_API_KEY is not set. Free registration at
-      https://www.eia.gov/opendata/register.php. The key is a query
-      parameter, so it is redacted before anything is archived.
+      EIA_API_KEY is set as a repository secret (2026-09-28), so this runs
+      in CI. It is not present in the authoring environment, so the three
+      configured series could not be confirmed live -- the first CI run is
+      the verification, and a wrong facet surfaces as BLOCKED readiness
+      rather than as silence. The key is a query parameter and is redacted
+      before anything is archived.
 
   # ENTSO-E Transparency Platform. Verified live 2026-09-28 without a
   # token: HTTP 401 with an XML Acknowledgement_MarketDocument.
@@ -793,6 +796,67 @@ series:
       Verified live 2026-09-28: 96 points, EUR/MWh, 2026-09-27 00:00 =
       192.07. The price is where the physical grid state becomes a cost to
       German industry.
+
+  # ==== U.S. EIA ======================================================
+  # EIA_API_KEY is set as a repository secret, so unlike the other
+  # credentialed sources this one can actually run -- but only in CI, where
+  # the secret lives. It is not in this environment, so NONE of the three
+  # series below could be confirmed against the live API.
+  #
+  # They are documented EIA v2 route/facet combinations, not invented ones,
+  # and they are deliberately configured rather than withheld: a source with
+  # zero series is skipped forever with "no series configured", which reads
+  # like a decision when it is really an omission. The first CI run *is* the
+  # verification. If a facet is wrong the payload comes back without the
+  # column, the adapter reports `missing_series`, and readiness shows
+  # BLOCKED with the reason -- which is exactly what that machinery is for.
+  #
+  # Only three, and only the ones with a defensible channel to the four
+  # traded underlyings: oil prices reach EUR/USD and XAU through the dollar
+  # and through inflation expectations. US petroleum inventories are the
+  # supply-side counterpart. Electricity and gas routes exist in the
+  # adapter's SUGGESTED_ROUTES but are not configured -- their channel to a
+  # German turbo is not one I can argue for.
+  - source: eia
+    series_id: EIA.WTI_SPOT
+    name: "Crude oil spot price, WTI Cushing"
+    category: energy
+    unit: usd_per_barrel
+    frequency: daily
+    native_identifier: "petroleum/pri/spt|series=RWTC|value"
+    availability_precision: CONSERVATIVE_DATE
+    backfill_class: HISTORICAL_CONSERVATIVE
+    conservative_release_lag_hours: 96
+    notes: >-
+      NOT verified live -- no EIA_API_KEY in the authoring environment. The
+      first CI run confirms or refutes the facet. A 96-hour lag: EIA spot
+      prices carry a multi-day publication delay.
+
+  - source: eia
+    series_id: EIA.BRENT_SPOT
+    name: "Crude oil spot price, Brent Europe"
+    category: energy
+    unit: usd_per_barrel
+    frequency: daily
+    native_identifier: "petroleum/pri/spt|series=RBRTE|value"
+    availability_precision: CONSERVATIVE_DATE
+    backfill_class: HISTORICAL_CONSERVATIVE
+    conservative_release_lag_hours: 96
+    notes: "NOT verified live. Brent is the European benchmark; WTI is the US one."
+
+  - source: eia
+    series_id: EIA.CRUDE_STOCKS
+    name: "U.S. crude oil stocks excluding the Strategic Petroleum Reserve"
+    category: energy
+    unit: thousand_barrels
+    frequency: weekly
+    native_identifier: "petroleum/stoc/wstk|series=WCESTUS1|value"
+    availability_precision: CONSERVATIVE_DATE
+    backfill_class: HISTORICAL_CONSERVATIVE
+    conservative_release_lag_hours: 168
+    notes: >-
+      NOT verified live. Weekly, released Wednesdays for the prior Friday,
+      hence the 168-hour lag.
 
   # ==== IMF PortWatch, verified live 2026-09-28 =======================
   # Four chokepoints chosen for their bearing on European energy and goods

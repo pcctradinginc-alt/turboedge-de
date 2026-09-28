@@ -122,7 +122,7 @@ signal beat null this month" is a valid, expected output);
 | | IMF PortWatch — 28 chokepoints, daily vessel transits | Verified live, no key needed; `REVIEW_REQUIRED` until reuse terms are read |
 | | Kiel Trade Indicator — Red Sea and Cape of Good Hope ship counts | Verified live; only 2 of 13 published CSVs still maintained |
 | | GIE AGSI / ALSI — European gas storage and LNG | Needs `GIE_API_KEY` (one key, both datasets) |
-| | U.S. EIA Open Data v2 | Needs `EIA_API_KEY` |
+| | U.S. EIA Open Data v2 — WTI/Brent spot, US crude stocks | Key set as CI secret; runs in CI, series unconfirmed until the first run |
 | | ENTSO-E Transparency Platform | Needs `ENTSOE_SECURITY_TOKEN` |
 | Manual | CSV import from `state/imports/products/` | Working |
 | Not implemented | Börse Stuttgart, Börse Frankfurt | Blocked (Cloudflare bot management / salted-hash JS headers); neither bypassed; `enabled: false` docs-only entries in `configs/sources.yaml` |

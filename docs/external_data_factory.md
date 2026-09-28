@@ -235,7 +235,7 @@ configured.
 | Kiel Trade Indicator | **none** | HTTP 200; only 2 of 13 CSVs still maintained |
 | GIE AGSI (gas storage) | `GIE_API_KEY` | **HTTP 200 with an error body** |
 | GIE ALSI (LNG) | `GIE_API_KEY` | **HTTP 200 with an error body** |
-| U.S. EIA Open Data v2 | `EIA_API_KEY` | HTTP 403, `API_KEY_MISSING` |
+| U.S. EIA Open Data v2 | `EIA_API_KEY` | HTTP 403 without a key; **key is a CI secret, so live in CI** |
 | ENTSO-E Transparency | `ENTSOE_SECURITY_TOKEN` | HTTP 401, XML acknowledgement |
 
 **Energy-Charts is live.** It is the only source in either wave that needed
@@ -255,7 +255,15 @@ published quantity, the same reason `BBK.EURUSD_REF` duplicates `ECB.EURUSD`.
 **None of the other six is enabled**, for two reasons that must not be
 conflated:
 
-* **AGSI, ALSI, EIA, ENTSO-E** — no credential present. `AUTH_MISSING`.
+* **AGSI, ALSI, ENTSO-E** — no credential present. `AUTH_MISSING`.
+* **EIA** runs in CI, where its secret lives, but not here. Its three series
+  (WTI spot, Brent spot, US crude stocks) were configured from documented
+  route/facet combinations and could not be confirmed live. They are
+  configured rather than withheld on purpose: a source with zero series is
+  skipped forever with "no series configured", which reads like a decision
+  when it is an omission. **The first CI run is the verification** — a wrong
+  facet returns a payload without the column, the adapter reports
+  `missing_series`, and readiness shows `BLOCKED` with the reason.
 * **PortWatch, Kiel** — they work without a key, but their reuse terms could
   not be established. `REVIEW_REQUIRED`. PortWatch's own ArcGIS metadata names
   `imf.org/external/terms.htm` as its licence, and that page answers HTTP 403

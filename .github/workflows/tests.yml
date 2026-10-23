@@ -41,5 +41,16 @@ jobs:
       - name: Type check with mypy
         run: uv run mypy src
 
+      # `-n auto` measured on this suite 2026-10-23, with coverage, on a
+      # 10-core machine: 257.7s serial -> 92.7s parallel, a 2.78x speedup
+      # with identical results (2357 passed, 1 skipped, 3 xfailed both
+      # ways). Three consecutive parallel runs without coverage were 54.8 /
+      # 56.1 / 57.9s, so the gain is reproducible rather than one lucky
+      # scheduling. GitHub's standard runners have fewer cores than the
+      # machine this was measured on, so expect less there -- `auto` adapts
+      # rather than hard-coding a worker count.
+      #
+      # This touches only the test workflow. It cannot affect data
+      # collection: pipeline.yml is a separate workflow and is unchanged.
       - name: Run tests with pytest
-        run: uv run pytest -q --cov=turboedge --cov-report=term-missing
+        run: uv run pytest -q -n auto --cov=turboedge --cov-report=term-missing

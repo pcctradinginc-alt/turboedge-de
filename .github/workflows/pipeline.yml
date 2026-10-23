@@ -92,6 +92,10 @@ on:
     # discard the first job's writes.
     - cron: "40 22 * * 1-5" # external
     - cron: "0 6 * * 6" # weekly (Saturday)
+    # Saturdays, after the weekly tournament has refreshed walk-forward
+    # results and re-scored the queue, so the autonomous loop decides on
+    # the freshest evidence available.
+    - cron: "40 8 * * 6" # research
     - cron: "30 6 1 * *" # monthly (1st of month)
   workflow_dispatch:
     inputs:
@@ -103,6 +107,7 @@ on:
           - scan
           - eod
           - external
+          - research
           - weekly
           - monthly
       allow_fresh_state:
@@ -173,6 +178,7 @@ jobs:
                 "40 21 * * 1-5") mode="eod" ;;
                 "40 22 * * 1-5") mode="external" ;;
                 "0 6 * * 6") mode="weekly" ;;
+                "40 8 * * 6") mode="research" ;;
                 "30 6 1 * *") mode="monthly" ;;
                 *)
                   echo "::error::unrecognized schedule cron: $SCHEDULE_CRON"
@@ -189,7 +195,7 @@ jobs:
               ;;
           esac
           case "$mode" in
-            scan|eod|external|weekly|monthly) ;;
+            scan|eod|external|research|weekly|monthly) ;;
             *)
               echo "::error::invalid resolved mode: $mode"
               exit 2
@@ -571,6 +577,82 @@ jobs:
         with:
           state_key: ${{ secrets.TURBOEDGE_STATE_KEY }}
           push_to_backend: "true"
+
+  # ---------------------------------------------------------------------
+  # research -- Saturday, after the weekly tournament. One cycle of the
+  # autonomous research loop: re-score the queue, decide the next step,
+  # record it.
+  #
+  # A mode of THIS workflow rather than a workflow of its own, and that was
+  # a correction. A separate `research.yml` reads more cleanly and would
+  # have broken state persistence silently: `.github/actions/turboedge-state`
+  # searches `gh run list --workflow pipeline.yml --status success` for the
+  # artifact to restore, so state packed by a different workflow would be
+  # uploaded and then never read again -- the same shape of failure as
+  # gating a save on a condition that never holds.
+  #
+  # Logical separation is preserved where it matters: its own run, its own
+  # timeout, its own schedule, and nothing a scan or an eod depends on. The
+  # `turboedge-state` concurrency group serialises it behind them rather
+  # than racing for the artifact.
+  #
+  # What this job may do: decide, and record the decision. What it may NOT
+  # do, and cannot: approve a question out of PROPOSED, start a confirmatory
+  # trial, or promote an alpha. Those need a named human
+  # (`meta/research_queue.approve`), and promotion is additionally blocked
+  # while `alpha/promotion.py` has seven unset gates and GOVERNANCE.md
+  # disagrees with configs/ranking.yaml about position and cluster limits.
+  # ---------------------------------------------------------------------
+  research:
+    needs: resolve-mode
+    if: needs.resolve-mode.outputs.mode == 'research'
+    runs-on: ubuntu-latest
+    # One decision plus a state round-trip. Bounded on purpose: an
+    # unbounded research job is the one thing an autonomous loop must not
+    # have.
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Restore TurboEdge state
+        id: state
+        uses: ./.github/actions/turboedge-state
+        with:
+          state_key: ${{ secrets.TURBOEDGE_STATE_KEY }}
+          mode: research
+          allow_fresh_state: ${{ inputs.allow_fresh_state }}
+          github_token: ${{ github.token }}
+
+      # Re-score first, so the decision ranks on current evidence rather
+      # than on whatever the previous run left behind. `research queue` may
+      # reorder freely and may only ever write PROPOSED.
+      - name: Re-score the research queue
+        run: uv run turboedge --log-format json research queue --limit 20
+
+      # Idempotent within a quarter: a retried or repeated week reaches the
+      # same conclusion and records nothing new, so scheduling cannot
+      # inflate the research ledger -- which is the denominator the
+      # multiple-testing correction depends on.
+      - name: Decide the next research step
+        run: uv run turboedge --log-format json research step
+
+      - name: Job summary
+        if: always()
+        uses: ./.github/actions/turboedge-state-summary
+        with:
+          mode: research
+          state_note: ${{ steps.state.outputs.state_note }}
+
+      - name: Pack and upload state
+        if: success()
+        uses: ./.github/actions/turboedge-state-pack
+        with:
+          state_key: ${{ secrets.TURBOEDGE_STATE_KEY }}
+          push_to_backend: "false"
 
   # ---------------------------------------------------------------------
   # weekly -- Saturday: research tournament + keepalive (re-enable every

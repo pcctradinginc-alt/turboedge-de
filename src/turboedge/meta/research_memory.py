@@ -156,6 +156,44 @@ _FAMILY_KEYWORDS: dict[InformationFamily, frozenset[str]] = {
     InformationFamily.RATES_CREDIT: frozenset(
         {"rates", "rate", "credit", "yield", "spread", "curve", "bond", "cds", "estr"}
     ),
+    # Added 2026-10-23 with `family_for_feature`. The MACRO family was
+    # introduced with the External Data Factory and this table predates it,
+    # so a recorded macro failure could not be attributed to any family at
+    # all -- meaning the family now carrying 25+ configured series could
+    # never be penalised by its own negative results, nor shelved for
+    # repeatedly failing. That is a hole in the negative memory rather than
+    # a missing enhancement.
+    #
+    # Every token below was checked against the rest of this table and
+    # collides with none of it. "macro" and "cpi" are deliberately NOT here:
+    # EVENT_RISK already claims them, and silently moving a token between
+    # families would change existing similarity scores.
+    InformationFamily.MACRO: frozenset(
+        {
+            "m3",
+            "monetary",
+            "aggregate",
+            "industrial",
+            "production",
+            "orders",
+            "employment",
+            "payroll",
+            "claims",
+            "inflation",
+            "gdp",
+            "consumption",
+            "freight",
+            "rail",
+            "truck",
+            "toll",
+            "port",
+            "shipping",
+            "electricity",
+            "load",
+            "gas",
+            "storage",
+        }
+    ),
     InformationFamily.BREADTH_DISPERSION: frozenset(
         {"breadth", "dispersion", "advance", "decline", "participation"}
     ),
@@ -219,6 +257,37 @@ _FAMILY_TO_UNCERTAINTY_AXES: dict[InformationFamily, tuple[str, ...]] = {
 }
 
 _HORIZON_RE = re.compile(r"^(\d+)d$")
+
+
+def family_for_feature(feature: str) -> InformationFamily | None:
+    """Which information family a recorded failure most likely belongs to.
+
+    The negative memory stores a `feature` name (`learning/failed_hypotheses.
+    FailedHypothesis.feature`), not a family, because a failure is recorded
+    against the thing that was tested. Anything reasoning about families --
+    such as deciding a family has failed often enough to shelve -- needs the
+    mapping back, and inventing a second one would guarantee it drifts from
+    the token overlap `_failure_similarity` already uses.
+
+    Returns `None` when no family's keywords match, which is the honest
+    answer for a feature name that was never classified. A caller must not
+    treat that as "belongs to no family and is therefore safe to retest";
+    it means the record cannot be attributed.
+    """
+    tokens = _tokens(feature)
+    if not tokens:
+        return None
+    best: InformationFamily | None = None
+    best_overlap = 0
+    for family, keywords in _FAMILY_KEYWORDS.items():
+        overlap = len(tokens & keywords)
+        # Ties resolve to the family whose name sorts first, so the mapping
+        # is deterministic rather than dependent on dict ordering.
+        if overlap > best_overlap or (
+            overlap == best_overlap and overlap > 0 and family.value < (best.value if best else "~")
+        ):
+            best, best_overlap = family, overlap
+    return best if best_overlap > 0 else None
 
 
 def _parse_horizon_days(horizon: str) -> int | None:

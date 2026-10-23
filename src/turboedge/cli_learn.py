@@ -74,6 +74,7 @@ from turboedge.reporting.html import save_monthly_report, save_weekly_report, su
 from turboedge.reporting.monthly import build_monthly_report
 from turboedge.reporting.redaction import redact_console_enabled
 from turboedge.reporting.weekly import run_research_tournament
+from turboedge.research.step import run_research_step
 from turboedge.simulation.ko_calibration import build_ko_calibration_dataset
 from turboedge.storage.duckdb import Store
 from turboedge.storage.schemas import (
@@ -1422,6 +1423,56 @@ def archive_products_cmd(
     )
 
 
+def research_step_cmd(
+    ctx: typer.Context,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Decide and print, but record nothing."),
+    ] = False,
+) -> None:
+    """One cycle of the autonomous research loop: decide and record.
+
+    Reads the research queue, the quarter's recorded trials and the
+    negative memory, and records exactly one decision. Idempotent within a
+    quarter: a re-run that reaches the same conclusion writes nothing new,
+    so a retried or interrupted scheduled run cannot inflate the research
+    ledger -- which is the denominator the multiple-testing correction
+    depends on.
+
+    It never approves, never promotes and never starts a confirmatory
+    trial. Those remain human-gated (`research approve`), and promotion is
+    additionally blocked while `alpha/promotion.py` has unset gates and
+    GOVERNANCE.md disagrees with configs/ranking.yaml about risk limits.
+    """
+    app_ctx = ctx.obj
+
+    with Store(app_ctx.db_path) as store:
+        store.init_schema()
+        action = run_research_step(
+            store,
+            failed_hypotheses_path=failed_hypotheses_default_path(app_ctx.state_dir),
+            now=datetime.now(UTC),
+            dry_run=dry_run,
+        )
+
+    console.print(f"[bold]{action.kind}[/bold]")
+    if action.hypothesis_id:
+        console.print(f"  hypothesis: {action.hypothesis_id}  (family: {action.family})")
+    console.print(f"  reason: {action.reason}")
+    console.print(
+        "  [dim]this loop never approves, promotes, or starts a confirmatory "
+        "trial -- those need a named human[/dim]"
+    )
+    _write_summary(
+        "research_step",
+        {"decided": 1, "recorded": 0 if dry_run else 1},
+        kind=str(action.kind),
+        hypothesis_id=action.hypothesis_id,
+        reason=action.reason,
+        evidence=action.evidence,
+    )
+
+
 def register_learn_commands(app: typer.Typer, position_app: typer.Typer) -> None:
     """Wire every Contract v3 integration-wave command into the main CLI.
     Called once from ``cli.py``::
@@ -1448,6 +1499,7 @@ def register_learn_commands(app: typer.Typer, position_app: typer.Typer) -> None
     research_app.command("tournament")(research_tournament_cmd)
     research_app.command("backfill-trials")(research_backfill_trials_cmd)
     research_app.command("ko-calibration")(research_ko_calibration_cmd)
+    research_app.command("step")(research_step_cmd)
     app.add_typer(research_app, name="research")
 
     archive_app = typer.Typer(help="Deep, slow, once-daily research-only product archive")

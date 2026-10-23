@@ -102,6 +102,7 @@ on:
         options:
           - scan
           - eod
+          - external
           - weekly
           - monthly
       allow_fresh_state:

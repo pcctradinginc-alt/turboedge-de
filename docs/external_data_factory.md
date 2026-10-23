@@ -197,10 +197,40 @@ turboedge external readiness --json-out reports/eod/readiness.json
 turboedge external triggers
 ```
 
-`external ingest` runs daily in the `eod` job of `.github/workflows/pipeline.yml`,
-with `continue-on-error`: an external publisher being down for an evening must
-not fail the job that also labels the ledger and compacts retention. A failing
-series is recorded per-series and the others still collect.
+`external ingest` runs daily in its **own** `external` job of
+`.github/workflows/pipeline.yml`, one hour after `eod`, with a 90-minute
+timeout and its own state save.
+
+It started life as two steps inside `eod`, and that cost 25 days of work.
+`eod` has `timeout-minutes: 30`; measured 2026-10-23, its other steps need
+about 11 minutes (the deep gettex product archive alone takes 10:42) and the
+ingest needs more than the rest — PortWatch honours a 60-second crawl delay
+across 11 series with paging, Energy-Charts backfills 400 days on a first run,
+Destatis honours 30 seconds. Every `eod` run from 2026-09-29 to 2026-10-23 hit
+the wall here: **19 consecutive weekdays cancelled.**
+
+Two things made that expensive rather than merely annoying.
+
+`continue-on-error: true` on the step did not help, and that was the actual
+misunderstanding: it catches a step that *fails*, not a job that runs out of
+*time*. A timeout cancels the whole job, so every later step was skipped —
+including `Pack and upload state`. The night's label, learn and reevaluate
+output was restored from cache, recomputed, and discarded, every night.
+
+And nobody was told, for a specific reason worth remembering: **GitHub emails
+the owner when a run fails, not when it is cancelled, and a job timeout is
+reported as cancelled.** The loudest failure this pipeline has was also its
+quietest. The `health-watch` job now converts "a recent run did not succeed"
+into a real failure, which does notify.
+
+Note what did *not* fix it. Loosening the save to `if: always()` looks like the
+obvious repair and buys nothing: the restore action searches
+`gh run list --status success`, so an artifact uploaded by a cancelled run is
+never read again. Every save stays on `success()`. What makes the external job's
+data survive is that both fetch steps are `continue-on-error`, so a publisher
+being down leaves the job successful and the save reachable.
+
+A failing series is still recorded per-series and the others still collect.
 
 ## Storage
 

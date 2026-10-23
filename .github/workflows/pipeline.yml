@@ -84,6 +84,13 @@ on:
     - cron: "50 15 * * 1-5" # scan
     - cron: "10 18 * * 1-5" # scan
     - cron: "40 21 * * 1-5" # eod
+    # One hour after eod, deliberately its own run rather than another job
+    # inside eod's: `concurrency: turboedge-state` with cancel-in-progress
+    # false serialises runs, so this restores the state eod has just saved,
+    # adds to it and saves again. Two jobs in ONE run would both restore
+    # the same state and both pack it, and the second upload would silently
+    # discard the first job's writes.
+    - cron: "40 22 * * 1-5" # external
     - cron: "0 6 * * 6" # weekly (Saturday)
     - cron: "30 6 1 * *" # monthly (1st of month)
   workflow_dispatch:
@@ -163,6 +170,7 @@ jobs:
                 "40 7 * * 1-5"|"10 10 * * 1-5"|"45 13 * * 1-5"|"50 15 * * 1-5"|"10 18 * * 1-5")
                   mode="scan" ;;
                 "40 21 * * 1-5") mode="eod" ;;
+                "40 22 * * 1-5") mode="external" ;;
                 "0 6 * * 6") mode="weekly" ;;
                 "30 6 1 * *") mode="monthly" ;;
                 *)
@@ -180,7 +188,7 @@ jobs:
               ;;
           esac
           case "$mode" in
-            scan|eod|weekly|monthly) ;;
+            scan|eod|external|weekly|monthly) ;;
             *)
               echo "::error::invalid resolved mode: $mode"
               exit 2
@@ -188,6 +196,78 @@ jobs:
           esac
           echo "Resolved mode: $mode"
           echo "mode=$mode" >> "$GITHUB_OUTPUT"
+
+  # ---------------------------------------------------------------------
+  # health-watch -- runs in EVERY mode, touches no state, and fails loudly
+  # when recent runs did not succeed.
+  #
+  # This exists because of a measured 25-day silence. From 2026-09-29 to
+  # 2026-10-23 the `eod` job was cancelled by its timeout on 19 consecutive
+  # weekdays, discarding each night's label/learn output, and nobody was
+  # told. The reason nobody was told is specific and worth writing down:
+  # **GitHub emails the owner when a run FAILS, not when it is CANCELLED,
+  # and a job timeout is reported as cancelled.** The loudest failure mode
+  # this pipeline has was also its quietest.
+  #
+  # So this job converts "a recent run did not succeed" into an actual
+  # failure, which does notify. It reads only the Actions API, never the
+  # state, and cannot affect the data path: it runs in parallel with the
+  # mode jobs rather than gating them, so a watchdog outage never stops a
+  # scan and a failing watchdog never skips a save.
+  # ---------------------------------------------------------------------
+  health-watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Fail if a recent pipeline run did not succeed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Last 36 hours covers a full day of scans plus eod and external
+          # with room for a late start, without reaching back far enough to
+          # keep alarming about something already fixed.
+          since=$(date -u -d '36 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+            || date -u -v-36H +%Y-%m-%dT%H:%M:%SZ)
+          echo "Checking pipeline.yml runs since ${since}"
+
+          if ! runs=$(gh run list --workflow pipeline.yml --limit 60 \
+              --json createdAt,conclusion,displayTitle,databaseId); then
+            echo "::warning::could not read run history; not treating that as a pipeline failure"
+            exit 0
+          fi
+
+          bad=$(printf '%s' "$runs" | jq -r --arg since "$since" '
+            [ .[]
+              | select(.createdAt >= $since)
+              | select(.conclusion != null and .conclusion != "success" and .conclusion != "skipped")
+            ]')
+          count=$(printf '%s' "$bad" | jq 'length')
+
+          {
+            echo "## Pipeline health"
+            echo
+            echo "Window: since ${since}"
+            echo "Non-successful runs: ${count}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$count" -eq 0 ]; then
+            echo "All runs in the window concluded successfully."
+            exit 0
+          fi
+
+          printf '%s' "$bad" | jq -r '.[] | "  \(.createdAt)  \(.conclusion)  run \(.databaseId)"'
+          {
+            echo
+            printf '%s' "$bad" | jq -r '.[] | "- `\(.conclusion)` \(.createdAt) ([run](../../actions/runs/\(.databaseId)))"'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "::error::${count} pipeline run(s) in the last 36h did not succeed. A job timeout is reported as 'cancelled', which GitHub does NOT email about -- that is why 19 such runs went unnoticed for 25 days from 2026-09-29. This step fails on purpose so the notification happens."
+          exit 1
 
   # ---------------------------------------------------------------------
   # scan -- Mo-Fr, 5x/day
@@ -354,38 +434,6 @@ jobs:
       - name: Archive full-depth product universe (research only)
         run: uv run turboedge --log-format json archive products
 
-      # External Data Factory (docs/external_data_factory.md). Runs once a
-      # day in `eod`, never on the scan path: macro publishers update on
-      # their own calendars, and a trading decision must never wait on one
-      # of them.
-      #
-      # `continue-on-error` is deliberate. An external publisher being down
-      # for an evening is normal and must not fail the eod job that also
-      # labels the ledger and compacts retention -- the ingestion loop
-      # already records a per-series failure and keeps the other series.
-      #
-      # FRED_API_KEY and ESTAT_APP_ID are optional. When a secret is absent
-      # the source reports AUTH_MISSING and is skipped cleanly rather than
-      # attempted and failed; add them with `gh secret set` to switch those
-      # two sources on. No credential is ever written to the database, to a
-      # log line, or into an archived request fingerprint.
-      - name: Ingest external economic data (point-in-time archive)
-        continue-on-error: true
-        env:
-          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
-          ESTAT_APP_ID: ${{ secrets.ESTAT_APP_ID }}
-          GIE_API_KEY: ${{ secrets.GIE_API_KEY }}
-          EIA_API_KEY: ${{ secrets.EIA_API_KEY }}
-          ENTSOE_SECURITY_TOKEN: ${{ secrets.ENTSOE_SECURITY_TOKEN }}
-        run: uv run turboedge --log-format json external ingest
-
-      # Read-only. Prints what is usable and, for everything else, exactly
-      # what is still missing -- so nobody has to track by hand when a
-      # dataset has finally accumulated enough evidence (spec §84).
-      - name: Report data readiness
-        continue-on-error: true
-        run: uv run turboedge --log-format json external readiness --json-out reports/eod/readiness.json
-
       - name: Compact product_snapshots retention
         run: uv run turboedge --log-format json db compact
 
@@ -417,6 +465,105 @@ jobs:
       # rate rather than 5x/day. Entirely a no-op if TURBOEDGE_STATE_BACKEND
       # is unset -- see turboedge-state-pack/action.yml and
       # docs/durable_state.md.
+      - name: Pack and upload state
+        if: success()
+        uses: ./.github/actions/turboedge-state-pack
+        with:
+          state_key: ${{ secrets.TURBOEDGE_STATE_KEY }}
+          push_to_backend: "true"
+
+  # ---------------------------------------------------------------------
+  # external -- Mo-Fr, one hour after eod. The External Data Factory
+  # (docs/external_data_factory.md).
+  #
+  # Its own run, for a reason paid for in 25 days of lost work. This used
+  # to be two steps inside `eod`, which has `timeout-minutes: 30`, and the
+  # ingest does not fit in what eod had left: PortWatch alone honours a
+  # 60-second crawl delay across 11 series with paging, Energy-Charts
+  # backfills 400 days on a first run, Destatis honours 30 seconds, and
+  # FRED, EIA, GIE and e-Stat were added on top. Every eod run from
+  # 2026-09-29 to 2026-10-23 hit the wall here and was cancelled.
+  #
+  # `continue-on-error` on the step did not help, and that was the real
+  # misunderstanding: it catches a step that FAILS, not a job that runs out
+  # of time. A timeout cancels the whole job, so every later step --
+  # including "Pack and upload state" -- was skipped, and the night's
+  # label/learn output was discarded with it.
+  #
+  # Separating it fixes both halves. A slow or broken publisher can now
+  # cost at most this job, and eod's save no longer sits behind a fetch
+  # that depends on eight external hosts.
+  # ---------------------------------------------------------------------
+  external:
+    needs: resolve-mode
+    if: needs.resolve-mode.outputs.mode == 'external'
+    runs-on: ubuntu-latest
+    # Generous on purpose. Measured locally 2026-09-28: a full first
+    # backfill of the eight keyless sources took ~25 minutes, dominated by
+    # PortWatch's crawl delay, and the five credentialed sources had never
+    # run at all. Later runs are far shorter -- `_incremental_since` resumes
+    # from the newest stored observation with a 14-day overlap -- but the
+    # first successful run has to be able to finish, or it never becomes a
+    # later run.
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Restore TurboEdge state
+        id: state
+        uses: ./.github/actions/turboedge-state
+        with:
+          state_key: ${{ secrets.TURBOEDGE_STATE_KEY }}
+          mode: external
+          allow_fresh_state: ${{ inputs.allow_fresh_state }}
+          github_token: ${{ github.token }}
+
+      # Still `continue-on-error`: an external publisher being down for an
+      # evening is normal and must not fail the job that saves the data the
+      # other publishers did deliver. The ingestion loop already records a
+      # per-series failure and keeps the rest.
+      #
+      # Credentials are all optional. A source whose variable is unset
+      # reports AUTH_MISSING and is skipped cleanly rather than attempted
+      # and failed. No credential is ever written to the database, to a log
+      # line, or into an archived request fingerprint.
+      - name: Ingest external economic data (point-in-time archive)
+        continue-on-error: true
+        env:
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+          ESTAT_APP_ID: ${{ secrets.ESTAT_APP_ID }}
+          GIE_API_KEY: ${{ secrets.GIE_API_KEY }}
+          EIA_API_KEY: ${{ secrets.EIA_API_KEY }}
+          ENTSOE_SECURITY_TOKEN: ${{ secrets.ENTSOE_SECURITY_TOKEN }}
+        run: uv run turboedge --log-format json external ingest
+
+      # Read-only. Prints what is usable and, for everything else, exactly
+      # what is still missing -- so nobody has to track by hand when a
+      # dataset has finally accumulated enough evidence.
+      - name: Report data readiness
+        continue-on-error: true
+        run: uv run turboedge --log-format json external readiness --json-out reports/external/readiness.json
+
+      - name: Job summary
+        if: always()
+        uses: ./.github/actions/turboedge-state-summary
+        with:
+          mode: external
+          state_note: ${{ steps.state.outputs.state_note }}
+
+      # `success()`, like every other caller, and for a reason that is
+      # easy to get wrong: the restore action searches
+      # `gh run list --status success`, so an artifact uploaded by a
+      # cancelled or failed run is never read again. Uploading from a
+      # broken run would buy nothing and contradict
+      # turboedge-state-pack's documented contract. What makes this job's
+      # state survive is not a looser condition -- it is that the two
+      # fetch steps are `continue-on-error`, so a publisher being down
+      # leaves the job successful and the save reachable.
       - name: Pack and upload state
         if: success()
         uses: ./.github/actions/turboedge-state-pack

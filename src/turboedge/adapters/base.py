@@ -82,6 +82,38 @@ class AdapterError(Exception):
     """Base class for all adapter-level failures."""
 
 
+#: How much of a failed response body to quote. Enough for an API's own
+#: error message, short enough that a log line stays readable.
+_ERROR_BODY_CHARS = 400
+
+
+def _body_hint(exc: BaseException) -> str:
+    """The publisher's own explanation of a failed request, if it sent one.
+
+    Added 2026-10-23 after a measured diagnostic dead end: FRED answered
+    HTTP 400 for three series in CI, and because only the status line was
+    re-raised there was no way to tell *why* from the run log -- the body,
+    which FRED fills with an `error_message`, had been thrown away. An error
+    that says "400 Bad Request" and nothing else turns a five-minute fix
+    into a guess.
+
+    Deliberately best-effort: a body that cannot be read must not replace
+    the original error with a new one.
+    """
+    response = getattr(exc, "response", None)
+    if response is None:
+        return ""
+    try:
+        body = response.text.strip()
+    except Exception:
+        return ""
+    if not body:
+        return ""
+    clipped = body[:_ERROR_BODY_CHARS]
+    suffix = "..." if len(body) > _ERROR_BODY_CHARS else ""
+    return f" -- response body: {clipped}{suffix}"
+
+
 class AdapterHttpError(AdapterError):
     """A request ultimately failed (after retries, if any) with an HTTP/transport error."""
 
@@ -260,7 +292,7 @@ class HttpClient:
         try:
             return _do()
         except (httpx.TimeoutException, httpx.TransportError, httpx.HTTPStatusError) as exc:
-            raise AdapterHttpError(f"{method} {url} failed: {exc}") from exc
+            raise AdapterHttpError(f"{method} {url} failed: {exc}{_body_hint(exc)}") from exc
 
     def get_json(
         self,

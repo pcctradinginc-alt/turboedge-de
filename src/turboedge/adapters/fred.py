@@ -123,6 +123,21 @@ _PARSE_ERROR_TYPES = (ValueError, KeyError, TypeError, IndexError)
 #: Long-standing, well-known FRED series ids named in the task brief. NOT
 #: verified live (no FRED_API_KEY in this environment) -- see module
 #: docstring "CURATED SERIES".
+#: FRED's documented maximum `limit`. Sent explicitly rather than relying
+#: on the server default, because the default is also 100,000 and a series
+#: that exceeds it is silently TRUNCATED. Measured in CI 2026-10-23:
+#: FRED.NFCI returned exactly 100,000 rows and was then reported DEGRADED
+#: for staleness -- the cut had removed the recent end of the series, and
+#: nothing in the response said so. A silent truncation that looks like
+#: stale data is worse than an error.
+_MAX_PAGE_LIMIT = 100_000
+
+#: Hard stop on paging. A full ALFRED vintage history of a daily series is
+#: large (FRED answered HTTP 400 outright for DFF, DGS2 and DGS10 on
+#: 2026-10-23 when asked for the whole window unpaged), and an unbounded
+#: loop against someone else's API is not something to ship.
+_MAX_PAGES = 40
+
 CURATED_SERIES_IDS: Final[tuple[str, ...]] = (
     "INDPRO",
     "RSAFS",
@@ -209,6 +224,31 @@ def parse_series_observations(
             warnings=(f"{spec.qualified_id}: payload is not valid UTF-8 JSON: {exc}",),
             missing_series=(spec.series_id,),
         )
+
+    # One page is a JSON object; a paged fetch archives a JSON array of
+    # page objects (see `FredAdapter.fetch`). Both shapes are accepted so
+    # that a payload archived before paging existed stays reparsable --
+    # reprocessing an old raw payload is the whole point of keeping it.
+    if isinstance(raw, list):
+        merged: dict[str, Any] = {"observations": []}
+        for page in raw:
+            if not isinstance(page, dict):
+                return ParseResult(
+                    observations=[],
+                    warnings=(
+                        f"{spec.qualified_id}: archived page list contains a non-object entry",
+                    ),
+                    missing_series=(spec.series_id,),
+                )
+            if "error_code" in page or "error_message" in page:
+                merged = page
+                break
+            rows_here = page.get("observations")
+            if isinstance(rows_here, list):
+                merged["observations"].extend(rows_here)
+            else:
+                merged.setdefault("_bad_page", True)
+        raw = merged
 
     if not isinstance(raw, dict):
         return ParseResult(
@@ -403,6 +443,7 @@ class FredAdapter:
         }
         if since is not None:
             public_params["observation_start"] = since.isoformat()
+        public_params["limit"] = str(_MAX_PAGE_LIMIT)
         request_params = {**public_params, "api_key": api_key}
 
         retrieved_at = datetime.now(UTC)
@@ -414,17 +455,57 @@ class FredAdapter:
         # here (unlike ecb_data.py) because httpx has filled that in with the
         # real, credentialed query string -- `url`/`request_fingerprint` are
         # built only from `public_params` below.
-        response = self._http._request("GET", self._base_url, params=request_params)
+        pages: list[Any] = []
+        status = 200
+        content_type = "application/json"
+        offset = 0
+        for _page in range(_MAX_PAGES):
+            request_params["offset"] = str(offset)
+            response = self._http._request("GET", self._base_url, params=request_params)
+            status = response.status_code
+            content_type = response.headers.get("content-type", content_type)
+            try:
+                body = response.json()
+            except ValueError:
+                # Not JSON: archive the bytes as-is and let `parse` report
+                # it, rather than losing the evidence to an exception here.
+                pages.append({"_unparseable": response.text[:2000]})
+                break
+            pages.append(body)
+            if not isinstance(body, dict):
+                break
+            rows = body.get("observations")
+            total = body.get("count")
+            if not isinstance(rows, list) or not isinstance(total, int):
+                break
+            offset += len(rows)
+            if not rows or offset >= total:
+                break
+        else:
+            pages.append(
+                {
+                    "error_message": (
+                        f"paging stopped after {_MAX_PAGES} pages at offset {offset}; "
+                        "the series is larger than this adapter will fetch in one run"
+                    )
+                }
+            )
 
         mode = "vintages" if vintage_aware else "current"
         public_url = _public_url(self._base_url, public_params)
+        # Archived as a JSON array of pages, which is exactly what `parse`
+        # consumes. Not byte-identical to any single upstream response --
+        # impossible once paging happens at all -- but deterministic and
+        # lossless, the same choice `adapters/gie.py` and
+        # `adapters/portwatch.py` make.
+        content = json.dumps(pages).encode("utf-8")
         return FetchedPayload(
             source=_SOURCE_ID,
             dataset=f"{spec.series_id}:{mode}",
             url=public_url,
-            content=response.content,
-            http_status=response.status_code,
-            content_type=response.headers.get("content-type", ""),
+            content=content,
+            http_status=status,
+            content_type=content_type,
             retrieved_at=retrieved_at,
             request_fingerprint=f"GET {public_url}",
         )

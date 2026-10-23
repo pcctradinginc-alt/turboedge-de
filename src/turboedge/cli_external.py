@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
 
+import structlog
 import typer
 from rich.console import Console
 from rich.table import Table
@@ -34,6 +35,7 @@ from turboedge.meta.research_queue import ResearchQueue
 from turboedge.storage.duckdb import Store
 
 console = Console()
+log = structlog.get_logger(__name__)
 
 
 def _load(ctx: typer.Context) -> tuple[Any, ExternalDataConfig]:
@@ -228,6 +230,24 @@ def external_ingest_cmd(
             ",".join(str(t.trigger_type) for t in item.triggers) or "-",
             note[:60],
         )
+        # The table clips `note` to keep one row on one line, so anything
+        # that blocked a series is also logged in full. Measured 2026-10-23:
+        # three e-Stat series came back BLOCKED on an unparseable time code
+        # and the code itself was inside the clipped 60 characters, so the
+        # CI run said a series was blocked and made it impossible to find
+        # out why. A diagnostic that only fits when nothing is wrong is not
+        # a diagnostic.
+        if item.error or item.warnings:
+            log.warning(
+                "external_series_note",
+                source=item.source,
+                series_id=item.series_id,
+                rows=item.observations_written,
+                state=str(item.readiness.state) if item.readiness else None,
+                error=item.error,
+                warnings=list(item.warnings),
+                blocking_reasons=(list(item.readiness.blocking_reasons) if item.readiness else []),
+            )
     console.print(table)
     for source_id, reason in result.skipped_sources.items():
         console.print(f"[yellow]skipped {source_id}: {reason}[/yellow]")

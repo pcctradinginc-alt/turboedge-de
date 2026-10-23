@@ -480,3 +480,115 @@ def test_curated_series_ids_are_the_ones_named_in_the_task_brief() -> None:
         "BAMLH0A0HYM2",
         "NFCI",
     }
+
+
+class _PagingHttp:
+    """Serves a FRED `observations` result in pages, recording the offsets.
+
+    Hand-built, like every other fixture in this file: no FRED_API_KEY
+    exists in the authoring environment, so nothing here is a captured
+    response. The page shape follows the documented envelope
+    (`count`, `offset`, `limit`, `observations`).
+    """
+
+    def __init__(self, total: int, page_size: int) -> None:
+        self.total = total
+        self.page_size = page_size
+        self.offsets: list[int] = []
+
+    def _request(self, method: str, url: str, **kwargs: object) -> httpx.Response:
+        params = dict(kwargs.get("params") or {})  # type: ignore[arg-type]
+        offset = int(str(params.get("offset", "0")))
+        self.offsets.append(offset)
+        rows = [
+            {
+                "realtime_start": "2020-01-15",
+                "realtime_end": "9999-12-31",
+                "date": f"2020-01-{(i % 28) + 1:02d}",
+                "value": str(float(i)),
+            }
+            for i in range(offset, min(offset + self.page_size, self.total))
+        ]
+        body = {
+            "count": self.total,
+            "offset": offset,
+            "limit": self.page_size,
+            "observations": rows,
+        }
+        return httpx.Response(
+            200,
+            json=body,
+            request=httpx.Request(method, url, params=params),
+        )
+
+
+def test_a_result_larger_than_one_page_is_fetched_completely(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Measured in CI 2026-10-23: the adapter sent no `limit` and no
+    # `offset`, so FRED applied its own 100,000 maximum and NFCI came back
+    # with exactly 100,000 rows -- truncated, with nothing in the response
+    # saying so, and then reported DEGRADED because the cut had removed the
+    # recent end. A silent truncation that looks like stale data is worse
+    # than an error.
+    monkeypatch.setenv("FRED_API_KEY", "test-key")
+    http = _PagingHttp(total=250, page_size=100)
+    adapter = FredAdapter(http)  # type: ignore[arg-type]
+
+    payload = adapter.fetch(_spec())
+    result = adapter.parse(payload, _spec())
+
+    assert http.offsets == [0, 100, 200]
+    assert len(result.observations) == 250
+
+
+def test_the_fetch_asks_for_the_documented_maximum_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FRED_API_KEY", "test-key")
+    http = _PagingHttp(total=5, page_size=100)
+    adapter = FredAdapter(http)  # type: ignore[arg-type]
+
+    payload = adapter.fetch(_spec())
+
+    assert "limit=100000" in payload.url
+
+
+def test_a_single_page_payload_still_parses(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Payloads archived before paging existed are a single JSON object, and
+    # reprocessing an old raw payload is the whole reason the archive is
+    # kept. Both shapes must stay readable.
+    single = json.dumps(
+        {
+            "count": 1,
+            "observations": [
+                {
+                    "realtime_start": "2020-01-15",
+                    "realtime_end": "9999-12-31",
+                    "date": "2020-01-01",
+                    "value": "1.5",
+                }
+            ],
+        }
+    ).encode()
+
+    result = parse_series_observations(
+        single, _spec(), retrieved_at=_RETRIEVED_AT, vintage_aware=True
+    )
+
+    assert len(result.observations) == 1
+
+
+def test_paging_stops_and_says_so_rather_than_looping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # An unbounded loop against someone else's API is not something to
+    # ship. The stop has to be visible, not silent.
+    monkeypatch.setenv("FRED_API_KEY", "test-key")
+    http = _PagingHttp(total=10_000_000, page_size=10)
+    adapter = FredAdapter(http)  # type: ignore[arg-type]
+
+    result = adapter.parse(adapter.fetch(_spec()), _spec())
+
+    assert result.warnings
+    assert any("paging stopped" in w for w in result.warnings)

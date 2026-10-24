@@ -421,6 +421,12 @@ def test_to_candidate_gate_input_enables_actionable_when_all_gates_pass() -> Non
         distance_to_barrier_sigma=2.0,
         data_health_pass=True,
         cluster_risk_pass=True,
+        # The two economic preconditions the 2026-10-24 audit added. They
+        # default to None and ACTIONABLE requires True, so a test that means
+        # "every gate passes" has to say so -- which is the point: a
+        # positive modelled EV is necessary and not sufficient.
+        confirmed_alpha_pass=True,
+        portfolio_risk_pass=True,
     )
     assert gate_input.lcb_ev == evaluation.lcb_net_return
     assert gate_input.p_ko == evaluation.p_ko

@@ -45,6 +45,7 @@ import structlog
 
 from turboedge.adapters.base import HealthCheckResult, ProductFetchContext
 from turboedge.adapters.registry import ProductSourceAdapter
+from turboedge.alpha.schemas import PRODUCTION_STATES
 from turboedge.config import TurboEdgeConfig, build_ev_config, config_hash
 from turboedge.features.product import (
     distance_to_barrier,
@@ -2037,6 +2038,7 @@ def _run_ev_pipeline(
     cluster_id: str,
     cluster_open_positions: Sequence[OpenClusterPosition],
     portfolio_fraction_used: float,
+    portfolio_risk_pass: bool | None,
     warnings: list[str],
 ) -> EvPipelineResult:
     """Forecast -> paths -> EV -> gates -> ledger (+ shadow sample), the core
@@ -2232,6 +2234,32 @@ def _run_ev_pipeline(
     evaluated_isins = set(best_by_isin)
     candidates = _annotate_not_evaluated(candidates, priced, evaluated_isins)
 
+    # Is there a confirmed alpha source behind any proposal for this
+    # underlying? Until the 2026-10-24 audit nothing in this pipeline read
+    # `alpha_sources` at all: the promotion ladder, its gates and
+    # `PRODUCTION_STATES` were defined, exported and consulted by nothing,
+    # so ACTIONABLE rested on a positive *modelled* `lcb_ev` plus technical
+    # gates. A simulated edge is not a confirmed one.
+    #
+    # Coverage must be explicit: an alpha whose `underlyings` list does not
+    # name this underlying does not support a proposal on it, and an empty
+    # list covers nothing rather than everything. DORMANT, REJECTED,
+    # DISABLED, WEAKENING, DECAYING and every pre-production state are
+    # outside `PRODUCTION_STATES` and therefore cannot support one either.
+    production_alphas = [
+        alpha
+        for alpha in store.list_alpha_sources()
+        if alpha.status in PRODUCTION_STATES and underlying_id in alpha.underlyings
+    ]
+    confirmed_alpha_pass = bool(production_alphas)
+    if not confirmed_alpha_pass:
+        note = (
+            f"no confirmed alpha source in production state covers {underlying_id}; "
+            "candidates can reach WATCH but not ACTIONABLE"
+        )
+        if note not in warnings:
+            warnings.append(note)
+
     thresholds = GateThresholds.from_risk_config(cfg.risk)
     updated_candidates: dict[str, CandidateEvaluation] = {c.isin: c for c in candidates}
     ledger_entries: list[LedgerEntry] = []
@@ -2269,6 +2297,9 @@ def _run_ev_pipeline(
             p_ko=ev.p_ko,
             cluster_risk_pass=cluster_pass,
             ratio_reliability=p.product.ratio_reliability,
+            confirmed_alpha_pass=confirmed_alpha_pass,
+            portfolio_risk_pass=portfolio_risk_pass,
+            suggested_position_fraction=ev.suggested_position_fraction,
         )
         category, gate_reasons = evaluate_gates(gate_input, thresholds)
         # Non-gate diagnostic annotations from the pre-EV pass
@@ -2590,6 +2621,7 @@ def _run_scan_body(
     cluster_id: str | None,
     cluster_open_positions: Sequence[OpenClusterPosition],
     portfolio_fraction_used: float,
+    portfolio_risk_pass: bool | None,
 ) -> ScanResult:
     warnings: list[str] = []
     underlying_id = options.underlying_id
@@ -2765,6 +2797,7 @@ def _run_scan_body(
             cluster_id=effective_cluster_id,
             cluster_open_positions=cluster_open_positions,
             portfolio_fraction_used=portfolio_fraction_used,
+            portfolio_risk_pass=portfolio_risk_pass,
             warnings=warnings,
         )
         candidates = ev_result.candidates
@@ -2876,6 +2909,7 @@ def run_scan(
     cluster_id: str | None = None,
     cluster_open_positions: Sequence[OpenClusterPosition] = (),
     portfolio_fraction_used: float = 0.0,
+    portfolio_risk_pass: bool | None = None,
 ) -> ScanResult:
     """Run one full scan for ``options.underlying_id``.
 
@@ -2946,6 +2980,7 @@ def run_scan(
             cluster_id=cluster_id,
             cluster_open_positions=cluster_open_positions,
             portfolio_fraction_used=portfolio_fraction_used,
+            portfolio_risk_pass=portfolio_risk_pass,
         )
     except Exception as exc:
         store.finish_run(run_id, status="error", error=str(exc), finished_at=clock())

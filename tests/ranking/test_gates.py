@@ -35,6 +35,14 @@ def _base_input(**overrides: object) -> GateInput:
         lcb_ev=None,
         p_ko=None,
         cluster_risk_pass=None,
+        # The two economic preconditions default to None on GateInput, so
+        # every test that means "everything except the dimension under test
+        # passes" has to say so explicitly. Defaulting them to True *here*
+        # instead would hide the fail-closed behaviour from every test in
+        # this file, which is the opposite of what they are for -- so the
+        # tests that specifically cover these two pass None deliberately.
+        confirmed_alpha_pass=True,
+        portfolio_risk_pass=True,
     )
     defaults.update(overrides)
     return GateInput(**defaults)  # type: ignore[arg-type]
@@ -307,3 +315,143 @@ def test_property_never_actionable_when_ratio_unverified(
         _THRESHOLDS,
     )
     assert category != Category.ACTIONABLE
+
+
+# -- the economic preconditions (audit 2026-10-24) ------------------------
+
+
+def test_a_positive_modelled_ev_alone_is_not_actionable() -> None:
+    # The finding this closes. Until the audit, ACTIONABLE rested on a
+    # positive *modelled* `lcb_ev` plus technical gates, and the scan
+    # pipeline never read `alpha_sources` at all: `PRODUCTION_STATES`, the
+    # promotion ladder and its seven gates were defined, exported and
+    # consulted by nothing. A simulated edge is not a confirmed one.
+    inp = _base_input(
+        lcb_ev=0.05,
+        p_ko=0.1,
+        cluster_risk_pass=True,
+        ratio_reliability=FieldReliability.SOURCE_REPORTED,
+        confirmed_alpha_pass=None,
+        portfolio_risk_pass=True,
+    )
+
+    category, reasons = evaluate_gates(inp, _THRESHOLDS)
+
+    assert category is Category.WATCH
+    assert "no_confirmed_alpha_source" in reasons
+
+
+def test_an_unconfirmed_alpha_source_withholds_actionable() -> None:
+    inp = _base_input(
+        lcb_ev=0.05,
+        p_ko=0.1,
+        cluster_risk_pass=True,
+        ratio_reliability=FieldReliability.SOURCE_REPORTED,
+        confirmed_alpha_pass=False,
+    )
+
+    category, reasons = evaluate_gates(inp, _THRESHOLDS)
+
+    assert category is Category.WATCH
+    assert "no_confirmed_alpha_source" in reasons
+
+
+def test_unknown_portfolio_risk_withholds_actionable() -> None:
+    # Fail-closed: a portfolio limit that cannot be evaluated is not a limit
+    # that has been satisfied. `risk.research_capital_eur` unset is the
+    # common case today.
+    inp = _base_input(
+        lcb_ev=0.05,
+        p_ko=0.1,
+        cluster_risk_pass=True,
+        ratio_reliability=FieldReliability.SOURCE_REPORTED,
+        portfolio_risk_pass=None,
+    )
+
+    category, reasons = evaluate_gates(inp, _THRESHOLDS)
+
+    assert category is Category.WATCH
+    assert "portfolio_risk_not_confirmed" in reasons
+
+
+def test_breached_portfolio_risk_withholds_actionable() -> None:
+    inp = _base_input(
+        lcb_ev=0.05,
+        p_ko=0.1,
+        cluster_risk_pass=True,
+        ratio_reliability=FieldReliability.SOURCE_REPORTED,
+        portfolio_risk_pass=False,
+    )
+
+    assert evaluate_gates(inp, _THRESHOLDS)[0] is Category.WATCH
+
+
+def test_a_candidate_that_cannot_be_sized_is_not_actionable() -> None:
+    # "Act on this, with no capital" is incoherent. Reachable once
+    # `max_cluster_fraction` started binding, and already reachable from the
+    # KO cap and from a degenerate return distribution.
+    inp = _base_input(
+        lcb_ev=0.05,
+        p_ko=0.1,
+        cluster_risk_pass=True,
+        ratio_reliability=FieldReliability.SOURCE_REPORTED,
+        suggested_position_fraction=0.0,
+    )
+
+    category, reasons = evaluate_gates(inp, _THRESHOLDS)
+
+    assert category is Category.WATCH
+    assert "suggested_size_zero" in reasons
+
+
+def test_an_unsupplied_size_is_not_read_as_zero() -> None:
+    # Backward compatibility, the same convention as `ratio_reliability`:
+    # `None` means this call site never populated the field.
+    inp = _base_input(
+        lcb_ev=0.05,
+        p_ko=0.1,
+        cluster_risk_pass=True,
+        ratio_reliability=FieldReliability.SOURCE_REPORTED,
+        suggested_position_fraction=None,
+    )
+
+    assert evaluate_gates(inp, _THRESHOLDS)[0] is Category.ACTIONABLE
+
+
+def test_all_preconditions_together_still_reach_actionable() -> None:
+    # The gates must remain satisfiable. A gate nobody can ever pass is not
+    # a safeguard, it is a disabled feature pretending to be one.
+    inp = _base_input(
+        lcb_ev=0.05,
+        p_ko=0.1,
+        cluster_risk_pass=True,
+        ratio_reliability=FieldReliability.SOURCE_REPORTED,
+        confirmed_alpha_pass=True,
+        portfolio_risk_pass=True,
+        suggested_position_fraction=0.01,
+    )
+
+    assert evaluate_gates(inp, _THRESHOLDS)[0] is Category.ACTIONABLE
+
+
+def test_the_new_preconditions_never_downgrade_reject_or_data_quality() -> None:
+    # They may only make ACTIONABLE harder. A candidate that is REJECT or
+    # DATA_QUALITY for a tradability or integrity reason must still report
+    # that reason, not be reclassified.
+    rejected = _base_input(
+        knocked_out=True,
+        lcb_ev=0.05,
+        p_ko=0.1,
+        confirmed_alpha_pass=None,
+        portfolio_risk_pass=None,
+    )
+    assert evaluate_gates(rejected, _THRESHOLDS)[0] is Category.REJECT
+
+    unhealthy = _base_input(
+        data_health_pass=False,
+        lcb_ev=0.05,
+        p_ko=0.1,
+        confirmed_alpha_pass=None,
+        portfolio_risk_pass=None,
+    )
+    assert evaluate_gates(unhealthy, _THRESHOLDS)[0] is Category.DATA_QUALITY

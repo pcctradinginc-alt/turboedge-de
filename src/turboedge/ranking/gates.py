@@ -120,6 +120,38 @@ class GateInput:
     # is effectively always populated; `None` only ever occurs in synthetic
     # test input.
     ratio_reliability: FieldReliability | None = None
+    # --- the two economic preconditions (audit 2026-10-24) --------------
+    # Both follow the `cluster_risk_pass` convention exactly: `None` means
+    # "this call site never evaluated it", and ACTIONABLE requires `is
+    # True`. So an unsupplied value can only ever withhold ACTIONABLE,
+    # never grant it -- fail-closed by construction rather than by a
+    # caller remembering to pass the right thing.
+    #
+    # Whether at least one alpha source in `alpha/schemas.PRODUCTION_STATES`
+    # supports this candidate. Until this existed, ACTIONABLE rested on a
+    # positive *modelled* `lcb_ev` plus technical gates, and the scan
+    # pipeline never read `alpha_sources` at all: the entire promotion
+    # ladder, its gates and `PRODUCTION_STATES` itself were defined,
+    # exported and consulted by nothing. A simulated edge is not a
+    # confirmed one, and CLAUDE.md's standing rule is that a gate is never
+    # lowered to manufacture a trade proposal.
+    confirmed_alpha_pass: bool | None = None
+    # The suggested capital fraction for this candidate. A proposal that
+    # cannot be sized is not a proposal: "act on this, with no capital" is
+    # incoherent, and it became reachable once `max_cluster_fraction`
+    # started binding (it was inert until 2026-10-24, because nothing
+    # supplied `cluster_fraction_used`). Also reachable from the KO cap and
+    # from a degenerate return distribution, both of which already returned
+    # 0.0 before. `None` means the call site did not supply it and is not
+    # treated as zero -- the same backward-compatibility convention as
+    # `ratio_reliability`.
+    suggested_position_fraction: float | None = None
+    # Whether total portfolio risk could be determined AND is within the
+    # configured caps, counting positions already held. `False` when the
+    # capital base is unknown (`risk.research_capital_eur` unset), because
+    # a portfolio limit that cannot be evaluated is not a limit that has
+    # been satisfied.
+    portfolio_risk_pass: bool | None = None
 
 
 def evaluate_gates(inp: GateInput, th: GateThresholds) -> tuple[Category, list[str]]:
@@ -146,7 +178,20 @@ def evaluate_gates(inp: GateInput, th: GateThresholds) -> tuple[Category, list[s
        than being pre-empted by the DATA_QUALITY branch above.
     3. ``ACTIONABLE`` only if every other gate passed *and* ``lcb_ev is not
        None and lcb_ev > 0 and p_ko is not None and cluster_risk_pass is
-       True and ratio_reliability != UNVERIFIED``. The last condition is
+       True and ratio_reliability != UNVERIFIED and confirmed_alpha_pass is
+       True and portfolio_risk_pass is True``.
+
+       The last two were added by the 2026-10-24 audit, and together they
+       are the difference between "the model likes this" and "acting on it
+       is defensible". A positive modelled ``lcb_ev`` is necessary and was
+       previously sufficient: nothing in the scan pipeline read
+       ``alpha_sources``, so an unconfirmed, DORMANT, REJECTED or DISABLED
+       alpha -- or none at all -- placed no obstacle in the way, and the
+       portfolio-level caps could not be checked against positions already
+       held because the capital base they are expressed in was unset. Both
+       fields default to ``None`` and ACTIONABLE requires ``is True``, so
+       an unevaluated precondition withholds ACTIONABLE instead of being
+       read as satisfied. The last condition is
        Phase B ("Produktstammdaten haerten", CLAUDE.md rule 29): a product
        whose Bezugsverhaeltnis was never reported by the source, or was
        derived without surviving independent verification, must never
@@ -207,6 +252,9 @@ def evaluate_gates(inp: GateInput, th: GateThresholds) -> tuple[Category, list[s
         and inp.p_ko is not None
         and inp.cluster_risk_pass is True
         and ratio_verified
+        and inp.confirmed_alpha_pass is True
+        and inp.portfolio_risk_pass is True
+        and (inp.suggested_position_fraction is None or inp.suggested_position_fraction > 0.0)
     )
     if actionable:
         return Category.ACTIONABLE, ["all_gates_passed"]
@@ -222,6 +270,12 @@ def evaluate_gates(inp: GateInput, th: GateThresholds) -> tuple[Category, list[s
         watch_reasons.append("cluster_risk_not_confirmed")
     if not ratio_verified:
         watch_reasons.append("ratio_unverified")
+    if inp.confirmed_alpha_pass is not True:
+        watch_reasons.append("no_confirmed_alpha_source")
+    if inp.portfolio_risk_pass is not True:
+        watch_reasons.append("portfolio_risk_not_confirmed")
+    if inp.suggested_position_fraction is not None and inp.suggested_position_fraction <= 0.0:
+        watch_reasons.append("suggested_size_zero")
     if not watch_reasons:
         watch_reasons.append("watch_default")
     return Category.WATCH, watch_reasons

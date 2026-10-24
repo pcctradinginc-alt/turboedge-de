@@ -44,7 +44,9 @@ from typing import Any
 import numpy as np
 import pytest
 
+from turboedge.alpha.schemas import AlphaSource, AlphaStatus
 from turboedge.config import TurboEdgeConfig
+from turboedge.meta.research_opportunity import Estimate, InformationFamily
 from turboedge.pipeline import scan_all as scan_all_module
 from turboedge.pipeline.scan import ScanResult, run_scan
 from turboedge.pipeline.scan_all import ScanAllResult, run_scan_all
@@ -91,6 +93,7 @@ class _ScanCall:
     cluster_id: str
     cluster_open_positions: tuple[OpenClusterPosition, ...]
     portfolio_fraction_used: float
+    portfolio_risk_pass: bool | None
 
 
 @dataclass(frozen=True)
@@ -117,6 +120,46 @@ class _BatchRun:
     def actionable_in(self, underlying_id: str) -> list[Any]:
         result = self.result.results[underlying_id]
         return [c for c in result.candidates if c.category == Category.ACTIONABLE]
+
+
+def _production_alpha(*underlyings: str) -> AlphaSource:
+    """A confirmed alpha in a production state, covering these underlyings.
+
+    ACTIONABLE requires one (`ranking/gates.py`, audit 2026-10-24): a
+    positive *modelled* `lcb_ev` is necessary but not sufficient, because
+    until that audit nothing in the scan pipeline read `alpha_sources` at
+    all. Tests about cluster propagation need a candidate to actually reach
+    ACTIONABLE, so they have to satisfy that precondition rather than work
+    around it.
+
+    `frozen_at` is required for any state at or past CONFIRMATORY -- the
+    schema enforces that confirmatory evidence is only meaningful for a
+    hypothesis that was frozen before the data was seen.
+    """
+    unknown = Estimate.unknown("not measured in this test")
+    return AlphaSource(
+        alpha_id="A-TEST",
+        name="test alpha",
+        family=InformationFamily.MICROSTRUCTURE,
+        version="1",
+        description="d",
+        economic_hypothesis="h",
+        status=AlphaStatus.CANARY_PRODUCTION,
+        created_at=_EVAL_TIME,
+        frozen_at=_EVAL_TIME,
+        underlyings=list(underlyings),
+        horizons=["5"],
+        directions=["long"],
+        required_data_sources=["source_a"],
+        nominal_sample=unknown,
+        effective_sample=unknown,
+        expected_net_ev=unknown,
+        lcb_net_ev=unknown,
+        posterior_probability_positive=unknown,
+        uncertainty_score=unknown,
+        drift_score=unknown,
+        decay_score=unknown,
+    )
 
 
 def _with_capital(cfg: TurboEdgeConfig, research_capital_eur: float) -> TurboEdgeConfig:
@@ -255,6 +298,7 @@ def run_batch(
         products: Sequence[ProductSnapshot],
         snapshots: Sequence[ProductSnapshot] = (),
         positions: Sequence[ManualPosition] = (),
+        alphas: Sequence[AlphaSource] = (),
     ) -> _BatchRun:
         calls: list[_ScanCall] = []
 
@@ -265,6 +309,7 @@ def run_batch(
                     cluster_id=kwargs["cluster_id"],
                     cluster_open_positions=tuple(kwargs["cluster_open_positions"]),
                     portfolio_fraction_used=kwargs["portfolio_fraction_used"],
+                    portfolio_risk_pass=kwargs["portfolio_risk_pass"],
                 )
             )
             return run_scan(*args, **kwargs)
@@ -279,6 +324,8 @@ def run_batch(
                 store.append_product_snapshots(list(snapshots))
             for position in positions:
                 store.insert_position(position)
+            for alpha in alphas:
+                store.upsert_alpha_source(alpha)
 
             result = run_scan_all(
                 cfg,
@@ -490,6 +537,10 @@ def test_the_second_underlying_sees_the_first_ones_admitted_candidates(
             _favorable_long(dax_product_factory, isin="DE000FAVLNG1"),
             _favorable_long(dax_product_factory, isin="DE000FAVEU50", underlying_id=_PEER),
         ],
+        # ACTIONABLE now also needs a confirmed alpha source covering the
+        # underlying; without one nothing is admitted and there is nothing
+        # for the second underlying to see.
+        alphas=[_production_alpha("DAX", _PEER)],
     )
 
     assert run.result.skipped == {}, run.result.skipped
@@ -576,17 +627,70 @@ def test_the_portfolio_total_accumulates_and_keeps_the_unattributed_part(
 
     first, second = run.calls
 
-    # The first scan already sees the unattributed holding in the portfolio
+    # Every scan in the batch sees the unattributed holding in the portfolio
     # total, even though no cluster list carries it.
     assert first.cluster_open_positions == ()
     assert first.portfolio_fraction_used == pytest.approx(unattributed_fraction)
-
-    # The second sees that same part plus everything the first admitted --
-    # the accumulation `max_total_risk` is applied net of.
-    admitted = sum(p.capital_fraction for p in second.cluster_open_positions)
-    assert admitted > 0.0, "the first underlying must admit something to accumulate"
-    assert second.portfolio_fraction_used == pytest.approx(unattributed_fraction + admitted)
-    assert second.portfolio_fraction_used > first.portfolio_fraction_used
+    assert second.portfolio_fraction_used == pytest.approx(unattributed_fraction)
     assert not any(p.underlying_id == "(unknown)" for p in second.cluster_open_positions), (
         "an unattributed holding must not be smuggled into a cluster list"
     )
+
+    # And it blocks ACTIONABLE, which is why nothing accumulated above: the
+    # per-cluster cap cannot be evaluated for a holding whose cluster is
+    # unknown, and a cap that cannot be evaluated has not been satisfied.
+    assert first.portfolio_risk_pass is False
+    assert second.portfolio_risk_pass is False
+
+
+def test_an_unattributable_holding_blocks_actionable(
+    cfg: TurboEdgeConfig,
+    run_batch: Callable[..., _BatchRun],
+    dax_product_factory: Callable[..., ProductSnapshot],
+) -> None:
+    # Fail-closed, stated as its own property: a position whose correlation
+    # cluster cannot be determined means the per-cluster cap cannot be
+    # checked, so no new proposal may pass the portfolio check. The research
+    # paths are untouched -- the batch still scans, still writes ledger
+    # entries, and still records quotes.
+    run = run_batch(
+        _with_capital(cfg, _CAPITAL_EUR),
+        label="blocked_by_unattributed",
+        underlying_ids=["DAX"],
+        products=[_favorable_long(dax_product_factory, isin="DE000FAVLNG1")],
+        positions=[_position("DE000UNKNOWN", qty=100.0, entry_price=5.0)],
+        alphas=[_production_alpha("DAX")],
+    )
+
+    assert run.calls[0].portfolio_risk_pass is False
+    assert run.suggested_fractions, "the scan still ran and still wrote the ledger"
+
+
+def test_the_portfolio_total_accumulates_across_underlyings(
+    cfg: TurboEdgeConfig,
+    run_batch: Callable[..., _BatchRun],
+    dax_product_factory: Callable[..., ProductSnapshot],
+) -> None:
+    # The accumulation `max_total_risk` is applied net of, with a portfolio
+    # the check can actually evaluate: nothing held, so no unattributed
+    # exposure, and a confirmed alpha so candidates can reach ACTIONABLE.
+    run = run_batch(
+        _with_capital(cfg, _CAPITAL_EUR),
+        label="accumulates",
+        underlying_ids=["DAX", _PEER],
+        products=[
+            _favorable_long(dax_product_factory, isin="DE000FAVLNG1"),
+            _favorable_long(dax_product_factory, isin="DE000FAVEU50", underlying_id=_PEER),
+        ],
+        alphas=[_production_alpha("DAX", _PEER)],
+    )
+
+    assert run.result.skipped == {}, run.result.skipped
+    first, second = run.calls
+    assert first.portfolio_risk_pass is True
+    assert first.portfolio_fraction_used == pytest.approx(0.0)
+
+    admitted = sum(p.capital_fraction for p in second.cluster_open_positions)
+    assert admitted > 0.0, "the first underlying must admit something to accumulate"
+    assert second.portfolio_fraction_used == pytest.approx(admitted)
+    assert second.portfolio_fraction_used > first.portfolio_fraction_used

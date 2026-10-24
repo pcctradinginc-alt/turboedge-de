@@ -27,7 +27,7 @@ from pathlib import Path
 
 import pytest
 
-from turboedge.positions.usage import portfolio_usage
+from turboedge.positions.usage import portfolio_risk_verdict, portfolio_usage
 from turboedge.storage.duckdb import Store
 from turboedge.storage.schemas import (
     Direction,
@@ -342,3 +342,90 @@ def test_an_unattributed_position_is_still_a_held_entry(store: Store) -> None:
     assert len(usage.held) == 1
     assert usage.held[0].cluster_id is None
     assert usage.held[0].fraction == pytest.approx(0.02)
+
+
+# -- the fail-closed portfolio verdict -----------------------------------
+
+
+def test_unknown_capital_fails_the_portfolio_check(store: Store) -> None:
+    # The core of the audit's P0.3: a portfolio limit that cannot be
+    # evaluated is not a limit that has been satisfied. Before this, the
+    # caps were netted against 0.0, so "unknown" read as "nothing
+    # deployed" -- and ACTIONABLE was reachable on that basis.
+    usage = portfolio_usage(store, research_capital_eur=None)
+
+    verdict = portfolio_risk_verdict(usage, max_total_risk=0.30, max_cluster_fraction=0.15)
+
+    assert not verdict.passed
+    assert any("research_capital_unknown" in r for r in verdict.reasons)
+    # Not a cap breach, so it must not be reported as a second warning on
+    # top of the usage warning that already says this.
+    assert verdict.breach_reasons == ()
+
+
+def test_an_empty_portfolio_with_known_capital_passes(store: Store) -> None:
+    # The check must be satisfiable, or it is a disabled feature pretending
+    # to be a safeguard.
+    usage = portfolio_usage(store, research_capital_eur=25_000.0)
+
+    verdict = portfolio_risk_verdict(usage, max_total_risk=0.30, max_cluster_fraction=0.15)
+
+    assert verdict.passed
+    assert verdict.reasons == ()
+    assert "within caps" in verdict.describe()
+
+
+def test_a_total_risk_breach_fails_and_is_a_breach_reason(store: Store) -> None:
+    store.append_product_snapshots([_snapshot("DE000TEST001", underlying="DAX")])
+    store.insert_position(_position("DE000TEST001", qty=1000, price=10.0))  # 0.4 of capital
+
+    usage = portfolio_usage(
+        store, research_capital_eur=25_000.0, cluster_for_underlying=_cluster_for
+    )
+    verdict = portfolio_risk_verdict(usage, max_total_risk=0.30, max_cluster_fraction=0.50)
+
+    assert not verdict.passed
+    assert any("total_risk_exceeded" in r for r in verdict.reasons)
+    assert verdict.breach_reasons, "a real breach is worth its own warning"
+
+
+def test_a_cluster_breach_fails(store: Store) -> None:
+    store.append_product_snapshots([_snapshot("DE000TEST001", underlying="DAX")])
+    store.insert_position(_position("DE000TEST001", qty=1000, price=5.0))  # 0.2 of capital
+
+    usage = portfolio_usage(
+        store, research_capital_eur=25_000.0, cluster_for_underlying=_cluster_for
+    )
+    verdict = portfolio_risk_verdict(usage, max_total_risk=0.90, max_cluster_fraction=0.15)
+
+    assert not verdict.passed
+    assert any("cluster_risk_exceeded" in r and "corr_1" in r for r in verdict.reasons)
+
+
+def test_an_unattributable_holding_fails_the_check(store: Store) -> None:
+    # The per-cluster cap genuinely cannot be evaluated for a position whose
+    # cluster is unknown, so the honest answer is that the check is
+    # incomplete -- which fail-closed means blocking.
+    store.insert_position(_position("DE000UNKNOWN", qty=10, price=5.0))
+
+    usage = portfolio_usage(
+        store, research_capital_eur=25_000.0, cluster_for_underlying=_cluster_for
+    )
+    verdict = portfolio_risk_verdict(usage, max_total_risk=0.30, max_cluster_fraction=0.15)
+
+    assert not verdict.passed
+    assert any("unattributed_exposure" in r for r in verdict.reasons)
+    assert verdict.breach_reasons == (), "a missing input is not a cap breach"
+
+
+def test_the_verdict_never_invents_a_cap(store: Store) -> None:
+    # Both caps are passed in from SizingConfig, the single place they live.
+    # GOVERNANCE.md §5.2 still records two of them as UNRESOLVED, and this
+    # module must not quietly pick a value.
+    import inspect
+
+    source = inspect.getsource(portfolio_risk_verdict)
+
+    assert "0.0" not in source.replace("0.0000", ""), source
+    for literal in ("0.05", "0.15", "0.02", "0.30"):
+        assert literal not in source, f"{literal} is hard-coded in the verdict"

@@ -582,6 +582,8 @@ def to_candidate_gate_input(
     has_ask: bool = True,
     no_live_quote: bool = False,
     source_quote_age_s: float | None = None,
+    confirmed_alpha_pass: bool | None = None,
+    portfolio_risk_pass: bool | None = None,
 ) -> GateInput:
     """Build a ``ranking/gates.py`` :class:`GateInput` from one
     :class:`ProductHorizonEvaluation` plus the market/data-quality facts
@@ -615,6 +617,8 @@ def to_candidate_gate_input(
         has_ask=has_ask,
         no_live_quote=no_live_quote,
         source_quote_age_s=source_quote_age_s,
+        confirmed_alpha_pass=confirmed_alpha_pass,
+        portfolio_risk_pass=portfolio_risk_pass,
     )
 
 

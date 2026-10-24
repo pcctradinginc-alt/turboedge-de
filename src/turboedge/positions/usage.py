@@ -132,6 +132,90 @@ class PortfolioUsage:
         return None
 
 
+@dataclass(frozen=True, slots=True)
+class PortfolioRiskVerdict:
+    """Whether new ACTIONABLE proposals are defensible on portfolio grounds.
+
+    Fail-closed on purpose. `passed` is `False` whenever the question could
+    not be answered, not only when an answer was "too much risk" -- a
+    portfolio limit that cannot be evaluated is not a limit that has been
+    satisfied. The audit of 2026-10-24 found the opposite convention in
+    place: the caps were netted against `0.0` because nobody supplied the
+    used fractions, so "unknown" read as "nothing deployed".
+
+    This withholds ACTIONABLE only. Scans, archiving, the shadow sample and
+    every research path continue regardless -- the forward data collection
+    is the most valuable thing the system has, and a risk question it
+    cannot answer is no reason to stop recording quotes.
+    """
+
+    passed: bool
+    reasons: tuple[str, ...] = ()
+
+    def describe(self) -> str:
+        return ", ".join(self.reasons) if self.reasons else "portfolio risk within caps"
+
+    @property
+    def breach_reasons(self) -> tuple[str, ...]:
+        """Reasons that are an actual cap breach, not a missing input.
+
+        The missing-input cases -- unknown capital, unattributable
+        positions -- are already reported by `PortfolioUsage.warning()`,
+        and a caller that warned about both would say the same thing twice
+        for one condition. The verdict still fails closed either way; this
+        only decides what is worth a second sentence.
+        """
+        return tuple(r for r in self.reasons if r.startswith(("total_risk_", "cluster_risk_")))
+
+
+def portfolio_risk_verdict(
+    usage: PortfolioUsage,
+    *,
+    max_total_risk: float,
+    max_cluster_fraction: float,
+) -> PortfolioRiskVerdict:
+    """Evaluate the portfolio-level caps against what is actually held.
+
+    The caps themselves are not re-defined here and no value is chosen:
+    both come from `SizingConfig`, which is the single place they live.
+    This only answers whether the portfolio as a whole is inside them, and
+    says why when it is not.
+    """
+    if not usage.capital_known:
+        return PortfolioRiskVerdict(
+            passed=False,
+            reasons=(
+                "research_capital_unknown: risk.research_capital_eur is unset, so "
+                "total deployed capital cannot be computed and the portfolio-level "
+                "caps cannot be evaluated against positions held",
+            ),
+        )
+
+    reasons: list[str] = []
+    if usage.total_fraction > max_total_risk:
+        reasons.append(
+            f"total_risk_exceeded: {usage.total_fraction:.4f} of capital deployed "
+            f"against a cap of {max_total_risk:.4f}"
+        )
+    for cluster, fraction in sorted(usage.by_cluster.items()):
+        if fraction > max_cluster_fraction:
+            reasons.append(
+                f"cluster_risk_exceeded: {cluster} holds {fraction:.4f} of capital "
+                f"against a cap of {max_cluster_fraction:.4f}"
+            )
+    if usage.unattributed:
+        # Capital that no cluster budget can be charged for. It counts in
+        # the total, but the per-cluster cap genuinely cannot be checked for
+        # it, so the honest answer is that the check is incomplete.
+        reasons.append(
+            f"unattributed_exposure: {len(usage.unattributed)} open position(s) "
+            "could not be attributed to a correlation cluster, so the per-cluster "
+            "cap cannot be evaluated for them"
+        )
+
+    return PortfolioRiskVerdict(passed=not reasons, reasons=tuple(reasons))
+
+
 def portfolio_usage(
     store: Store,
     *,
@@ -200,4 +284,10 @@ def portfolio_usage(
     return usage
 
 
-__all__ = ["HeldFraction", "PortfolioUsage", "portfolio_usage"]
+__all__ = [
+    "HeldFraction",
+    "PortfolioRiskVerdict",
+    "PortfolioUsage",
+    "portfolio_risk_verdict",
+    "portfolio_usage",
+]

@@ -38,7 +38,7 @@ from turboedge.config import TurboEdgeConfig
 from turboedge.notifications.gmail import GmailNotifier
 from turboedge.pipeline.scan import EstrSource, PriceSource, ScanOptions, ScanResult, run_scan
 from turboedge.pipeline.universe import NoProductsError
-from turboedge.positions.usage import portfolio_usage
+from turboedge.positions.usage import portfolio_risk_verdict, portfolio_usage
 from turboedge.provenance import new_run_id
 from turboedge.ranking.cluster import OpenClusterPosition, cluster_id_for, compute_clusters
 from turboedge.storage.duckdb import Store
@@ -172,6 +172,26 @@ def run_scan_all(
                 counts_as_active_position=True,
             )
         )
+    # Fail-closed: a portfolio limit that cannot be evaluated is not a
+    # limit that has been satisfied. While `risk.research_capital_eur` is
+    # unset this is False, so no candidate can reach ACTIONABLE -- and
+    # scans, archiving, the shadow sample and every research path carry on
+    # regardless, because the forward data collection is the most valuable
+    # thing here and a risk question nobody can answer is no reason to stop
+    # recording quotes.
+    risk_verdict = portfolio_risk_verdict(
+        usage,
+        max_total_risk=cfg.ranking.sizing.max_total_risk,
+        max_cluster_fraction=cfg.ranking.sizing.max_cluster_fraction,
+    )
+    for breach in risk_verdict.breach_reasons:
+        # Only actual cap breaches. The missing-input cases are already in
+        # `usage.warning()` above, and warning twice for one condition
+        # makes a reader doubt both messages.
+        note = f"portfolio risk check not passed: {breach}"
+        if note not in warnings:
+            warnings.append(note)
+
     portfolio_fraction_used = usage.total_fraction
     # Positions whose ISIN this system never scanned cannot be attributed to
     # a cluster, so no cluster list carries them. Held separately so that
@@ -201,6 +221,7 @@ def run_scan_all(
                 cluster_id=cluster_id,
                 cluster_open_positions=prior_positions,
                 portfolio_fraction_used=portfolio_fraction_used,
+                portfolio_risk_pass=risk_verdict.passed,
             )
         except NoProductsError as exc:
             skipped[uid] = f"no_products:{exc}"

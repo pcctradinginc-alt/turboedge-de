@@ -142,10 +142,12 @@ class _StubHarness:
         self.verdict = verdict
         self.supported = supported
         self.calls: list[str] = []
+        self.as_of: list[datetime] = []
         self.raises: Exception | None = None
 
     def __call__(self, store: Store, hypothesis_id: str, now: datetime) -> HarnessOutcome:
         self.calls.append(hypothesis_id)
+        self.as_of.append(now)
         if self.raises is not None:
             raise self.raises
         return HarnessOutcome(
@@ -944,3 +946,138 @@ def test_an_interrupted_screen_is_not_retried_automatically(
     _step(store, failed_path, now=_NOW + timedelta(days=55))
 
     assert stub.calls == []
+
+
+# -- point-in-time protection --------------------------------------------
+
+
+def test_the_harness_is_given_the_decision_time_not_the_wall_clock(
+    store: Store, failed_path: Path, stub: _StubHarness
+) -> None:
+    # CLAUDE.md rule 5 is `available_at <= prediction_time`. A harness
+    # handed `datetime.now()` instead of the step's `now` would read rows
+    # that became knowable after the moment the loop is reasoning about,
+    # and a backdated re-run would silently see the future.
+    _seed(store, "RO-A", priority=0.9)
+
+    _step(store, failed_path)
+
+    assert stub.as_of == [_NOW]
+
+
+def test_the_real_harness_passes_the_decision_time_through() -> None:
+    # Static, because invoking the real harness needs a matured forward
+    # ledger. What matters is that `as_of` comes from the parameter and not
+    # from the clock: `build_excursion_dataset` excludes entries whose
+    # `prediction_time > as_of`, and that filter is only a point-in-time
+    # guarantee if the loop passes the time it is reasoning about.
+    import ast
+    import inspect
+
+    source = inspect.getsource(harness_module._run_excursion)
+    module = ast.parse(inspect.getsource(harness_module))
+    function = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_run_excursion"
+    )
+    as_of_args = [
+        kw.value
+        for node in ast.walk(function)
+        if isinstance(node, ast.Call)
+        for kw in node.keywords
+        if kw.arg == "as_of"
+    ]
+
+    assert as_of_args, "the harness no longer passes as_of at all"
+    assert all(isinstance(value, ast.Name) and value.id == "now" for value in as_of_args), (
+        "as_of must be the decision time the loop passed in, never a fresh clock read"
+    )
+    assert "datetime.now" not in source, (
+        "a clock read inside the harness would let a backdated re-run see rows "
+        "that were not knowable at the decision time"
+    )
+
+
+# -- the complete cycle, in one test -------------------------------------
+
+
+def test_the_complete_cycle_on_controlled_data(
+    store: Store, failed_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Select -> execute -> measure -> store -> re-prioritise -> next question.
+
+    The whole loop in one place, with every stage asserted, because the
+    individual tests above can all pass while the chain between them is
+    broken -- which is exactly what was wrong before: the decision was
+    recorded, nothing ran, and the next run re-decided the same thing.
+    """
+    runner = _StubHarness()
+    registered = ApprovedHarness(
+        name="stub",
+        version="1",
+        hypothesis_ids=frozenset({"RO-FIRST", "RO-SECOND"}),
+        description="test double",
+        spec={"horizon": 3, "min_train": 200},
+        run=runner,
+    )
+    monkeypatch.setattr(
+        step_module,
+        "resolve_harness",
+        lambda hid: registered if hid in {"RO-FIRST", "RO-SECOND"} else None,
+    )
+    _seed(store, "RO-FIRST", priority=0.9, information_gain=0.8)
+    _seed(store, "RO-SECOND", priority=0.4, information_gain=0.6)
+
+    # 1. The highest-ranked question is selected, with no human involved.
+    first = _step(store, failed_path)
+    assert first.kind is ActionKind.START_EXPLORATORY
+    assert first.hypothesis_id == "RO-FIRST"
+
+    # 2. An approved harness actually ran, at the decision time.
+    assert runner.calls == ["RO-FIRST"]
+    assert runner.as_of == [_NOW]
+
+    # 3. The result is stored with everything needed to reproduce it.
+    screen = store.list_research_screens(quarter=_QUARTER)[0]
+    assert screen.status is ScreenStatus.COMPLETED
+    assert screen.verdict == "NO_IMPROVEMENT"
+    assert screen.harness == "stub" and screen.harness_version == "1"
+    assert screen.spec["min_train"] == 200
+    assert screen.data_version == "deadbeefcafe0001"
+    assert screen.cost_seconds >= 0.0
+    assert screen.metrics["attempts"] == 1
+
+    # 4. The attempt is in the trial ledger, as a screen and not a
+    #    confirmation.
+    kinds = [t.kind for t in store.list_research_trials(quarter=_QUARTER)]
+    assert SCREEN_KIND in kinds
+    assert all(k in {SCREEN_KIND, DECISION_KIND} for k in kinds)
+
+    # 5. What the screen measured has changed the ranking inputs.
+    stored = {
+        i.opportunity.hypothesis_id: i.opportunity for i in store.list_research_opportunities()
+    }
+    assert stored["RO-FIRST"].expected_information_gain.basis is EstimateBasis.MEASURED
+    assert stored["RO-FIRST"].expected_information_gain.value == 0.0
+    assert stored["RO-FIRST"].estimated_sample_size.value == 96.0
+    # Untouched: the loop measured one question, not both.
+    assert stored["RO-SECOND"].expected_information_gain.basis is EstimateBasis.DECLARED
+
+    # 6. The next run picks the next question by itself.
+    second = _step(store, failed_path, now=_NOW + timedelta(days=7))
+    assert second.kind is ActionKind.START_EXPLORATORY
+    assert second.hypothesis_id == "RO-SECOND"
+    assert runner.calls == ["RO-FIRST", "RO-SECOND"]
+
+    # 7. Two screens executed, two charged to the quarter, and the
+    #    confirmatory budget still untouched.
+    assert len(store.list_research_screens(quarter=_QUARTER)) == 2
+    third = _step(store, failed_path, now=_NOW + timedelta(days=14), dry_run=True)
+    assert third.evidence["exploratory_screens_this_quarter"] == 2
+    assert third.evidence["confirmatory_trials_this_quarter"] == 0
+
+    # 8. Both questions answered negatively, so there is nothing left to
+    #    do -- and that is reported rather than re-screened.
+    assert third.kind is ActionKind.NO_ACTION
+    assert store.list_alpha_sources() == []

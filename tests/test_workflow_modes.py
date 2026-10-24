@@ -279,3 +279,79 @@ def test_the_watchdog_runs_without_installing_the_package(
         "no dependency install, so a third-party import makes it fail exactly "
         "when the environment is what broke."
     )
+
+
+# -- the state restore must not filter on the run conclusion -------------
+
+STATE_ACTION = Path(".github/actions/turboedge-state/action.yml")
+
+
+def test_the_state_restore_does_not_filter_on_run_conclusion() -> None:
+    """The measured data loss of 2026-10-23/24, structurally prevented.
+
+    "Pack and upload state" is the LAST step of every data job and is gated
+    on `if: success()`, so the artifact can only exist if every data step of
+    that job completed. Its existence is a stronger and more precise signal
+    than the run's conclusion, which is the maximum over ALL jobs in the run
+    -- including jobs that touch no state.
+
+    Filtering candidates on `--status success` discarded exactly that: eight
+    runs were reported `failure` while every data job in them succeeded and
+    all eight had uploaded `turboedge-state-enc`, and the chain resumed from
+    a day-old state. Four scans' worth of bid/ask snapshots went with it,
+    and a quote from a given minute cannot be fetched again later.
+    """
+    if not STATE_ACTION.is_file():
+        pytest.skip(f"{STATE_ACTION} not present")
+    # Comment lines are stripped: the file explains the filter it no longer
+    # uses, and a test that forbade the words would forbid the explanation.
+    source = "\n".join(
+        line
+        for line in STATE_ACTION.read_text(encoding="utf-8").splitlines()
+        if not line.lstrip().startswith("#")
+    )
+
+    assert "--status success" not in source, (
+        "the state restore filters candidate runs on the run-level conclusion "
+        "again. A run can be red for a reason that has nothing to do with the "
+        "state it packed, and that filter is what made eight runs' data "
+        "unreachable on 2026-10-23/24."
+    )
+
+
+def test_the_state_pack_is_the_last_step_of_every_data_job(
+    workflow: dict[str, Any],
+) -> None:
+    # The restore's safety now rests on this: the artifact exists only if
+    # every preceding step of that job succeeded. If packing moved earlier,
+    # an artifact could represent a job that then went on to fail partway,
+    # and "artifact exists" would stop meaning "the data work completed".
+    for name in ("scan", "eod", "external", "research", "weekly", "monthly"):
+        spec = workflow["jobs"].get(name)
+        if spec is None:
+            continue
+        steps = spec["steps"]
+        packs = [
+            i
+            for i, step in enumerate(steps)
+            if "pack" in str(step.get("name", "")).lower()
+            and "state" in str(step.get("name", "")).lower()
+            and "snapshot" not in str(step.get("name", "")).lower()
+        ]
+        if not packs:
+            continue
+        last_pack = max(packs)
+        after = [
+            str(step.get("name", step.get("uses")))
+            for step in steps[last_pack + 1 :]
+            if str(step.get("if", "")) != "always()"
+        ]
+        assert after == [], (
+            f"{name} runs {after} after packing its state. The restore treats the "
+            "artifact's existence as proof the job's data work completed, which "
+            "only holds while packing is last."
+        )
+        assert "success()" in str(steps[last_pack].get("if", "")), (
+            f"{name}'s state pack is no longer gated on success(), so the artifact "
+            "would no longer prove that the data steps completed."
+        )

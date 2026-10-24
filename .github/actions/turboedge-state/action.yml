@@ -117,7 +117,7 @@ runs:
     # byte-for-byte identical to before this fallback existed. See
     # docs/durable_state.md and turboedge.state.backend's module docstring.
     # ------------------------------------------------------------------
-    - name: Restore encrypted state from the latest usable successful pipeline run
+    - name: Restore encrypted state from the latest pipeline run that packed one
       id: restore
       shell: bash
       env:
@@ -129,14 +129,34 @@ runs:
         echo "Restoring encrypted state for pipeline mode: ${MODE}"
         mkdir -p state-download
 
-        if ! total_success=$(gh run list --workflow pipeline.yml --status success --json databaseId --jq 'length'); then
-          echo "::error::'gh run list' failed while checking for prior successful pipeline.yml runs -- aborting rather than silently treating this as a first run. Check that the token has 'actions: read' and that the API is reachable."
+        # Candidate runs are NOT filtered by run-level conclusion, and that
+        # is the fix for a measured data loss, not a relaxation.
+        #
+        # "Pack and upload state" is the LAST step of every data job and is
+        # gated on `if: success()`, so the artifact can only exist if every
+        # data step of that job completed. Its existence is therefore a
+        # stronger and more precise signal than the run's conclusion, which
+        # is the maximum over ALL jobs in the run -- including jobs that
+        # touch no state at all.
+        #
+        # Filtering on `--status success` discarded exactly that. Measured
+        # on 2026-10-23/24: eight runs were reported `failure` while every
+        # data job in them succeeded and all eight had uploaded
+        # `turboedge-state-enc`; seven were red only because a watchdog job
+        # (since moved to its own workflow) had failed. Every one of those
+        # artifacts was unreachable, and the chain resumed from 12:49 on
+        # 2026-10-23 -- discarding a successful 65-minute external ingest,
+        # four scans' worth of irreplaceable bid/ask snapshots and a
+        # successful eod. A quote from 17:57 on a given day cannot be
+        # fetched again later.
+        if ! total_prior=$(gh run list --workflow pipeline.yml --json databaseId --jq 'length'); then
+          echo "::error::'gh run list' failed while checking for prior pipeline.yml runs -- aborting rather than silently treating this as a first run. Check that the token has 'actions: read' and that the API is reachable."
           exit 1
         fi
-        total_success="${total_success:-0}"
+        total_prior="${total_prior:-0}"
 
-        if [[ "${total_success}" -eq 0 ]]; then
-          note="No previous successful pipeline.yml run exists yet -- this is a genuine first run, starting with a fresh, empty state."
+        if [[ "${total_prior}" -eq 0 ]]; then
+          note="No previous pipeline.yml run exists yet -- this is a genuine first run, starting with a fresh, empty state."
           echo "${note}"
           {
             echo "state_note=${note}"
@@ -145,26 +165,31 @@ runs:
           exit 0
         fi
 
-        if ! run_ids=$(gh run list --workflow pipeline.yml --status success --json databaseId --limit 50 --jq '.[].databaseId'); then
+        if ! run_ids=$(gh run list --workflow pipeline.yml --json databaseId,conclusion \
+            --limit 50 --jq '.[] | [(.databaseId|tostring), (.conclusion // "pending")] | @tsv'); then
           echo "::error::'gh run list' failed while enumerating candidate runs for state restore -- aborting rather than silently falling back to an empty state."
           exit 1
         fi
 
         found_run_id=""
-        for run_id in ${run_ids}; do
+        while IFS=$'\t' read -r run_id conclusion; do
+          [[ -n "${run_id}" ]] || continue
           if gh run download "${run_id}" -n turboedge-state-enc -D state-download 2>/dev/null; then
-            echo "Restored turboedge-state-enc artifact from pipeline.yml run ${run_id}"
+            echo "Restored turboedge-state-enc artifact from pipeline.yml run ${run_id} (run conclusion: ${conclusion})"
+            if [[ "${conclusion}" != "success" ]]; then
+              echo "::notice::Restored from run ${run_id}, whose overall conclusion was '${conclusion}'. The artifact exists, and it is only ever uploaded by the final 'Pack and upload state' step under 'if: success()', so every data step of the job that packed it completed. Something else in that run went red -- check it."
+            fi
             found_run_id="${run_id}"
             break
           fi
-        done
+        done <<< "${run_ids}" 
 
         # Backend fallback (Phase H) -- only reached when no usable GitHub
         # Actions artifact was found above. `state backend get` fails fast
         # (no network call) if TURBOEDGE_STATE_BACKEND is unset, so this is
         # a no-op for anyone who has not opted into a durable backend.
         if [[ -z "${found_run_id}" ]]; then
-          echo "No usable turboedge-state-enc artifact found in the last 50 successful runs -- trying the optional durable state backend before giving up."
+          echo "No usable turboedge-state-enc artifact found in the last 50 runs -- trying the optional durable state backend before giving up."
           mkdir -p state-download
           if uv run turboedge --state-dir ./state state backend get --key lean --out state-download/state.tar.enc; then
             found_run_id="backend"
@@ -175,7 +200,7 @@ runs:
 
         if [[ -n "${found_run_id}" ]]; then
           if [[ "${found_run_id}" == "backend" ]]; then
-            note="No usable turboedge-state-enc artifact was found in the last 50 successful pipeline.yml runs -- restored state from the durable state backend (TURBOEDGE_STATE_BACKEND) instead. See docs/durable_state.md."
+            note="No usable turboedge-state-enc artifact was found in the last 50 pipeline.yml runs -- restored state from the durable state backend (TURBOEDGE_STATE_BACKEND) instead. See docs/durable_state.md."
             echo "::warning::${note}"
           else
             note=""
@@ -188,7 +213,7 @@ runs:
         fi
 
         if [[ "${ALLOW_FRESH_STATE}" == "true" ]]; then
-          note="allow_fresh_state=true was explicitly requested via workflow_dispatch: no usable turboedge-state-enc artifact and no usable durable-backend version were found (out of ${total_success} successful runs total), so a FRESH, EMPTY state was forced. Forward-ledger, posteriors, model weights and product history from before this point are being abandoned deliberately."
+          note="allow_fresh_state=true was explicitly requested via workflow_dispatch: no usable turboedge-state-enc artifact and no usable durable-backend version were found (out of ${total_prior} prior runs total), so a FRESH, EMPTY state was forced. Forward-ledger, posteriors, model weights and product history from before this point are being abandoned deliberately."
           echo "::warning::${note}"
           {
             echo "state_note=${note}"
@@ -197,7 +222,7 @@ runs:
           exit 0
         fi
 
-        echo "::error::${total_success} prior successful pipeline.yml run(s) exist, but none of the last 50 have a usable turboedge-state-enc artifact (expired past its 14-day retention window, missing, or a failed download), and the optional durable state backend (TURBOEDGE_STATE_BACKEND) delivered nothing either (not configured, unreachable, or no versions yet). Refusing to silently continue with an empty state -- that would discard the forward-ledger, posteriors, model weights and product history without anyone noticing. If this reset is intentional, re-run manually via workflow_dispatch with allow_fresh_state=true. See docs/durable_state.md to set up a durable backend so this situation stops being a hard stop."
+        echo "::error::${total_prior} prior pipeline.yml run(s) exist, but none of the last 50 have a usable turboedge-state-enc artifact (expired past its 14-day retention window, missing, or a failed download), and the optional durable state backend (TURBOEDGE_STATE_BACKEND) delivered nothing either (not configured, unreachable, or no versions yet). Refusing to silently continue with an empty state -- that would discard the forward-ledger, posteriors, model weights and product history without anyone noticing. If this reset is intentional, re-run manually via workflow_dispatch with allow_fresh_state=true. See docs/durable_state.md to set up a durable backend so this situation stops being a hard stop."
         exit 1
 
     # There used to be a weekly-only step here that additively merged a

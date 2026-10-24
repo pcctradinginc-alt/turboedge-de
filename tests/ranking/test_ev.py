@@ -514,7 +514,7 @@ def test_evaluate_product_horizons_performance_proxy() -> None:
     forecasts = {h: make_forecast(h, 0.01) for h in horizons}
     cfg = EvConfig(n_paths=300)
 
-    t0 = time.perf_counter()
+    t0 = time.process_time()
     evals = evaluate_product_horizons(
         terms,
         forecasts,
@@ -529,17 +529,23 @@ def test_evaluate_product_horizons_performance_proxy() -> None:
         cfg=cfg,
         fair_value_fn=simple_fair_value,
     )
-    elapsed = time.perf_counter() - t0
+    cpu_seconds = time.process_time() - t0
 
     assert len(evals) == n_products * len(horizons)
-    per_pair_ms = 1000.0 * elapsed / len(evals)
+    per_pair_ms = 1000.0 * cpu_seconds / len(evals)
     print(
         f"\n[perf] evaluate_product_horizons: {len(evals)} (product, horizon) pairs "
-        f"in {elapsed:.2f}s ({per_pair_ms:.3f} ms/pair, n_paths={cfg.n_paths})"
+        f"in {cpu_seconds:.2f} CPU-seconds ({per_pair_ms:.3f} ms/pair, "
+        f"n_paths={cfg.n_paths})"
     )
-    # Generous bound for CI variance; this scale is well below the full
-    # contract target, see docstring.
-    assert elapsed < 120.0
+    # CPU time, for the reason recorded on
+    # `test_fit_predict_runtime_under_5s_on_4000_bars`: under `-n auto` a
+    # wall-clock budget measures how long the process waited for a core.
+    # Measured 14.3s here on 2026-10-24, so a wall-clock 120s left only 8x
+    # headroom against an inflation measured at 24x on run 39995755648 --
+    # the next false alarm rather than a guard. This scale is well below the
+    # full contract target, see docstring.
+    assert cpu_seconds < 120.0
 
 
 def test_implausible_mean_net_return_is_excluded_not_emitted() -> None:

@@ -1,0 +1,342 @@
+"""Decide whether recent pipeline runs warrant an alarm.
+
+WHY THIS EXISTS
+---------------
+From 2026-09-29 to 2026-10-23 the `eod` job was cancelled by its timeout on
+19 consecutive weekdays, discarding each night's label/learn output, and
+nobody was told. The reason is specific: **GitHub emails the owner when a
+run FAILS, not when it is CANCELLED, and a job timeout is reported as
+cancelled.** The loudest failure mode this pipeline had was also its
+quietest. A watchdog that turns "a recent data job did not succeed" into an
+actual failure fixes that, because a failure does notify.
+
+WHY IT IS PYTHON AND NOT A SHELL STEP
+-------------------------------------
+The first version was a jq one-liner in the workflow, and it was wrong in
+three ways that no test could have caught, because there was nothing to
+test:
+
+1. It filtered `.conclusion != null`. `gh run list --json conclusion`
+   reports an in-progress run as the empty string, not null, so the
+   watchdog counted the very run it was part of -- whose `external` job was
+   still running and went on to succeed -- as a failure. Observed on run
+   39999355264.
+2. It judged the *run* conclusion. Its own failure therefore made the run
+   fail, so the next run saw a non-successful run in the window and failed
+   too: one false alarm became an unbroken chain of them, each one looking
+   like a fresh data incident.
+3. It re-reported every incident in a 36-hour window on every run. The 19
+   cancelled `eod` runs would have produced an alarm on all ~45 runs of the
+   following day and a half, which is the shape of alert fatigue that makes
+   the 20th silence go unnoticed.
+
+So the rules are: only *completed* runs, only the jobs that actually move
+data, never the watchdog's own result, and never an incident already
+reported by an earlier watchdog run.
+
+WHAT IT DELIBERATELY STILL ALARMS ON
+------------------------------------
+A cancelled data job, including one a human cancelled. Distinguishing a
+human cancel from a timeout is not reliably possible from the Actions API,
+and the asymmetry is not close: a missed timeout costs a night of data
+silently, while a redundant alarm about a cancel the operator performed
+costs one email they already expected.
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from typing import Any
+
+#: Jobs whose failure means data was not collected or not learned from.
+#: `resolve-mode` is included because every data job is gated on its output:
+#: if it fails, the run does nothing at all.
+MONITORED_JOBS: frozenset[str] = frozenset(
+    {"resolve-mode", "scan", "eod", "external", "research", "weekly", "monthly"}
+)
+
+#: The watchdog's own job. Never monitored -- see reason 2 in the module
+#: docstring. A broken watchdog is a watchdog problem, not a data incident,
+#: and must not be able to manufacture an endless chain of alarms.
+WATCHDOG_JOB = "health-watch"
+
+#: Job conclusions that mean the job did not do its work. `cancelled` is
+#: here because that is how a job timeout is reported -- the whole reason
+#: this module exists. `skipped` is absent: a mode job not selected for this
+#: run is the normal case.
+FAILING_CONCLUSIONS: frozenset[str] = frozenset(
+    {"failure", "cancelled", "timed_out", "startup_failure", "action_required", "stale"}
+)
+
+#: Covers a full day of scans plus eod and external with room for a late
+#: start, without reaching back far enough to keep alarming about something
+#: already fixed.
+WINDOW_HOURS = 36
+
+
+@dataclass(frozen=True, slots=True)
+class JobObservation:
+    """One job of one run, as the Actions API reports it."""
+
+    name: str
+    status: str
+    conclusion: str | None
+
+    @property
+    def completed(self) -> bool:
+        # The empty string is what `gh` prints for a job that has not
+        # finished. Treating it as a conclusion is exactly the bug that
+        # made the watchdog fail on a run whose job went on to succeed.
+        return self.status == "completed" and bool(self.conclusion)
+
+    @property
+    def failed(self) -> bool:
+        return self.completed and self.conclusion in FAILING_CONCLUSIONS
+
+
+@dataclass(frozen=True, slots=True)
+class RunObservation:
+    """One pipeline run and its jobs."""
+
+    run_id: int
+    created_at: datetime
+    status: str
+    jobs: tuple[JobObservation, ...] = ()
+
+    @property
+    def completed(self) -> bool:
+        return self.status == "completed"
+
+    def job(self, name: str) -> JobObservation | None:
+        for candidate in self.jobs:
+            if candidate.name == name:
+                return candidate
+        return None
+
+
+@dataclass(frozen=True, slots=True)
+class Incident:
+    """A completed monitored job that did not do its work."""
+
+    run_id: int
+    created_at: datetime
+    job: str
+    conclusion: str
+
+    def describe(self) -> str:
+        return f"{self.created_at.isoformat()}  {self.job}  {self.conclusion}  run {self.run_id}"
+
+
+@dataclass(frozen=True, slots=True)
+class HealthVerdict:
+    """What the watchdog found, and whether it should fail the run."""
+
+    alarm: bool
+    incidents: tuple[Incident, ...]
+    window_start: datetime
+    window_floor: datetime
+    last_alarm_at: datetime | None
+    considered_runs: int
+    skipped_in_progress: tuple[int, ...]
+    already_reported: tuple[Incident, ...]
+    reason: str
+
+
+def _is_watchdog_alarm(run: RunObservation) -> bool:
+    watchdog = run.job(WATCHDOG_JOB)
+    return watchdog is not None and watchdog.failed
+
+
+def evaluate(
+    runs: list[RunObservation],
+    *,
+    now: datetime,
+    current_run_id: int | None = None,
+    window_hours: int = WINDOW_HOURS,
+) -> HealthVerdict:
+    """Which monitored jobs failed recently and have not been reported yet.
+
+    The window starts at the later of `now - window_hours` and the moment
+    of the most recent run whose own watchdog already alarmed. That second
+    bound is the de-duplication: anything older has been reported, and
+    reporting it again on every subsequent run is how a real incident gets
+    lost in a wall of repeats.
+
+    The alarming run itself is *included* in the window, not excluded. Its
+    watchdog ran in parallel with its data jobs and so never judged them --
+    on purpose, so that a watchdog outage cannot stop a scan -- which means
+    this is the first evaluation that can see them.
+    """
+    window_floor = now - timedelta(hours=window_hours)
+
+    in_window = [
+        run for run in runs if run.created_at >= window_floor and run.run_id != current_run_id
+    ]
+    skipped_in_progress = tuple(run.run_id for run in in_window if not run.completed)
+    completed = [run for run in in_window if run.completed]
+
+    alarm_times = [run.created_at for run in completed if _is_watchdog_alarm(run)]
+    last_alarm_at = max(alarm_times) if alarm_times else None
+    window_start = max(window_floor, last_alarm_at) if last_alarm_at else window_floor
+
+    incidents: list[Incident] = []
+    already_reported: list[Incident] = []
+    for run in completed:
+        for job in run.jobs:
+            if job.name not in MONITORED_JOBS or not job.failed:
+                continue
+            assert job.conclusion is not None  # `failed` implies a conclusion
+            incident = Incident(
+                run_id=run.run_id,
+                created_at=run.created_at,
+                job=job.name,
+                conclusion=job.conclusion,
+            )
+            if run.created_at >= window_start:
+                incidents.append(incident)
+            else:
+                already_reported.append(incident)
+
+    incidents.sort(key=lambda i: (i.created_at, i.job))
+    already_reported.sort(key=lambda i: (i.created_at, i.job))
+
+    if incidents:
+        reason = (
+            f"{len(incidents)} monitored job(s) did not succeed since {window_start.isoformat()}"
+        )
+    elif already_reported:
+        reason = (
+            f"{len(already_reported)} earlier incident(s) in the window were already "
+            "reported by a previous watchdog alarm"
+        )
+    elif not completed:
+        reason = "no completed runs in the window"
+    else:
+        reason = f"all monitored jobs in {len(completed)} completed run(s) did their work"
+
+    return HealthVerdict(
+        alarm=bool(incidents),
+        incidents=tuple(incidents),
+        window_start=window_start,
+        window_floor=window_floor,
+        last_alarm_at=last_alarm_at,
+        considered_runs=len(completed),
+        skipped_in_progress=skipped_in_progress,
+        already_reported=tuple(already_reported),
+        reason=reason,
+    )
+
+
+def _parse_timestamp(value: Any) -> datetime:
+    text = str(value).replace("Z", "+00:00")
+    parsed = datetime.fromisoformat(text)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def parse_runs(payload: Any) -> list[RunObservation]:
+    """Build run observations from the shape `gh` produces.
+
+    Accepts both `databaseId` (what `gh run list --json` prints) and `id`
+    (what `gh api` returns), because the workflow uses both commands.
+    """
+    runs: list[RunObservation] = []
+    for raw in payload or []:
+        if not isinstance(raw, dict):
+            continue
+        run_id = raw.get("databaseId", raw.get("id"))
+        created = raw.get("createdAt", raw.get("created_at"))
+        if run_id is None or created is None:
+            continue
+        jobs = tuple(
+            JobObservation(
+                name=str(job.get("name", "")),
+                status=str(job.get("status", "")),
+                conclusion=(
+                    str(job["conclusion"]) if job.get("conclusion") not in (None, "") else None
+                ),
+            )
+            for job in raw.get("jobs") or []
+            if isinstance(job, dict)
+        )
+        runs.append(
+            RunObservation(
+                run_id=int(run_id),
+                created_at=_parse_timestamp(created),
+                status=str(raw.get("status", "")),
+                jobs=jobs,
+            )
+        )
+    return runs
+
+
+def markdown_summary(verdict: HealthVerdict) -> str:
+    """The GitHub step summary, written whether or not there is an alarm."""
+    lines = [
+        "## Pipeline health",
+        "",
+        f"- Window: `{verdict.window_start.isoformat()}` .. now",
+        f"- Completed runs considered: {verdict.considered_runs}",
+        f"- Verdict: {'ALARM' if verdict.alarm else 'ok'} -- {verdict.reason}",
+    ]
+    if verdict.last_alarm_at is not None:
+        lines.append(
+            f"- Window shortened to start at the last watchdog alarm "
+            f"(`{verdict.last_alarm_at.isoformat()}`) so reported incidents are not repeated."
+        )
+    if verdict.skipped_in_progress:
+        lines.append(
+            "- Runs still in progress, not judged: "
+            + ", ".join(str(r) for r in verdict.skipped_in_progress)
+        )
+    if verdict.already_reported:
+        lines.append(
+            f"- Suppressed as already reported: {len(verdict.already_reported)} incident(s)."
+        )
+    if verdict.incidents:
+        lines += ["", "### New incidents", ""]
+        lines += [
+            f"- `{i.conclusion}` **{i.job}** at {i.created_at.isoformat()} "
+            f"([run](../../actions/runs/{i.run_id}))"
+            for i in verdict.incidents
+        ]
+    return "\n".join(lines) + "\n"
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Read the collected Actions data on stdin, report, and exit 1 on alarm.
+
+    Input is one JSON object: `{"now": ..., "current_run_id": ..., "runs":
+    [...]}`. The workflow collects it with `gh`; everything that decides
+    anything happens here, where it is tested.
+    """
+    _ = argv
+    document = json.loads(sys.stdin.read() or "{}")
+    now = _parse_timestamp(document["now"]) if document.get("now") else datetime.now(UTC)
+    current = document.get("current_run_id")
+    verdict = evaluate(
+        parse_runs(document.get("runs")),
+        now=now,
+        current_run_id=int(current) if current not in (None, "") else None,
+    )
+
+    print(markdown_summary(verdict))
+    for incident in verdict.incidents:
+        print(f"  {incident.describe()}")
+
+    if not verdict.alarm:
+        return 0
+
+    print(
+        f"::error::{len(verdict.incidents)} monitored pipeline job(s) did not succeed. "
+        "A job timeout is reported as 'cancelled', which GitHub does NOT email about -- "
+        "that is why 19 such runs went unnoticed for 25 days from 2026-09-29. This step "
+        "fails on purpose so the notification happens."
+    )
+    return 1
+
+
+if __name__ == "__main__":  # pragma: no cover - exercised via the workflow
+    raise SystemExit(main())

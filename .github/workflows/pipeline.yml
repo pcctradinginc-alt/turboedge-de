@@ -206,7 +206,7 @@ jobs:
 
   # ---------------------------------------------------------------------
   # health-watch -- runs in EVERY mode, touches no state, and fails loudly
-  # when recent runs did not succeed.
+  # when a recent DATA JOB did not do its work.
   #
   # This exists because of a measured 25-day silence. From 2026-09-29 to
   # 2026-10-23 the `eod` job was cancelled by its timeout on 19 consecutive
@@ -216,11 +216,25 @@ jobs:
   # and a job timeout is reported as cancelled.** The loudest failure mode
   # this pipeline has was also its quietest.
   #
-  # So this job converts "a recent run did not succeed" into an actual
+  # So this job converts "a recent data job did not succeed" into an actual
   # failure, which does notify. It reads only the Actions API, never the
   # state, and cannot affect the data path: it runs in parallel with the
   # mode jobs rather than gating them, so a watchdog outage never stops a
   # scan and a failing watchdog never skips a save.
+  #
+  # The decision is NOT made here. The first version was a jq filter in
+  # this block and it was wrong in three ways no test could catch, because
+  # a filter inside a YAML `run:` is not testable: it read an in-progress
+  # run's empty `conclusion` as a failure (run 39999355264 failed over its
+  # own still-running `external` job, which then succeeded), it judged the
+  # run conclusion so its own failure made the next run alarm in an
+  # unbroken chain, and it re-reported every incident in the window on
+  # every run. The steps below only COLLECT; `pipeline_health.py` decides,
+  # and `tests/monitoring/test_pipeline_health.py` pins each of those bugs.
+  #
+  # Run as a plain script, not `uv run`: the module imports nothing outside
+  # the standard library, on purpose. The last line of defence must not
+  # depend on a dependency install of the package it is watching.
   # ---------------------------------------------------------------------
   health-watch:
     runs-on: ubuntu-latest
@@ -229,52 +243,67 @@ jobs:
       contents: read
       actions: read
     steps:
-      - name: Fail if a recent pipeline run did not succeed
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Collect recent run and job conclusions
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          CURRENT_RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
           # Last 36 hours covers a full day of scans plus eod and external
           # with room for a late start, without reaching back far enough to
-          # keep alarming about something already fixed.
+          # keep alarming about something already fixed. The window is also
+          # applied in Python; this bound only limits how much is fetched.
           since=$(date -u -d '36 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
             || date -u -v-36H +%Y-%m-%dT%H:%M:%SZ)
-          echo "Checking pipeline.yml runs since ${since}"
+          echo "Collecting pipeline.yml runs since ${since}"
 
           if ! runs=$(gh run list --workflow pipeline.yml --limit 60 \
-              --json createdAt,conclusion,displayTitle,databaseId); then
+              --json databaseId,createdAt,status,conclusion); then
             echo "::warning::could not read run history; not treating that as a pipeline failure"
+            echo '{"runs": []}' > health.json
             exit 0
           fi
 
-          bad=$(printf '%s' "$runs" | jq -r --arg since "$since" '
-            [ .[]
-              | select(.createdAt >= $since)
-              | select(.conclusion != null and .conclusion != "success" and .conclusion != "skipped")
-            ]')
-          count=$(printf '%s' "$bad" | jq 'length')
+          ids=$(printf '%s' "$runs" | jq -r --arg since "$since" \
+            '[.[] | select(.createdAt >= $since) | .databaseId] | .[]')
 
-          {
-            echo "## Pipeline health"
-            echo
-            echo "Window: since ${since}"
-            echo "Non-successful runs: ${count}"
-          } >> "$GITHUB_STEP_SUMMARY"
+          # One jobs call per run in the window (typically 10-20). The job
+          # conclusions are the point: the run conclusion cannot
+          # distinguish a failed data job from a failed watchdog.
+          : > jobs.ndjson
+          for id in ${ids}; do
+            if [ "${id}" = "${CURRENT_RUN_ID}" ]; then
+              continue
+            fi
+            if jobs=$(gh api "repos/${GH_REPO}/actions/runs/${id}/jobs" \
+                --jq '{jobs: [.jobs[] | {name, status, conclusion}]}'); then
+              printf '%s' "$runs" | jq -c --argjson id "${id}" --argjson j "${jobs}" \
+                '.[] | select(.databaseId == $id) | . + $j' >> jobs.ndjson
+            else
+              echo "::warning::could not read jobs for run ${id}; skipping it"
+            fi
+          done
 
-          if [ "$count" -eq 0 ]; then
-            echo "All runs in the window concluded successfully."
-            exit 0
-          fi
+          jq -n \
+            --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --argjson current "${CURRENT_RUN_ID}" \
+            --slurpfile runs jobs.ndjson \
+            '{now: $now, current_run_id: $current, runs: $runs}' > health.json
+          echo "Collected $(jq '.runs | length' health.json) completed run(s)."
 
-          printf '%s' "$bad" | jq -r '.[] | "  \(.createdAt)  \(.conclusion)  run \(.databaseId)"'
-          {
-            echo
-            printf '%s' "$bad" | jq -r '.[] | "- `\(.conclusion)` \(.createdAt) ([run](../../actions/runs/\(.databaseId)))"'
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          echo "::error::${count} pipeline run(s) in the last 36h did not succeed. A job timeout is reported as 'cancelled', which GitHub does NOT email about -- that is why 19 such runs went unnoticed for 25 days from 2026-09-29. This step fails on purpose so the notification happens."
-          exit 1
+      - name: Evaluate pipeline health
+        run: |
+          set -euo pipefail
+          python3 src/turboedge/monitoring/pipeline_health.py \
+            < health.json | tee -a "$GITHUB_STEP_SUMMARY"
 
   # ---------------------------------------------------------------------
   # scan -- Mo-Fr, 5x/day

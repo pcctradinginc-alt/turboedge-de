@@ -52,5 +52,21 @@ jobs:
       #
       # This touches only the test workflow. It cannot affect data
       # collection: pipeline.yml is a separate workflow and is unchanged.
+      #
+      # Threads pinned to one per worker. numpy's Linux wheels ship OpenBLAS
+      # with a pthreads pool sized to the core count, and scikit-learn adds
+      # OpenMP, so four xdist workers on a four-core runner can ask for
+      # sixteen compute threads. Measured consequence on run 39995755648:
+      # `test_fit_predict_runtime_under_5s_on_4000_bars[logit]` took 9.12s
+      # against a 5s budget, where the same test takes a reproducible 0.38s
+      # serially -- a 24x inflation, which is contention, not variance.
+      # xdist already gives each worker one core's worth of work; letting
+      # each one also fan out across all cores only makes them fight.
       - name: Run tests with pytest
+        env:
+          OMP_NUM_THREADS: 1
+          OPENBLAS_NUM_THREADS: 1
+          MKL_NUM_THREADS: 1
+          NUMEXPR_NUM_THREADS: 1
+          VECLIB_MAXIMUM_THREADS: 1
         run: uv run pytest -q -n auto --cov=turboedge --cov-report=term-missing

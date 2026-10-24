@@ -167,18 +167,45 @@ def test_determinism_same_inputs_same_outputs(
 # --- Runtime budget -------------------------------------------------------------
 
 
+#: CPU-seconds allowed for one fit+predict over 4000 bars. Measured
+#: serially 2026-10-24, three consecutive runs: logit 0.37/0.38/0.39s,
+#: tsmom 0.20/0.20/0.21s, null 0.06s. The budget keeps better than an
+#: order of magnitude of headroom, which is what makes it a guard against
+#: an algorithmic regression rather than a speed contest.
+_RUNTIME_BUDGET_CPU_SECONDS = 5.0
+
+
 @pytest.mark.parametrize("factory", _MODEL_FACTORIES, ids=_MODEL_IDS)
 def test_fit_predict_runtime_under_5s_on_4000_bars(
     factory: Callable[[], object], make_bars: Callable[..., list[UnderlyingBar]]
 ) -> None:
+    # CPU time, not wall-clock. On CI run 39995755648 this test took 9.12s
+    # of wall-clock against a 5s budget while taking a reproducible 0.38s
+    # serially: a 24x inflation caused by `-n auto` workers competing for
+    # cores (numpy's Linux wheels ship a threaded OpenBLAS, scikit-learn
+    # adds OpenMP, and four workers on four cores can ask for sixteen
+    # threads). Wall-clock measured how long the process WAITED; what this
+    # test is for is how much work it DOES, and `process_time` measures
+    # that. The workflow also pins the thread pools, which fixes the
+    # contention at its source -- this makes the measurement independent of
+    # whether anyone remembers to.
+    #
+    # The trade-off is explicit: a hang that consumes no CPU, such as a
+    # network call this model has no business making, would not be caught
+    # here. The job timeout covers that case; a flaky guard covers nothing.
     bars = make_bars(4000, seed=8)
     as_of = bars[-1].available_at
     model = factory()
-    start = time.monotonic()
+    start = time.process_time()
     model.fit(bars, as_of)  # type: ignore[attr-defined]
     model.predict(bars, as_of)  # type: ignore[attr-defined]
-    elapsed = time.monotonic() - start
-    assert elapsed < 5.0
+    cpu_seconds = time.process_time() - start
+    assert cpu_seconds < _RUNTIME_BUDGET_CPU_SECONDS, (
+        f"fit+predict used {cpu_seconds:.2f} CPU-seconds on 4000 bars, over the "
+        f"{_RUNTIME_BUDGET_CPU_SECONDS}s budget. Measured 0.38s serially on "
+        "2026-10-24, so this is an order-of-magnitude regression, not a slow "
+        "runner -- CPU time does not inflate under parallel test execution."
+    )
 
 
 # --- Model-specific behavior -----------------------------------------------------

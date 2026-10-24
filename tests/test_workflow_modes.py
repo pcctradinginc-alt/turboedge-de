@@ -163,3 +163,64 @@ def test_no_state_save_is_loosened_to_always(workflow: dict[str, Any]) -> None:
                     f"{name}/{step.get('name')!r} must gate its state save on "
                     "success(), not always()"
                 )
+
+
+def test_the_watchdog_monitors_exactly_the_jobs_that_move_data(
+    workflow: dict[str, Any],
+) -> None:
+    # If a mode is added to the pipeline and not to MONITORED_JOBS, its
+    # failures are invisible -- which is the condition this watchdog was
+    # built to end, reintroduced one mode at a time.
+    from turboedge.monitoring.pipeline_health import MONITORED_JOBS, WATCHDOG_JOB
+
+    assert set(workflow["jobs"]) - {WATCHDOG_JOB} == MONITORED_JOBS, (
+        "the watchdog's monitored-job set no longer matches the workflow's jobs. "
+        "Every job except the watchdog itself either moves data or gates the "
+        "jobs that do."
+    )
+
+
+def test_the_watchdog_decides_in_python_not_in_yaml(workflow: dict[str, Any]) -> None:
+    # The jq version of this check was wrong in three ways that no test
+    # could catch, because a filter inside a YAML `run:` block is not
+    # testable. Keeping the decision in a module keeps it tested; see
+    # tests/monitoring/test_pipeline_health.py.
+    steps = yaml.dump(workflow["jobs"]["health-watch"]["steps"])
+
+    assert "pipeline_health.py" in steps, (
+        "the watchdog no longer calls the tested evaluator. Collect in the "
+        "workflow if you must, but decide in Python."
+    )
+    assert "::error::" not in steps, (
+        "the watchdog annotates from the workflow again. The annotation belongs "
+        "with the decision, where it is tested."
+    )
+
+
+def test_the_watchdog_runs_without_installing_the_package(
+    workflow: dict[str, Any],
+) -> None:
+    # The last line of defence must not depend on a dependency install of
+    # the package it is watching, so the evaluator imports nothing outside
+    # the standard library and is run as a plain script.
+    import ast
+    import sys
+
+    steps = yaml.dump(workflow["jobs"]["health-watch"]["steps"])
+    assert "uv run" not in steps, "the watchdog must not need the project environment"
+    assert "uv sync" not in steps
+
+    source = Path("src/turboedge/monitoring/pipeline_health.py").read_text(encoding="utf-8")
+    imported: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            imported |= {alias.name.split(".")[0] for alias in node.names}
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            imported.add(node.module.split(".")[0])
+
+    non_stdlib = sorted(imported - sys.stdlib_module_names)
+    assert non_stdlib == [], (
+        f"the watchdog now imports {non_stdlib}. It is run as a bare script with "
+        "no dependency install, so a third-party import makes it fail exactly "
+        "when the environment is what broke."
+    )

@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -131,6 +132,15 @@ class Incident:
 
 
 @dataclass(frozen=True, slots=True)
+class StallVerdict:
+    """Whether the pipeline appears to have stopped running altogether."""
+
+    stalled: bool
+    last_run_at: datetime | None
+    hours_since: float | None
+
+
+@dataclass(frozen=True, slots=True)
 class HealthVerdict:
     """What the watchdog found, and whether it should fail the run."""
 
@@ -143,11 +153,39 @@ class HealthVerdict:
     skipped_in_progress: tuple[int, ...]
     already_reported: tuple[Incident, ...]
     reason: str
+    stall: StallVerdict = StallVerdict(stalled=False, last_run_at=None, hours_since=None)
 
 
 def _is_watchdog_alarm(run: RunObservation) -> bool:
     watchdog = run.job(WATCHDOG_JOB)
     return watchdog is not None and watchdog.failed
+
+
+def _evaluate_stall(
+    history: Sequence[RunObservation] | None,
+    *,
+    now: datetime,
+    window_floor: datetime,
+) -> StallVerdict:
+    """Has the pipeline stopped running, as opposed to never having run?
+
+    This is the one incident a watchdog triggered only by pipeline runs
+    could never see: if the cron stops firing, nothing calls the watchdog,
+    so total silence is the one state it cannot report. The scheduled
+    trigger exists for this, and `history` -- every run the listing
+    returned, in or out of the window -- is how it tells a repository that
+    has never run from one that has stopped.
+
+    A cron that silently stops is not hypothetical here: on 2026-09-14 only
+    one of three scheduled scans fired, and that one 37 minutes late.
+    """
+    if not history:
+        # No history at all. A first run, or a listing that returned
+        # nothing; neither is evidence that something broke.
+        return StallVerdict(stalled=False, last_run_at=None, hours_since=None)
+    last = max(run.created_at for run in history)
+    hours = (now - last).total_seconds() / 3600.0
+    return StallVerdict(stalled=last < window_floor, last_run_at=last, hours_since=hours)
 
 
 def evaluate(
@@ -156,6 +194,7 @@ def evaluate(
     now: datetime,
     current_run_id: int | None = None,
     window_hours: int = WINDOW_HOURS,
+    history: Sequence[RunObservation] | None = None,
 ) -> HealthVerdict:
     """Which monitored jobs failed recently and have not been reported yet.
 
@@ -203,6 +242,8 @@ def evaluate(
     incidents.sort(key=lambda i: (i.created_at, i.job))
     already_reported.sort(key=lambda i: (i.created_at, i.job))
 
+    stall = _evaluate_stall(history, now=now, window_floor=window_floor)
+
     if incidents:
         reason = (
             f"{len(incidents)} monitored job(s) did not succeed since {window_start.isoformat()}"
@@ -212,13 +253,19 @@ def evaluate(
             f"{len(already_reported)} earlier incident(s) in the window were already "
             "reported by a previous watchdog alarm"
         )
+    elif stall.stalled and stall.last_run_at is not None and stall.hours_since is not None:
+        reason = (
+            f"the pipeline has not run since {stall.last_run_at.isoformat()} "
+            f"({stall.hours_since:.0f}h ago), past the {window_hours}h window. A "
+            "schedule that stops firing produces no failing job to notice."
+        )
     elif not completed:
         reason = "no completed runs in the window"
     else:
         reason = f"all monitored jobs in {len(completed)} completed run(s) did their work"
 
     return HealthVerdict(
-        alarm=bool(incidents),
+        alarm=bool(incidents) or stall.stalled,
         incidents=tuple(incidents),
         window_start=window_start,
         window_floor=window_floor,
@@ -227,6 +274,7 @@ def evaluate(
         skipped_in_progress=skipped_in_progress,
         already_reported=tuple(already_reported),
         reason=reason,
+        stall=stall,
     )
 
 
@@ -286,6 +334,8 @@ def markdown_summary(verdict: HealthVerdict) -> str:
             f"- Window shortened to start at the last watchdog alarm "
             f"(`{verdict.last_alarm_at.isoformat()}`) so reported incidents are not repeated."
         )
+    if verdict.stall.stalled:
+        lines.append(f"- **The pipeline has stopped running.** {verdict.reason}")
     if verdict.skipped_in_progress:
         lines.append(
             "- Runs still in progress, not judged: "
@@ -320,6 +370,7 @@ def main(argv: list[str] | None = None) -> int:
         parse_runs(document.get("runs")),
         now=now,
         current_run_id=int(current) if current not in (None, "") else None,
+        history=parse_runs(document.get("history")) if document.get("history") else None,
     )
 
     print(markdown_summary(verdict))
@@ -329,12 +380,15 @@ def main(argv: list[str] | None = None) -> int:
     if not verdict.alarm:
         return 0
 
-    print(
-        f"::error::{len(verdict.incidents)} monitored pipeline job(s) did not succeed. "
-        "A job timeout is reported as 'cancelled', which GitHub does NOT email about -- "
-        "that is why 19 such runs went unnoticed for 25 days from 2026-09-29. This step "
-        "fails on purpose so the notification happens."
-    )
+    if verdict.stall.stalled:
+        print(f"::error::the pipeline has stopped running. {verdict.reason}")
+    if verdict.incidents:
+        print(
+            f"::error::{len(verdict.incidents)} monitored pipeline job(s) did not succeed. "
+            "A job timeout is reported as 'cancelled', which GitHub does NOT email about -- "
+            "that is why 19 such runs went unnoticed for 25 days from 2026-09-29. This step "
+            "fails on purpose so the notification happens."
+        )
     return 1
 
 

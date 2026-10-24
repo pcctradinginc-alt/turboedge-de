@@ -205,105 +205,23 @@ jobs:
           echo "mode=$mode" >> "$GITHUB_OUTPUT"
 
   # ---------------------------------------------------------------------
-  # health-watch -- runs in EVERY mode, touches no state, and fails loudly
-  # when a recent DATA JOB did not do its work.
+  # health-watch lives in its own workflow (.github/workflows/health-watch.yml),
+  # NOT as a job here, and the reason is measured.
   #
-  # This exists because of a measured 25-day silence. From 2026-09-29 to
-  # 2026-10-23 the `eod` job was cancelled by its timeout on 19 consecutive
-  # weekdays, discarding each night's label/learn output, and nobody was
-  # told. The reason nobody was told is specific and worth writing down:
-  # **GitHub emails the owner when a run FAILS, not when it is CANCELLED,
-  # and a job timeout is reported as cancelled.** The loudest failure mode
-  # this pipeline has was also its quietest.
+  # It was a job here until 2026-10-24. A failing job fails the run, and
+  # `.github/actions/turboedge-state` restores from
+  # `gh run list --workflow pipeline.yml --status success` -- so a run whose
+  # watchdog failed became invisible to the restore even though its data jobs
+  # had succeeded and packed state. Checked against the Actions API: all
+  # eight runs reported `failure` on 2026-10-23/24 had uploaded
+  # `turboedge-state-enc`, every one of those artifacts was unreachable, and
+  # the newest state the pipeline could restore was from 12:49 that day --
+  # discarding a successful 65-minute external ingest and a successful eod.
   #
-  # So this job converts "a recent data job did not succeed" into an actual
-  # failure, which does notify. It reads only the Actions API, never the
-  # state, and cannot affect the data path: it runs in parallel with the
-  # mode jobs rather than gating them, so a watchdog outage never stops a
-  # scan and a failing watchdog never skips a save.
-  #
-  # The decision is NOT made here. The first version was a jq filter in
-  # this block and it was wrong in three ways no test could catch, because
-  # a filter inside a YAML `run:` is not testable: it read an in-progress
-  # run's empty `conclusion` as a failure (run 39999355264 failed over its
-  # own still-running `external` job, which then succeeded), it judged the
-  # run conclusion so its own failure made the next run alarm in an
-  # unbroken chain, and it re-reported every incident in the window on
-  # every run. The steps below only COLLECT; `pipeline_health.py` decides,
-  # and `tests/monitoring/test_pipeline_health.py` pins each of those bugs.
-  #
-  # Run as a plain script, not `uv run`: the module imports nothing outside
-  # the standard library, on purpose. The last line of defence must not
-  # depend on a dependency install of the package it is watching.
+  # A watchdog built to make silent data loss audible was causing it. It
+  # reads only the Actions API and needs no state, so it has no business
+  # being able to colour this workflow's conclusion.
   # ---------------------------------------------------------------------
-  health-watch:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: read
-      actions: read
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Collect recent run and job conclusions
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          CURRENT_RUN_ID: ${{ github.run_id }}
-        run: |
-          set -euo pipefail
-          # Last 36 hours covers a full day of scans plus eod and external
-          # with room for a late start, without reaching back far enough to
-          # keep alarming about something already fixed. The window is also
-          # applied in Python; this bound only limits how much is fetched.
-          since=$(date -u -d '36 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
-            || date -u -v-36H +%Y-%m-%dT%H:%M:%SZ)
-          echo "Collecting pipeline.yml runs since ${since}"
-
-          if ! runs=$(gh run list --workflow pipeline.yml --limit 60 \
-              --json databaseId,createdAt,status,conclusion); then
-            echo "::warning::could not read run history; not treating that as a pipeline failure"
-            echo '{"runs": []}' > health.json
-            exit 0
-          fi
-
-          ids=$(printf '%s' "$runs" | jq -r --arg since "$since" \
-            '[.[] | select(.createdAt >= $since) | .databaseId] | .[]')
-
-          # One jobs call per run in the window (typically 10-20). The job
-          # conclusions are the point: the run conclusion cannot
-          # distinguish a failed data job from a failed watchdog.
-          : > jobs.ndjson
-          for id in ${ids}; do
-            if [ "${id}" = "${CURRENT_RUN_ID}" ]; then
-              continue
-            fi
-            if jobs=$(gh api "repos/${GH_REPO}/actions/runs/${id}/jobs" \
-                --jq '{jobs: [.jobs[] | {name, status, conclusion}]}'); then
-              printf '%s' "$runs" | jq -c --argjson id "${id}" --argjson j "${jobs}" \
-                '.[] | select(.databaseId == $id) | . + $j' >> jobs.ndjson
-            else
-              echo "::warning::could not read jobs for run ${id}; skipping it"
-            fi
-          done
-
-          jq -n \
-            --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            --argjson current "${CURRENT_RUN_ID}" \
-            --slurpfile runs jobs.ndjson \
-            '{now: $now, current_run_id: $current, runs: $runs}' > health.json
-          echo "Collected $(jq '.runs | length' health.json) completed run(s)."
-
-      - name: Evaluate pipeline health
-        run: |
-          set -euo pipefail
-          python3 src/turboedge/monitoring/pipeline_health.py \
-            < health.json | tee -a "$GITHUB_STEP_SUMMARY"
 
   # ---------------------------------------------------------------------
   # scan -- Mo-Fr, 5x/day

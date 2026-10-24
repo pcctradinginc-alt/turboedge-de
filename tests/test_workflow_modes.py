@@ -25,9 +25,12 @@ import yaml
 
 WORKFLOW = Path(".github/workflows/pipeline.yml")
 
-#: Jobs that are not pipeline modes: the resolver itself and the watchdog,
-#: which runs in every mode and is deliberately ungated.
-NON_MODE_JOBS = frozenset({"resolve-mode", "health-watch"})
+#: Jobs that are not pipeline modes. Only the resolver: the watchdog moved
+#: to its own workflow on 2026-10-24 (see `WATCHDOG_WORKFLOW`).
+NON_MODE_JOBS = frozenset({"resolve-mode"})
+
+#: The watchdog's own workflow.
+WATCHDOG_WORKFLOW = Path(".github/workflows/health-watch.yml")
 
 
 @pytest.fixture(scope="module")
@@ -123,19 +126,70 @@ def test_every_mode_job_is_gated_on_the_resolved_mode(workflow: dict[str, Any]) 
         assert "resolve-mode" in (spec.get("needs") or []), f"{name} does not need the resolver"
 
 
-def test_the_watchdog_cannot_affect_the_data_path(workflow: dict[str, Any]) -> None:
+@pytest.fixture(scope="module")
+def watchdog() -> dict[str, Any]:
+    if not WATCHDOG_WORKFLOW.is_file():
+        pytest.skip(f"{WATCHDOG_WORKFLOW} not present")
+    loaded = yaml.safe_load(WATCHDOG_WORKFLOW.read_text(encoding="utf-8"))
+    assert isinstance(loaded, dict)
+    return loaded
+
+
+def _watchdog_steps() -> Any:
+    loaded = yaml.safe_load(WATCHDOG_WORKFLOW.read_text(encoding="utf-8"))
+    return loaded["jobs"]["health-watch"]["steps"]
+
+
+def test_the_watchdog_is_not_a_job_of_the_pipeline(workflow: dict[str, Any]) -> None:
+    # The reason is measured, not stylistic. A failing job fails the run,
+    # and `.github/actions/turboedge-state` restores from
+    # `gh run list --workflow pipeline.yml --status success` -- so a run
+    # whose watchdog failed became invisible to the restore even though its
+    # data jobs had succeeded and packed state. Checked against the Actions
+    # API on 2026-10-24: all eight runs reported `failure` on 2026-10-23/24
+    # had uploaded `turboedge-state-enc`, every one of those artifacts was
+    # unreachable, and the newest state the pipeline could restore was from
+    # 12:49 that day -- discarding a successful 65-minute external ingest
+    # and a successful eod. A watchdog built to make silent data loss
+    # audible was causing it.
+    assert "health-watch" not in workflow["jobs"], (
+        "the watchdog is a job of pipeline.yml again. Its failure would fail "
+        "the run, and the state restore only considers successful runs, so "
+        "every data job's packed state in that run becomes unreachable."
+    )
+
+
+def test_the_watchdog_cannot_affect_the_data_path(
+    workflow: dict[str, Any], watchdog: dict[str, Any]
+) -> None:
     # It exists to make silence audible, so it must not be able to gate,
     # delay or break a mode job -- and it must not touch the state.
-    watchdog = workflow["jobs"]["health-watch"]
-
-    assert "needs" not in watchdog, "the watchdog must not gate on anything"
-    assert "if" not in watchdog, "the watchdog runs in every mode"
-    for name in _mode_jobs(workflow):
+    for name in workflow["jobs"]:
         needs = workflow["jobs"][name].get("needs") or []
         assert "health-watch" not in needs, f"{name} must not depend on the watchdog"
 
-    steps = yaml.dump(watchdog["steps"])
+    steps = yaml.dump(watchdog["jobs"]["health-watch"]["steps"])
     assert "turboedge-state" not in steps, "the watchdog must not restore or pack state"
+    assert "write" not in yaml.dump(watchdog.get("permissions", {})), (
+        "the watchdog reads the Actions API and nothing else"
+    )
+
+
+def test_the_watchdog_runs_on_a_schedule_of_its_own(watchdog: dict[str, Any]) -> None:
+    # A watchdog triggered only by pipeline runs cannot detect the pipeline
+    # not running at all -- and a cron that silently stops firing is a real
+    # failure mode here: on 2026-09-14 only one of three scheduled scans
+    # fired, and that one 37 minutes late.
+    triggers = watchdog[True] if True in watchdog else watchdog["on"]
+
+    assert "schedule" in triggers, "without its own schedule, total silence is undetectable"
+    assert "workflow_run" in triggers, "it should also check right after each pipeline run"
+    assert triggers["workflow_run"]["workflows"] == ["Pipeline"]
+
+
+def test_the_watchdog_is_never_cancelled_in_progress(watchdog: dict[str, Any]) -> None:
+    # A cancelled watchdog is a watchdog that said nothing.
+    assert watchdog["concurrency"]["cancel-in-progress"] is False
 
 
 def test_the_external_job_has_room_for_a_first_backfill(workflow: dict[str, Any]) -> None:
@@ -173,7 +227,8 @@ def test_the_watchdog_monitors_exactly_the_jobs_that_move_data(
     # built to end, reintroduced one mode at a time.
     from turboedge.monitoring.pipeline_health import MONITORED_JOBS, WATCHDOG_JOB
 
-    assert set(workflow["jobs"]) - {WATCHDOG_JOB} == MONITORED_JOBS, (
+    assert WATCHDOG_JOB not in workflow["jobs"]
+    assert set(workflow["jobs"]) == MONITORED_JOBS, (
         "the watchdog's monitored-job set no longer matches the workflow's jobs. "
         "Every job except the watchdog itself either moves data or gates the "
         "jobs that do."
@@ -185,7 +240,7 @@ def test_the_watchdog_decides_in_python_not_in_yaml(workflow: dict[str, Any]) ->
     # could catch, because a filter inside a YAML `run:` block is not
     # testable. Keeping the decision in a module keeps it tested; see
     # tests/monitoring/test_pipeline_health.py.
-    steps = yaml.dump(workflow["jobs"]["health-watch"]["steps"])
+    steps = yaml.dump(_watchdog_steps())
 
     assert "pipeline_health.py" in steps, (
         "the watchdog no longer calls the tested evaluator. Collect in the "
@@ -206,7 +261,7 @@ def test_the_watchdog_runs_without_installing_the_package(
     import ast
     import sys
 
-    steps = yaml.dump(workflow["jobs"]["health-watch"]["steps"])
+    steps = yaml.dump(_watchdog_steps())
     assert "uv run" not in steps, "the watchdog must not need the project environment"
     assert "uv sync" not in steps
 

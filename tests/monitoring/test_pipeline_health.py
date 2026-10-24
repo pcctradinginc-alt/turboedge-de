@@ -530,3 +530,89 @@ def test_no_data_job_failed_in_the_observed_cascade() -> None:
     ]
 
     assert data_failures == [(39978874688, "external", "cancelled")]
+
+
+# -- the pipeline not running at all -------------------------------------
+
+
+def test_a_pipeline_that_has_stopped_running_alarms() -> None:
+    # The one incident a watchdog triggered only by pipeline runs could
+    # never see: if the cron stops firing, nothing calls the watchdog, so
+    # total silence is the one state it cannot report. Not hypothetical --
+    # on 2026-09-14 only one of three scheduled scans fired, and that one
+    # 37 minutes late.
+    history = [_ok_run(1, hours_ago=60), _ok_run(2, hours_ago=80)]
+
+    verdict = evaluate([], now=NOW, history=history)
+
+    assert verdict.alarm
+    assert verdict.stall.stalled
+    assert verdict.stall.hours_since is not None and verdict.stall.hours_since > 36
+    assert "has not run since" in verdict.reason
+
+
+def test_a_repository_that_has_never_run_does_not_alarm() -> None:
+    # No history is not evidence that something broke. A first run would
+    # otherwise alarm about itself.
+    verdict = evaluate([], now=NOW, history=[])
+
+    assert not verdict.alarm
+    assert not verdict.stall.stalled
+    assert verdict.stall.last_run_at is None
+
+
+def test_a_recently_run_pipeline_is_not_stalled() -> None:
+    history = [_ok_run(1, hours_ago=2), _ok_run(2, hours_ago=40)]
+
+    verdict = evaluate([_ok_run(1, hours_ago=2)], now=NOW, history=history)
+
+    assert not verdict.alarm
+    assert not verdict.stall.stalled
+
+
+def test_a_stall_is_reported_even_with_no_job_incidents() -> None:
+    # The window has nothing in it precisely because nothing ran. An
+    # incident count of zero must not be read as health.
+    history = [_ok_run(1, hours_ago=50)]
+
+    verdict = evaluate([], now=NOW, history=history)
+
+    assert verdict.incidents == ()
+    assert verdict.alarm
+    assert "stopped running" in markdown_summary(verdict)
+
+
+def test_a_stall_annotates_and_exits_one(capsys, monkeypatch) -> None:
+    document = json.dumps(
+        {
+            "now": "2026-10-24T12:00:00Z",
+            "runs": [],
+            "history": [
+                {
+                    "databaseId": 1,
+                    "createdAt": "2026-10-21T10:00:00Z",
+                    "status": "completed",
+                    "jobs": [{"name": "eod", "status": "completed", "conclusion": "success"}],
+                }
+            ],
+        }
+    )
+    monkeypatch.setattr("sys.stdin", _Stdin(document))
+
+    assert main([]) == 1
+    out = capsys.readouterr().out
+    assert "stopped running" in out
+    assert "::error::" in out
+
+
+def test_the_window_bound_still_applies_to_incidents_during_a_stall() -> None:
+    # A stall and an old incident together: the stall is the finding, and
+    # the old incident is not re-reported on top of it.
+    history = [_ok_run(1, hours_ago=50)]
+    runs = [_run(1, hours_ago=50, jobs=[_job("eod", "cancelled")])]
+
+    verdict = evaluate(runs, now=NOW, history=history)
+
+    assert verdict.alarm
+    assert verdict.stall.stalled
+    assert verdict.incidents == ()

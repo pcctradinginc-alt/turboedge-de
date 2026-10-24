@@ -185,12 +185,73 @@ Never exceed 25% of full Kelly to account for estimation uncertainty.
 
 ### 5.2 Position Size Caps
 
-| Cap                      | Value  | Notes                                |
-|--------------------------|--------|--------------------------------------|
-| max_position_fraction    | 2%     | Max single product per research capital |
-| max_cluster_fraction     | 5%     | Max single correlation cluster       |
-| max_total_notional       | 100%   | Sum of all open positions ≤ capital  |
-| max_ko_loss_contribution | 8%     | Total KO scenario loss budget        |
+This table was written in the initial milestone, **before** any sizing code
+existed, and was never revisited when that code arrived. Reconciled on
+2026-10-24, and the reconciliation found three different kinds of problem,
+not three disagreements of one kind.
+
+| Cap | This document | Implemented (`ranking/sizing.py`) | State |
+|---|---|---|---|
+| `max_position_fraction` | 2% | 5% | **UNRESOLVED** – one quantity, two numbers |
+| `max_cluster_fraction` | 5% | 15% | **UNRESOLVED** – one quantity, two numbers |
+| KO loss | 8%, "total KO scenario loss budget" (portfolio-wide) | `max_ko_loss_contribution` = 2% cap on `P_KO × position_fraction`, **per position** | not the same quantity – see §5.2a |
+| total exposure | `max_total_notional` 100% (sum of notionals) | `max_total_risk` 30% (capital fraction deployed) | not the same quantity; the implemented one is far stricter |
+
+The two **UNRESOLVED** rows are a genuine conflict about one quantity and
+are deliberately left standing with both numbers. Rewriting the table to
+the implemented values would resolve the conflict in favour of the looser
+number by editing a document, which is the move §11 exists to prevent.
+Resolving them needs a dated decision recorded here, naming the approver –
+the mechanism §1.1a uses.
+
+### 5.2a What the reconciliation established (2026-10-24)
+
+**Provenance.** The 2% / 5% / 8% / 100% figures came from the initial
+milestone (`a3d189c`, Phase 0–1), written before `ranking/sizing.py`
+existed. The 5% / 15% / 2% / 30% figures arrived with `948087f`, the commit
+that created `ranking/sizing.py` and `configs/ranking.yaml`. **That commit
+edited this file** – but only §11 and §12, the trial log. The §5.2 table
+was never touched. Neither set of numbers is derived from a measurement in
+`docs/measured_results.md`.
+
+Nobody therefore decided to loosen the position and cluster caps by 2.5×
+and 3×. That is drift, and the stricter figures are the ones that were
+deliberately chosen.
+
+**The KO rows are not comparable.** The implementation caps one position's
+*expected* contribution to capital lost in a knockout
+(`min(fraction, max_ko_loss_contribution / p_ko)`, `sizing.py`). There is no
+accumulation across positions – no `ko_loss_used` argument of the kind the
+cluster and total-risk caps have. The portfolio-wide KO budget this document
+described is **not implemented at all**. Confirming that reading: as a
+per-position cap, 8% could never bind (it would require `p_ko > 4`), so the
+figure only makes sense as the portfolio budget it says it is.
+
+**Two caps were inert.** `max_cluster_fraction` and `max_total_risk` are
+applied net of what is already used, and until 2026-10-24 nothing supplied
+either argument: `pipeline/scan.py` called `evaluate_product_horizons`
+without them, both defaulted to `0.0`, and so both reduced to per-position
+caps of 15% and 30% – each looser than the 5% single-position cap, meaning
+**neither ever bound**. `ranking/utility.py` names `max_cluster_fraction` as
+a *primary* defence against cluster and ruin risk. Clusters were not
+unguarded (the separate `cluster_risk_pass` gate ran, against
+`cluster.max_capital_fraction_per_cluster` = 25%, a third cluster number
+with no counterpart here), but one of the two named primary defences was
+running empty.
+
+Both are now supplied (`positions/usage.py`, `pipeline/scan_all.py`), with
+one limitation stated plainly: converting a held position
+(`qty × entry_price`, in EUR) into a capital *fraction* needs
+`risk.research_capital_eur`, which is **required-but-unset** by default
+because it is a fact about the operator's account. While it is unset, the
+two caps are net of this run's own proposals but not of positions actually
+held, and every scan carries a warning saying so. `forward_ledger` is
+deliberately not used as a substitute: a ledger row is a proposal, its
+`OPEN` status means "awaiting its label" rather than "taken", and counting
+proposals would make the system behave as if every suggestion had been
+acted on.
+
+**No limit value was changed by this reconciliation.**
 
 ### 5.3 Uncertainty Adjustment
 

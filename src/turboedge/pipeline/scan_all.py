@@ -38,6 +38,7 @@ from turboedge.config import TurboEdgeConfig
 from turboedge.notifications.gmail import GmailNotifier
 from turboedge.pipeline.scan import EstrSource, PriceSource, ScanOptions, ScanResult, run_scan
 from turboedge.pipeline.universe import NoProductsError
+from turboedge.positions.usage import portfolio_usage
 from turboedge.provenance import new_run_id
 from turboedge.ranking.cluster import OpenClusterPosition, cluster_id_for, compute_clusters
 from turboedge.storage.duckdb import Store
@@ -134,7 +135,48 @@ def run_scan_all(
     now = clock()
     cluster_assignments = compute_clusters(bars_by_underlying, as_of=now, cfg=cfg.ranking.cluster)
 
+    # Capital already deployed in positions the user actually holds. Until
+    # 2026-10-24 this accumulator started empty on every run, so the two
+    # portfolio-level sizing caps were net of *this run's own proposals*
+    # only and knew nothing about yesterday's open positions. Seeding it
+    # here is what makes `max_cluster_fraction` and `max_total_risk` net of
+    # the real portfolio rather than of nothing.
+    #
+    # When `risk.research_capital_eur` is unset there is no denominator to
+    # turn a EUR position into a fraction, so the usage is reported as
+    # unknown and carried into the scan's warnings instead of being silently
+    # read as "nothing is held" -- the same refusal to treat an absent input
+    # as a satisfied constraint that `alpha/promotion.py` makes.
+    usage = portfolio_usage(
+        store,
+        research_capital_eur=cfg.risk.research_capital_eur,
+        cluster_for_underlying=lambda u: cluster_id_for(cluster_assignments, u),
+    )
+    usage_warning = usage.warning()
+    if usage_warning is not None and usage_warning not in warnings:
+        warnings.append(usage_warning)
+
+    # One entry per held position, not one aggregate per cluster:
+    # `ranking/cluster.py` counts positions as well as capital
+    # (`max_active_positions_per_cluster`), so collapsing three holdings into
+    # one entry would under-count them by two.
     cluster_positions: dict[str, list[OpenClusterPosition]] = {}
+    for item in usage.held:
+        if item.cluster_id is None:
+            continue
+        cluster_positions.setdefault(item.cluster_id, []).append(
+            OpenClusterPosition(
+                underlying_id=item.underlying_id or "(unknown)",
+                cluster_id=item.cluster_id,
+                capital_fraction=item.fraction,
+                counts_as_active_position=True,
+            )
+        )
+    portfolio_fraction_used = usage.total_fraction
+    # Positions whose ISIN this system never scanned cannot be attributed to
+    # a cluster, so no cluster list carries them. Held separately so that
+    # recomputing the total from those lists below does not lose them.
+    unattributed_fraction = usage.unattributed_fraction
 
     for uid in ids:
         u_start = time.perf_counter()
@@ -158,6 +200,7 @@ def run_scan_all(
                 rng=effective_rng,
                 cluster_id=cluster_id,
                 cluster_open_positions=prior_positions,
+                portfolio_fraction_used=portfolio_fraction_used,
             )
         except NoProductsError as exc:
             skipped[uid] = f"no_products:{exc}"
@@ -173,6 +216,14 @@ def run_scan_all(
         results[uid] = result
         elapsed_by_underlying[uid] = time.perf_counter() - u_start
         cluster_positions[cluster_id] = result.new_cluster_positions
+        # Recomputed from the authoritative per-cluster lists rather than by
+        # incremental addition, so the portfolio total cannot drift away from
+        # them over a long batch.
+        portfolio_fraction_used = unattributed_fraction + sum(
+            position.capital_fraction
+            for positions in cluster_positions.values()
+            for position in positions
+        )
         counts_by_underlying[uid] = {}
         for cat, count in result.counts.items():
             counts[cat.value] += count

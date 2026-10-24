@@ -1984,6 +1984,27 @@ class Store:
             ],
         )
 
+    def underlying_for_isin(self, isin: str) -> str | None:
+        """The underlying this product was last seen on, or `None`.
+
+        Read from `product_snapshots`, which is the only place an ISIN is
+        tied to an underlying. A manually entered position whose ISIN this
+        system never scanned therefore has no answer here, and the caller
+        (`positions/usage.py`) reports it as unattributed rather than
+        guessing a cluster for it.
+
+        The newest snapshot wins: `underlying_id` is a property of the
+        product and does not change, but a backfilled older row may have
+        been written before the id was resolved at all.
+        """
+        row = self._conn.execute(
+            "SELECT underlying_id FROM product_snapshots "
+            "WHERE isin = ? AND underlying_id IS NOT NULL "
+            "ORDER BY observation_time DESC LIMIT 1",
+            [isin],
+        ).fetchone()
+        return str(row[0]) if row is not None and row[0] is not None else None
+
     def list_positions(self, status: PositionStatus | None = None) -> list[ManualPosition]:
         if status is None:
             rows = self._conn.execute(

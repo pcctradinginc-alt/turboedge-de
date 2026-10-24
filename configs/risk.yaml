@@ -178,3 +178,17 @@ reference_rate_fallback: 0.03
 # ~25500) is comfortably above normal quote-to-quote noise but tight enough
 # to catch a genuinely stale/desynced reference price.
 spot_ref_max_deviation_pct: 0.002
+
+# Total research capital in EUR -- the denominator that turns an open manual
+# position (qty x entry_price) into the capital fraction the portfolio-level
+# sizing caps (ranking/sizing.py: max_cluster_fraction, max_total_risk) are
+# expressed in.
+#
+# Deliberately left unset. An invented number would look like a measured one,
+# and this one is a fact about your account that only you know. While it is
+# unset, those two caps cannot be evaluated against positions you actually
+# hold: `positions/usage.py` reports them as unenforced rather than treating
+# the absence as a satisfied constraint, and every scan says so in its
+# warnings. Set it to enable them.
+#
+# research_capital_eur: 25000

@@ -2036,6 +2036,7 @@ def _run_ev_pipeline(
     forecast_models: Sequence[ForecastModel],
     cluster_id: str,
     cluster_open_positions: Sequence[OpenClusterPosition],
+    portfolio_fraction_used: float,
     warnings: list[str],
 ) -> EvPipelineResult:
     """Forecast -> paths -> EV -> gates -> ledger (+ shadow sample), the core
@@ -2181,6 +2182,28 @@ def _run_ev_pipeline(
         cfg=cluster_cfg,
     )
 
+    # The two portfolio-level caps in `ranking/sizing.py` are applied net of
+    # what is already deployed:
+    #
+    #     min(fraction, max_cluster_fraction - cluster_fraction_used)
+    #     min(fraction, max_total_risk       - total_risk_used)
+    #
+    # Until 2026-10-24 nothing ever supplied either argument. Both defaulted
+    # to 0.0, so both caps collapsed to per-position caps of 15% and 30% --
+    # each looser than the 5% single-position cap, which means neither ever
+    # bound. Two of the four caps in `SizingConfig` were structurally inert,
+    # and `ranking/utility.py:86-88` names one of them as a *primary*
+    # defence against cluster and ruin risk.
+    #
+    # `cluster_open_positions` carries this cluster's already-committed
+    # fractions: positions held (seeded by `scan_all`, when research capital
+    # is configured) plus candidates already admitted earlier in this run.
+    cluster_fraction_used = sum(
+        position.capital_fraction
+        for position in cluster_open_positions
+        if position.cluster_id == cluster_id
+    )
+
     evaluations = evaluate_product_horizons(
         terms_by_isin,
         ensemble_by_horizon,
@@ -2194,6 +2217,8 @@ def _run_ev_pipeline(
         horizons=horizons,
         cfg=build_ev_config(cfg),
         cluster_risk=baseline_cluster_risk,
+        cluster_fraction_used=cluster_fraction_used,
+        total_risk_used=portfolio_fraction_used,
         liquidity_factor_by_isin={isin: priced[isin].liquidity for isin in terms_by_isin},
         leverage_by_isin={isin: priced[isin].leverage_value for isin in terms_by_isin},
         fair_value_fn=theoretical_fair_value,
@@ -2564,6 +2589,7 @@ def _run_scan_body(
     forecast_models: Sequence[ForecastModel] | None,
     cluster_id: str | None,
     cluster_open_positions: Sequence[OpenClusterPosition],
+    portfolio_fraction_used: float,
 ) -> ScanResult:
     warnings: list[str] = []
     underlying_id = options.underlying_id
@@ -2738,6 +2764,7 @@ def _run_scan_body(
             forecast_models=models,
             cluster_id=effective_cluster_id,
             cluster_open_positions=cluster_open_positions,
+            portfolio_fraction_used=portfolio_fraction_used,
             warnings=warnings,
         )
         candidates = ev_result.candidates
@@ -2848,6 +2875,7 @@ def run_scan(
     forecast_models: Sequence[ForecastModel] | None = None,
     cluster_id: str | None = None,
     cluster_open_positions: Sequence[OpenClusterPosition] = (),
+    portfolio_fraction_used: float = 0.0,
 ) -> ScanResult:
     """Run one full scan for ``options.underlying_id``.
 
@@ -2917,6 +2945,7 @@ def run_scan(
             forecast_models=forecast_models,
             cluster_id=cluster_id,
             cluster_open_positions=cluster_open_positions,
+            portfolio_fraction_used=portfolio_fraction_used,
         )
     except Exception as exc:
         store.finish_run(run_id, status="error", error=str(exc), finished_at=clock())

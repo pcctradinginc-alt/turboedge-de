@@ -126,6 +126,16 @@ class RiskConfig(BaseModel):
     #     purely for having been fetched early in a multi-minute scan.
     max_source_quote_age_s: float = Field(gt=0)
     max_quote_age_at_decision_s: float = Field(gt=0)
+    #: Total research capital, in EUR. Required-but-unset by default, the
+    #: same convention `alpha/promotion.py` uses for a threshold nobody has
+    #: measured: an invented number would look like a real one.
+    #:
+    #: It is the denominator that turns an open manual position (`qty x
+    #: entry_price`, in EUR) into the capital *fraction* the portfolio-level
+    #: caps are expressed in. Without it those caps cannot be evaluated
+    #: against positions actually held, and `positions/usage.py` reports
+    #: that rather than treating an absent input as a satisfied constraint.
+    research_capital_eur: float | None = Field(default=None, gt=0)
     min_leverage: float = Field(gt=0)
     max_leverage: float = Field(gt=0)
     min_distance_to_barrier_sigma: float = Field(ge=0)

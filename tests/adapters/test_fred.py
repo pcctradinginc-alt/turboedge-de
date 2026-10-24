@@ -18,6 +18,7 @@ import httpx
 import pytest
 import respx
 
+from turboedge.adapters import fred
 from turboedge.adapters.base import HttpClient
 from turboedge.adapters.fred import (
     CURATED_SERIES_IDS,
@@ -592,3 +593,143 @@ def test_paging_stops_and_says_so_rather_than_looping(
 
     assert result.warnings
     assert any("paging stopped" in w for w in result.warnings)
+
+
+def test_paging_stops_at_the_row_ceiling_before_exhausting_memory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # `_MAX_PAGES` alone permits 40 x 100,000 = 4,000,000 archived
+    # observation dicts for one series. That is a memory limit nobody set.
+    # With a page size equal to the row ceiling, the second iteration must
+    # stop on rows rather than run to the page cap.
+    monkeypatch.setenv("FRED_API_KEY", "test-key")
+    monkeypatch.setattr(fred, "_MAX_TOTAL_ROWS", 500)
+    http = _PagingHttp(total=10_000, page_size=500)
+    adapter = FredAdapter(http)  # type: ignore[arg-type]
+
+    result = adapter.parse(adapter.fetch(_spec()), _spec())
+
+    assert http.offsets == [0]
+    assert any("per-series ceiling" in w for w in result.warnings), result.warnings
+    # The rows already fetched are kept. Reaching a limit must not discard
+    # evidence, only stop asking for more.
+    assert len(result.observations) > 0
+
+
+def test_paging_stops_at_the_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The external job has 90 minutes for roughly 60 series; one series is
+    # not entitled to all of it. On 2026-10-23 the job was cancelled at its
+    # timeout with no record of which series had consumed the budget.
+    monkeypatch.setenv("FRED_API_KEY", "test-key")
+    monkeypatch.setattr(fred, "_PAGING_DEADLINE_SECONDS", 0.0)
+    http = _PagingHttp(total=10_000, page_size=10)
+    adapter = FredAdapter(http)  # type: ignore[arg-type]
+
+    result = adapter.parse(adapter.fetch(_spec()), _spec())
+
+    # Stopped before the first request, so nothing was asked for at all.
+    assert http.offsets == []
+    assert any("per-series deadline" in w for w in result.warnings), result.warnings
+
+
+def test_a_series_within_every_limit_carries_no_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The limits must not make an ordinary series look degraded.
+    monkeypatch.setenv("FRED_API_KEY", "test-key")
+    http = _PagingHttp(total=250, page_size=100)
+    adapter = FredAdapter(http)  # type: ignore[arg-type]
+
+    result = adapter.parse(adapter.fetch(_spec()), _spec())
+
+    assert not [w for w in result.warnings if "paging stopped" in w]
+    assert len(result.observations) == 250
+
+
+def test_a_paging_limit_keeps_the_pages_already_fetched(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Discarding them would be worse than the truncation this paging was
+    # added to fix: a series too large for one run would store nothing, so
+    # `_incremental_since` would never advance and every run would re-fetch
+    # the same pages forever. Found 2026-10-24 -- the merge replaced the
+    # accumulated rows with the stop marker.
+    monkeypatch.setenv("FRED_API_KEY", "test-key")
+    monkeypatch.setattr(fred, "_MAX_PAGES", 3)
+    http = _PagingHttp(total=10_000, page_size=100)
+    adapter = FredAdapter(http)  # type: ignore[arg-type]
+
+    result = adapter.parse(adapter.fetch(_spec()), _spec())
+
+    assert http.offsets == [0, 100, 200]
+    assert len(result.observations) == 300
+    assert any("paging stopped" in w for w in result.warnings), result.warnings
+    # Not reported as a missing series: 300 real observations arrived.
+    assert result.missing_series == ()
+
+
+def test_a_real_upstream_error_still_surrenders_the_whole_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The distinction the fix above rests on. A FRED error body says nothing
+    # about whether the preceding pages form a coherent result, so unlike a
+    # paging stop it must not be merged with them.
+    archived = json.dumps(
+        [
+            {
+                "count": 10_000,
+                "observations": [
+                    {
+                        "realtime_start": "2020-01-15",
+                        "realtime_end": "9999-12-31",
+                        "date": "2020-01-01",
+                        "value": "1.5",
+                    }
+                ],
+            },
+            {"error_code": 400, "error_message": "Bad Request. Variable offset is invalid."},
+        ]
+    ).encode()
+
+    result = parse_series_observations(
+        archived, _spec(), retrieved_at=_RETRIEVED_AT, vintage_aware=True
+    )
+
+    assert result.observations == []
+    assert result.missing_series == ("INDPRO",)
+
+
+def test_a_paging_stop_archived_in_the_older_shape_still_reparses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Payloads archived on 2026-10-23/24 recorded the stop as an
+    # `error_message` starting "paging stopped". Reprocessing an archived
+    # payload is the whole reason the archive is kept, so that shape has to
+    # keep yielding its rows.
+    archived = json.dumps(
+        [
+            {
+                "count": 10_000,
+                "observations": [
+                    {
+                        "realtime_start": "2020-01-15",
+                        "realtime_end": "9999-12-31",
+                        "date": "2020-01-01",
+                        "value": "1.5",
+                    }
+                ],
+            },
+            {
+                "error_message": (
+                    "paging stopped after 40 pages at offset 4000000; the series is larger"
+                )
+            },
+        ]
+    ).encode()
+
+    result = parse_series_observations(
+        archived, _spec(), retrieved_at=_RETRIEVED_AT, vintage_aware=True
+    )
+
+    assert len(result.observations) == 1
+    assert any("paging stopped" in w for w in result.warnings), result.warnings

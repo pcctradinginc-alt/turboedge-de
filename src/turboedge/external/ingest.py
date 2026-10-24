@@ -28,13 +28,14 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from time import perf_counter
 from typing import TYPE_CHECKING
 
 import structlog
 
 from turboedge.external.adapter import ExternalSeriesAdapter, deduplicate_observations
 from turboedge.external.catalog import ExternalDataConfig
-from turboedge.external.evidence import build_evidence
+from turboedge.external.evidence import evidence_from_aggregate
 from turboedge.external.raw_archive import store_payload
 from turboedge.external.readiness import DataReadinessRecord, evaluate_readiness
 from turboedge.external.schemas import SeriesSpec, SourceStatus
@@ -59,10 +60,22 @@ class SeriesResult:
     error: str | None = None
     readiness: DataReadinessRecord | None = None
     triggers: tuple[ResearchTrigger, ...] = ()
+    #: Wall-clock seconds per phase. Recorded because the 2026-10-23 timeout
+    #: was diagnosed only by reconstructing step timings from the Actions
+    #: API: the run itself reported 55 HTTP requests in 90 minutes and no
+    #: indication of where the time had gone. A job that can exceed its
+    #: budget should say which phase consumed it.
+    fetch_seconds: float = 0.0
+    parse_seconds: float = 0.0
+    readiness_seconds: float = 0.0
 
     @property
     def ok(self) -> bool:
         return self.error is None
+
+    @property
+    def total_seconds(self) -> float:
+        return self.fetch_seconds + self.parse_seconds + self.readiness_seconds
 
 
 @dataclass(slots=True)
@@ -198,8 +211,11 @@ def _ingest_one(
     emitted: frozenset[str] | set[str],
 ) -> SeriesResult:
     out = SeriesResult(series_id=spec.series_id, source=spec.source)
+    phase_started = perf_counter()
     try:
         payload = adapter.fetch(spec, since=_incremental_since(spec, store=store))
+        out.fetch_seconds = perf_counter() - phase_started
+        phase_started = perf_counter()
         out.fetched = True
         out.payload_bytes = len(payload.content)
         # Archive before parsing: a parser that raises must still leave the
@@ -216,7 +232,12 @@ def _ingest_one(
                 *out.warnings,
                 f"payload did not contain: {list(parsed.missing_series)}",
             )
+        out.parse_seconds = perf_counter() - phase_started
     except Exception as exc:
+        if out.fetch_seconds == 0.0:
+            out.fetch_seconds = perf_counter() - phase_started
+        else:
+            out.parse_seconds = perf_counter() - phase_started
         out.error = f"{type(exc).__name__}: {exc}"
         log.warning(
             "external_ingest_series_failed",
@@ -225,6 +246,7 @@ def _ingest_one(
             error=out.error,
         )
 
+    phase_started = perf_counter()
     out.readiness = _evaluate_and_persist(
         spec,
         store=store,
@@ -232,6 +254,22 @@ def _ingest_one(
         now=policy_now,
         extra_warnings=out.warnings,
         fetch_error=out.error,
+    )
+    out.readiness_seconds = perf_counter() - phase_started
+
+    # One measurement point per series, always emitted. A per-phase number
+    # is what turns "the job was cancelled" into "this series' readiness
+    # evaluation took eleven minutes".
+    log.info(
+        "external_ingest_series_timing",
+        source=spec.source,
+        series_id=spec.series_id,
+        fetch_seconds=round(out.fetch_seconds, 3),
+        parse_seconds=round(out.parse_seconds, 3),
+        readiness_seconds=round(out.readiness_seconds, 3),
+        total_seconds=round(out.total_seconds, 3),
+        payload_bytes=out.payload_bytes,
+        observations_written=out.observations_written,
     )
     out.triggers = tuple(triggers_for_transition(out.readiness, already_emitted=frozenset(emitted)))
     for trigger in out.triggers:
@@ -265,15 +303,10 @@ def _incremental_since(spec: SeriesSpec, *, store: Store) -> date | None:
     Returns `None` until something is stored, so the first run still takes
     the full backfill.
     """
-    stored = [
-        o
-        for o in store.list_external_observations(series_id=spec.series_id)
-        if o.source == spec.source
-    ]
-    if not stored:
+    newest = store.latest_external_observation_time(spec.source, spec.series_id)
+    if newest is None:
         return None
-    newest = max(o.observation_time for o in stored).astimezone(UTC).date()
-    return newest - timedelta(days=INCREMENTAL_OVERLAP_DAYS)
+    return newest.astimezone(UTC).date() - timedelta(days=INCREMENTAL_OVERLAP_DAYS)
 
 
 def _evaluate_and_persist(
@@ -285,19 +318,25 @@ def _evaluate_and_persist(
     extra_warnings: Sequence[str],
     fetch_error: str | None,
 ) -> DataReadinessRecord:
-    stored = [
-        o
-        for o in store.list_external_observations(series_id=spec.series_id)
-        if o.source == spec.source
-    ]
     previous = store.latest_readiness(spec.source, spec.series_id)
     warnings = list(extra_warnings)
     if fetch_error is not None:
         warnings.append(f"last fetch failed: {fetch_error}")
 
-    evidence = build_evidence(
+    # The aggregate, not the rows. `build_evidence` needs counts, a span, a
+    # weakest precision and two integrity flags; materialising a series to
+    # compute them cost minutes per series once FRED's paged ALFRED history
+    # arrived, and is what drove this job past its 90-minute budget on
+    # 2026-10-23. `tests/external/test_evidence_aggregate.py` holds the two
+    # paths to identical results.
+    aggregate = store.external_series_aggregate(
+        spec.source,
+        spec.series_id,
+        collection_start=previous.collection_start if previous else now,
+    )
+    evidence = evidence_from_aggregate(
         spec,
-        stored,
+        aggregate,
         # The first evaluation is what starts the forward clock. Leaving
         # this None until someone sets it by hand would mean a FORWARD_ONLY
         # series never accumulates any forward evidence at all: its

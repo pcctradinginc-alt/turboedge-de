@@ -96,13 +96,18 @@ from __future__ import annotations
 import json
 import os
 from datetime import UTC, date, datetime, time
+from time import perf_counter
 from typing import Any, Final
 from urllib.parse import urlencode
+
+import structlog
 
 from turboedge.adapters.base import AdapterError, HttpClient
 from turboedge.external.adapter import FetchedPayload, ParseResult, resolve_available_at
 from turboedge.external.schemas import SeriesSpec
 from turboedge.storage.schemas import ExternalObservation
+
+logger = structlog.get_logger(__name__)
 
 _SOURCE_ID = "fred"
 _PARSER_VERSION = "1"
@@ -137,6 +142,20 @@ _MAX_PAGE_LIMIT = 100_000
 #: 2026-10-23 when asked for the whole window unpaged), and an unbounded
 #: loop against someone else's API is not something to ship.
 _MAX_PAGES = 40
+
+#: Ceiling on rows held in memory for one series. `_MAX_PAGES` alone permits
+#: 4,000,000 archived observation dicts, which is a memory limit, not a
+#: paging limit. Whichever ceiling is reached first stops the loop, and
+#: either way the stop is recorded as an `error_message` page so the series
+#: is reported DEGRADED rather than quietly short.
+_MAX_TOTAL_ROWS = 600_000
+
+#: Wall-clock ceiling for paging one series. The external job has 90
+#: minutes for roughly 60 series; one series is not entitled to all of it.
+#: On 2026-10-23 the job was cancelled at its timeout with no indication of
+#: which series had consumed the budget -- a per-series deadline turns that
+#: into a reported, attributable stop instead of a lost run.
+_PAGING_DEADLINE_SECONDS = 420.0
 
 CURATED_SERIES_IDS: Final[tuple[str, ...]] = (
     "INDPRO",
@@ -186,6 +205,30 @@ def _public_url(base_url: str, params: dict[str, str]) -> str:
     `.request_fingerprint`; the real, credentialed request is sent
     separately (see `FredAdapter._fetch`)."""
     return f"{base_url}?{urlencode(params)}"
+
+
+#: Marks the page `fetch` appends when it stops paging at one of its own
+#: limits. Deliberately not `error_message`: that key means FRED returned an
+#: error body, which invalidates the whole payload, while a paging stop
+#: leaves every already-fetched page valid.
+_PAGING_STOPPED_KEY = "_paging_stopped"
+
+
+def _paging_stop_reason(page: dict[str, Any]) -> str | None:
+    """The reason paging stopped, if this page is a paging-stop marker.
+
+    Also recognises the older shape, where the stop was recorded as an
+    `error_message` beginning "paging stopped". Raw payloads archived on
+    2026-10-23/24 use it, and reprocessing an archived payload is the whole
+    reason the archive is kept.
+    """
+    reason = page.get(_PAGING_STOPPED_KEY)
+    if isinstance(reason, str):
+        return reason
+    legacy = page.get("error_message")
+    if isinstance(legacy, str) and legacy.startswith("paging stopped") and "error_code" not in page:
+        return legacy
+    return None
 
 
 def parse_series_observations(
@@ -240,7 +283,21 @@ def parse_series_observations(
                     ),
                     missing_series=(spec.series_id,),
                 )
+            stopped = _paging_stop_reason(page)
+            if stopped is not None:
+                # Our own limit, not FRED's problem. The pages already
+                # merged are valid observations and are kept: discarding
+                # them would mean a series too large for one run stores
+                # nothing, so `_incremental_since` never advances and the
+                # next run re-fetches exactly the same pages forever. The
+                # warning still drives the series to DEGRADED, so the
+                # shortfall is reported rather than hidden.
+                warnings.append(f"{spec.qualified_id}: {stopped}")
+                break
             if "error_code" in page or "error_message" in page:
+                # A genuine upstream error body. Unlike a paging stop, this
+                # says nothing about whether the preceding pages form a
+                # coherent result, so the payload is surrendered whole.
                 merged = page
                 break
             rows_here = page.get("observations")
@@ -459,7 +516,23 @@ class FredAdapter:
         status = 200
         content_type = "application/json"
         offset = 0
+        paging_started = perf_counter()
+        stop_reason: str | None = None
         for _page in range(_MAX_PAGES):
+            if offset >= _MAX_TOTAL_ROWS:
+                stop_reason = (
+                    f"paging stopped at {offset} rows, the per-series ceiling of "
+                    f"{_MAX_TOTAL_ROWS}; the series is larger than this adapter "
+                    "will hold in memory in one run"
+                )
+                break
+            elapsed = perf_counter() - paging_started
+            if elapsed > _PAGING_DEADLINE_SECONDS:
+                stop_reason = (
+                    f"paging stopped after {elapsed:.0f}s at offset {offset}, the "
+                    f"per-series deadline of {_PAGING_DEADLINE_SECONDS:.0f}s"
+                )
+                break
             request_params["offset"] = str(offset)
             response = self._http._request("GET", self._base_url, params=request_params)
             status = response.status_code
@@ -482,13 +555,34 @@ class FredAdapter:
             if not rows or offset >= total:
                 break
         else:
-            pages.append(
-                {
-                    "error_message": (
-                        f"paging stopped after {_MAX_PAGES} pages at offset {offset}; "
-                        "the series is larger than this adapter will fetch in one run"
-                    )
-                }
+            stop_reason = (
+                f"paging stopped after {_MAX_PAGES} pages at offset {offset}; "
+                "the series is larger than this adapter will fetch in one run"
+            )
+
+        if stop_reason is not None:
+            # Appended as a page, not raised: the rows already fetched are
+            # real and worth archiving, and `parse` turns an `error_message`
+            # page into a warning that drives the series to DEGRADED. The one
+            # outcome ruled out is returning a short series that looks whole.
+            pages.append({_PAGING_STOPPED_KEY: stop_reason})
+            logger.warning(
+                "fred_paging_limit_reached",
+                series_id=spec.series_id,
+                native_identifier=spec.native_identifier,
+                rows=offset,
+                pages=len(pages) - 1,
+                seconds=round(perf_counter() - paging_started, 1),
+                reason=stop_reason,
+            )
+        else:
+            logger.info(
+                "fred_paging_complete",
+                series_id=spec.series_id,
+                native_identifier=spec.native_identifier,
+                rows=offset,
+                pages=len(pages),
+                seconds=round(perf_counter() - paging_started, 1),
             )
 
         mode = "vintages" if vintage_aware else "current"

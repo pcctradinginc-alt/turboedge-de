@@ -26,6 +26,7 @@ import duckdb
 import structlog
 
 from turboedge.alpha.schemas import AlphaSource, AlphaStatus
+from turboedge.external.evidence import ExternalSeriesAggregate
 from turboedge.external.readiness import (
     AvailabilityPrecision,
     DataReadinessRecord,
@@ -954,6 +955,15 @@ class Store:
         if str(self.path) != ":memory:":
             self.path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = duckdb.connect(str(self.path))
+        # Every timestamp this app stores is UTC (`_to_utc`), but DuckDB
+        # resolves TIMESTAMPTZ -> DATE casts and returns TIMESTAMPTZ values
+        # in the *session* timezone, which defaults to the host's. Pin it
+        # here so a calendar day means the same thing on a CI runner and on
+        # a European workstation. `state/retention.py` used to be the only
+        # caller that set this, on this same shared connection and without
+        # resetting it -- which made every later date cast in the process
+        # depend on whether retention had already run.
+        self._conn.execute("SET TimeZone='UTC'")
 
     def __enter__(self) -> Self:
         return self
@@ -1382,6 +1392,129 @@ class Store:
         rows = self._conn.execute("SELECT dedup_key FROM research_triggers").fetchall()
         return frozenset(r[0] for r in rows)
 
+    def latest_external_observation_time(self, source: str, series_id: str) -> datetime | None:
+        """The newest `observation_time` stored for one series, or None.
+
+        A `SELECT max(...)`, because the caller wants one timestamp.
+        Measured 2026-10-23: the previous implementation materialised every
+        stored row as a pydantic `ExternalObservation` and then took a
+        Python `max` over them. For FRED.NFCI, whose paged ALFRED history
+        reaches hundreds of thousands of rows, that was minutes of object
+        construction per series per run, and it is what drove the external
+        ingest past its 90-minute budget.
+        """
+        row = self._conn.execute(
+            "SELECT max(observation_time) FROM external_observations "
+            "WHERE source = ? AND series_id = ?",
+            [source, series_id],
+        ).fetchone()
+        return row[0] if row and row[0] is not None else None
+
+    def external_series_aggregate(
+        self, source: str, series_id: str, *, collection_start: datetime | None = None
+    ) -> ExternalSeriesAggregate:
+        """Every quantity `build_evidence` needs, computed in the database.
+
+        One scan instead of one pydantic object per row. The readiness
+        engine never needed the rows themselves -- it needs counts, a span,
+        a weakest precision and two integrity flags, all of which are
+        aggregates.
+
+        The window function picks the newest vintage per `observation_time`
+        first, matching `evidence.latest_vintage_per_period`: three prints
+        of one month are one month of evidence, and counting revisions as
+        separate observations would make a heavily revised series look
+        better sampled than a stable one.
+
+        `tests/external/test_evidence_aggregate.py` asserts this returns
+        exactly what the row-based path computes, over randomised data
+        including revisions, intraday resolution, missing precisions and
+        point-in-time violations. Two paths that could silently diverge are
+        only safe while that equivalence is enforced.
+        """
+        params: list[Any] = [source, series_id]
+        # `AT TIME ZONE 'UTC'` before the DATE cast, never a bare cast.
+        # `observation_time` is TIMESTAMPTZ, so `CAST(x AS DATE)` resolves in
+        # DuckDB's *session* timezone, while the row-based path computes
+        # `observation_time.astimezone(UTC).date()`. The two agree only on a
+        # UTC host -- which every CI runner is, and no European workstation
+        # is. A 23:45 UTC observation then lands on the next calendar day,
+        # changing independent dates, effective sample, the observed span and
+        # therefore readiness. Found 2026-10-24 by the equivalence test, which
+        # reported one extra independent date for an intraday series.
+        forward_expr = "NULL"
+        if collection_start is not None:
+            forward_expr = (
+                "CASE WHEN observation_time >= ? "
+                "THEN CAST(observation_time AT TIME ZONE 'UTC' AS DATE) END"
+            )
+        rows = self._conn.execute(
+            f"""
+            WITH latest AS (
+                SELECT
+                    observation_time,
+                    available_at,
+                    availability_precision,
+                    parser_version,
+                    source,
+                    source_version,
+                    row_number() OVER (
+                        PARTITION BY observation_time ORDER BY available_at DESC
+                    ) AS vintage_rank
+                FROM external_observations
+                WHERE source = ? AND series_id = ?
+            )
+            SELECT
+                count(*),
+                count(DISTINCT CAST(observation_time AT TIME ZONE 'UTC' AS DATE)),
+                min(CAST(observation_time AT TIME ZONE 'UTC' AS DATE)),
+                max(CAST(observation_time AT TIME ZONE 'UTC' AS DATE)),
+                sum(CASE WHEN available_at < observation_time THEN 1 ELSE 0 END),
+                sum(
+                    CASE WHEN parser_version IS NULL OR parser_version = ''
+                              OR source IS NULL OR source = ''
+                              OR source_version IS NULL OR source_version = ''
+                         THEN 1 ELSE 0 END
+                ),
+                count(DISTINCT {forward_expr}),
+                min({forward_expr})
+            FROM latest
+            WHERE vintage_rank = 1
+            """,
+            params + ([collection_start, collection_start] if collection_start else []),
+        ).fetchall()
+        head = rows[0] if rows else (0, 0, None, None, 0, 0, 0, None)
+
+        precision_rows = self._conn.execute(
+            """
+            WITH latest AS (
+                SELECT
+                    observation_time,
+                    available_at,
+                    availability_precision,
+                    row_number() OVER (
+                        PARTITION BY observation_time ORDER BY available_at DESC
+                    ) AS vintage_rank
+                FROM external_observations
+                WHERE source = ? AND series_id = ?
+            )
+            SELECT DISTINCT availability_precision FROM latest WHERE vintage_rank = 1
+            """,
+            [source, series_id],
+        ).fetchall()
+
+        return ExternalSeriesAggregate(
+            nominal_n=int(head[0] or 0),
+            independent_dates=int(head[1] or 0),
+            first_observation=head[2],
+            last_observation=head[3],
+            pit_violations=int(head[4] or 0),
+            provenance_gaps=int(head[5] or 0),
+            forward_dates=int(head[6] or 0),
+            forward_first_observation=head[7],
+            precisions=frozenset(r[0] for r in precision_rows),
+        )
+
     # -- meta decisions (shadow layer) -------------------------------------
 
     def append_meta_decisions(self, decisions: Sequence[MetaDecision]) -> int:
@@ -1704,7 +1837,10 @@ class Store:
             ranked AS (
                 SELECT ts, financing_level,
                        ROW_NUMBER() OVER (
-                           PARTITION BY CAST(ts AS DATE)
+                           -- `ts` is TIMESTAMPTZ, so a bare DATE cast would
+                           -- group by the session timezone's calendar day,
+                           -- not the UTC one this docstring promises.
+                           PARTITION BY CAST(ts AT TIME ZONE 'UTC' AS DATE)
                            ORDER BY ts DESC
                        ) AS rn
                 FROM dated

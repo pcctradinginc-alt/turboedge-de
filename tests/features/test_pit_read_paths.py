@@ -2,10 +2,18 @@
 
 `Store.list_external_observations(series_id=..., available_at_max=None)`
 returns everything stored, including rows whose `available_at` lies after
-the moment a study is reasoning about. That default is correct for the two
-places that use it today -- `external/ingest.py` counts accumulated evidence
+the moment a study is reasoning about. That default is correct for the one
+place that uses it today -- `external/ingest.py` counts accumulated evidence
 and must see all of it -- and it is a loaded gun for the next caller, which
 will be a feature builder or a backtest.
+
+`external_series_aggregate` and `latest_external_observation_time` are the
+same gun without even a safety: they take no cutoff at all, by design, and
+compute over every stored vintage. They were added on 2026-10-24 to stop
+the readiness evaluation from materialising a million rows per series, and
+they must stay confined to the ingestion loop. A guard that only watched
+`list_external_observations` would have let that optimisation quietly move
+the unfiltered read somewhere a backtest could reach it.
 
 CLAUDE.md rule 5 is `available_at <= prediction_time`, and the repository
 already has the machinery to honour it: `features/availability.py` for
@@ -35,9 +43,18 @@ CUTOFF_EXEMPT: dict[str, str] = {
     "external/ingest.py": "measures accumulated evidence for readiness, not a study",
 }
 
+#: Reads that return every stored vintage unless told otherwise. The value
+#: is the keyword that makes the read point-in-time safe, or None when the
+#: method takes no cutoff at all and is therefore never safe for a study.
+UNFILTERED_READS: dict[str, str | None] = {
+    "list_external_observations": "available_at_max",
+    "external_series_aggregate": None,
+    "latest_external_observation_time": None,
+}
+
 
 def _unguarded_call_sites() -> list[tuple[str, int]]:
-    """Calls to `list_external_observations` that pass no `available_at_max`."""
+    """Reads of stored external data that carry no point-in-time cutoff."""
     offenders: list[tuple[str, int]] = []
     for path in sorted(SRC.rglob("*.py")):
         rel = path.relative_to(SRC).as_posix()
@@ -50,12 +67,13 @@ def _unguarded_call_sites() -> list[tuple[str, int]]:
                 continue
             func = node.func
             name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
-            if name != "list_external_observations":
+            if name not in UNFILTERED_READS:
                 continue
-            # The definition itself is not a call site.
+            # The definitions themselves are not call sites.
             if rel.endswith("storage/duckdb.py"):
                 continue
-            if "available_at_max" not in {kw.arg for kw in node.keywords}:
+            cutoff_kwarg = UNFILTERED_READS[name]
+            if cutoff_kwarg is None or cutoff_kwarg not in {kw.arg for kw in node.keywords}:
                 offenders.append((rel, node.lineno))
     return offenders
 
@@ -106,3 +124,23 @@ def test_the_cutoff_parameter_still_exists_and_filters_availability() -> None:
         "substitution CLAUDE.md rule 5 exists to forbid: a value's period is "
         "not the moment it became knowable."
     )
+
+
+def test_the_cutoff_free_reads_are_still_cutoff_free() -> None:
+    # The two aggregate reads are exempted on the grounds that they take no
+    # cutoff. If one ever grows a cutoff parameter, the exemption above stops
+    # being an accurate description of it and the stricter rule should apply.
+    import inspect
+
+    from turboedge.storage.duckdb import Store
+
+    for name, cutoff_kwarg in UNFILTERED_READS.items():
+        if cutoff_kwarg is not None:
+            continue
+        method = getattr(Store, name)
+        parameters = inspect.signature(method).parameters
+        assert "available_at_max" not in parameters, (
+            f"Store.{name} now takes a point-in-time cutoff. Record it in "
+            "UNFILTERED_READS so call sites are required to pass it, instead "
+            "of being exempted as inherently unfiltered."
+        )

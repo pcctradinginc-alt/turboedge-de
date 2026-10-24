@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import cast
 
@@ -30,6 +31,133 @@ from turboedge.external.readiness import (
 )
 from turboedge.external.schemas import AvailabilityPrecision, BackfillClass, SeriesSpec
 from turboedge.storage.schemas import ExternalObservation
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalSeriesAggregate:
+    """Everything `build_evidence` measures, as database aggregates.
+
+    Computed by `Store.external_series_aggregate` in one scan. Exists so
+    the readiness engine never has to materialise a series: it needs
+    counts, a span, a weakest precision and two integrity flags, and all of
+    those are aggregates. Measured 2026-10-23, materialising them instead
+    is what pushed the external ingest past its 90-minute budget.
+
+    `precisions` is the set over the latest vintage of each period, so the
+    weakest one can be chosen without loading a row.
+    """
+
+    nominal_n: int
+    independent_dates: int
+    first_observation: date | None
+    last_observation: date | None
+    pit_violations: int
+    provenance_gaps: int
+    forward_dates: int
+    forward_first_observation: date | None
+    precisions: frozenset[str | None]
+
+
+def evidence_from_aggregate(
+    spec: SeriesSpec,
+    aggregate: ExternalSeriesAggregate,
+    *,
+    collection_start: datetime | None = None,
+    schema_valid: bool = True,
+    parser_warnings: Sequence[str] = (),
+    regime_coverage: RegimeCoverage = RegimeCoverage.LIMITED,
+) -> SeriesEvidence:
+    """`build_evidence` without the rows.
+
+    Must return exactly what `build_evidence` returns for the same data.
+    `tests/external/test_evidence_aggregate.py` asserts that over
+    randomised series including revisions, intraday resolution, absent
+    precisions and point-in-time violations -- two paths that could
+    silently diverge are only safe while the equivalence is enforced.
+
+    Deliberately does not take `event_dates`. A caller with an explicit
+    event calendar has the rows anyway and should use `build_evidence`; for
+    an `event_driven` series without one, the events *are* the observation
+    dates, which the aggregate already has.
+    """
+    warnings = list(parser_warnings)
+    has_rows = aggregate.nominal_n > 0
+
+    if spec.event_driven:
+        missingness = 0.0
+    else:
+        # Missingness needs the span and the count, not the dates.
+        missingness = _missingness_from_span(
+            first=aggregate.first_observation,
+            last=aggregate.last_observation,
+            observed=aggregate.independent_dates,
+            frequency=spec.frequency,
+        )
+
+    effective_n = float(aggregate.independent_dates)
+    event_count = 0
+    independent_event_count = 0
+    if spec.event_driven:
+        # The observations are the events.
+        event_count = aggregate.independent_dates
+        independent_event_count = aggregate.independent_dates
+
+    pit_integrity = spec.forecast_series or aggregate.pit_violations == 0
+    if not pit_integrity:
+        warnings.append(
+            f"{spec.series_id}: {aggregate.pit_violations} observation(s) have an "
+            "available_at that precedes their observation_time"
+        )
+
+    return SeriesEvidence(
+        source=spec.source,
+        series_id=spec.series_id,
+        frequency="event" if spec.event_driven else spec.frequency,
+        backfill_class=spec.backfill_class,
+        availability_precision=_weakest_precision(
+            {p for p in aggregate.precisions if p is not None}
+            | ({str(AvailabilityPrecision.UNKNOWN)} if None in aggregate.precisions else set())
+        ),
+        nominal_n=aggregate.nominal_n,
+        independent_dates=aggregate.independent_dates,
+        effective_n=effective_n,
+        first_observation=aggregate.first_observation,
+        last_observation=aggregate.last_observation,
+        collection_start=collection_start,
+        forward_n=aggregate.forward_dates,
+        forward_effective_n=float(aggregate.forward_dates),
+        forward_first_observation=aggregate.forward_first_observation,
+        event_count=event_count,
+        independent_event_count=independent_event_count,
+        schema_valid=schema_valid and has_rows,
+        pit_integrity=pit_integrity and has_rows,
+        provenance_complete=aggregate.provenance_gaps == 0 and has_rows,
+        missingness=missingness,
+        unresolved_warnings=tuple(warnings),
+        regime_coverage=regime_coverage,
+        release_lag_days=(spec.conservative_release_lag_hours or 0.0) / 24.0,
+    )
+
+
+def _missingness_from_span(
+    *, first: date | None, last: date | None, observed: int, frequency: str
+) -> float:
+    """`estimate_missingness` expressed over a span plus a count.
+
+    The row-based version takes the list of unique periods and uses only
+    its min, its max and its length -- so the same number falls out of the
+    aggregate without the list.
+    """
+    if first is None or last is None or observed < 2:
+        return 0.0
+    expected_period = EXPECTED_PERIOD_DAYS.get(frequency)
+    if expected_period is None:
+        return 0.0
+    span_days = (last - first).days
+    expected = span_days / expected_period + 1.0
+    if expected <= 0:
+        return 0.0
+    return min(1.0, max(0.0, (expected - observed) / expected))
 
 
 def latest_vintage_per_period(
@@ -148,8 +276,17 @@ def build_evidence(
     # asserted by the adapter: every row must carry an availability that is
     # not before the period it describes, and must declare how well that
     # availability is known.
+    # Precision is collected over EVERY row before the point-in-time check
+    # runs, rather than inside the same loop. That loop `break`s on the
+    # first violation, so collecting there made the reported precision
+    # depend on how far the iteration had got: the same data could yield a
+    # different `availability_precision` depending on row order. A series is
+    # only as honest as its weakest row, wherever a violation happens to sit.
+    precisions: set[str] = {
+        obs.availability_precision or AvailabilityPrecision.UNKNOWN for obs in deduped
+    }
+
     pit_integrity = True
-    precisions: set[str] = set()
     for obs in deduped:
         # For ordinary data, holding a value before the period it describes
         # is look-ahead and the ordering is an invariant worth enforcing.
@@ -170,7 +307,6 @@ def build_evidence(
                 f"observation_time {obs.observation_time.isoformat()}"
             )
             break
-        precisions.add(obs.availability_precision or AvailabilityPrecision.UNKNOWN)
 
     # The weakest precision present governs the series. One UNKNOWN row in an
     # otherwise exact series makes the series unsuitable for strict work,

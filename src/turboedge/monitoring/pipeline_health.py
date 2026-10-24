@@ -106,6 +106,11 @@ class RunObservation:
     created_at: datetime
     status: str
     jobs: tuple[JobObservation, ...] = ()
+    #: The run-level conclusion. Not used to decide whether a data job
+    #: failed -- that was the original bug -- but it is what the state
+    #: restore filters on, so it is what decides whether a run's packed
+    #: state can ever be read again.
+    conclusion: str | None = None
 
     @property
     def completed(self) -> bool:
@@ -141,6 +146,35 @@ class StallVerdict:
 
 
 @dataclass(frozen=True, slots=True)
+class StateChainVerdict:
+    """Whether any recent run's packed state is reachable by the restore.
+
+    `.github/actions/turboedge-state` restores from
+    `gh run list --workflow pipeline.yml --status success`, so a run that
+    went red for ANY reason takes its packed state out of reach -- even
+    when every data job in it succeeded. That is not hypothetical: a
+    watchdog job added on 2026-10-23 to make silent data loss audible made
+    eight consecutive runs red, all eight had uploaded
+    `turboedge-state-enc`, and the newest reachable state was from 12:49
+    that day, behind a successful 65-minute external ingest and a
+    successful eod.
+
+    That specific cause is fixed by moving the watchdog to its own
+    workflow. This check is here because the *class* of cause is not: any
+    future job that goes red hides the state the same way, and the
+    symptom -- runs happening, none of them succeeding -- is visible
+    without knowing why.
+    """
+
+    stale: bool
+    last_success_at: datetime | None
+    completed_runs_in_window: int
+    #: Runs that did successful data work which the restore cannot reach,
+    #: because the run as a whole went red and is therefore filtered out.
+    unreachable_runs: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class HealthVerdict:
     """What the watchdog found, and whether it should fail the run."""
 
@@ -154,6 +188,9 @@ class HealthVerdict:
     already_reported: tuple[Incident, ...]
     reason: str
     stall: StallVerdict = StallVerdict(stalled=False, last_run_at=None, hours_since=None)
+    state_chain: StateChainVerdict = StateChainVerdict(
+        stale=False, last_success_at=None, completed_runs_in_window=0
+    )
 
 
 def _is_watchdog_alarm(run: RunObservation) -> bool:
@@ -244,14 +281,44 @@ def evaluate(
 
     stall = _evaluate_stall(history, now=now, window_floor=window_floor)
 
+    considered = list(history) if history is not None else in_window
+    successes = [run.created_at for run in considered if run.conclusion == "success"]
+    last_success = max(successes) if successes else None
+    # Absent conclusions are absent data, not evidence of a problem. A
+    # watchdog that alarms when it cannot see is a watchdog that cries wolf
+    # the first time a field is renamed upstream.
+    conclusions_seen = any(run.conclusion is not None for run in considered)
+    # The precise condition, not a time window: a red run that nonetheless
+    # did successful data work, newer than the last run the restore can
+    # select. That work exists, it was packed, and it cannot be read again.
+    # A coarser "the last success is old" rule would have missed the real
+    # incident, where the last success was only twelve hours behind.
+    unreachable = tuple(
+        run.run_id
+        for run in completed
+        if run.conclusion is not None
+        and run.conclusion != "success"
+        and (last_success is None or run.created_at > last_success)
+        and any(job.name in MONITORED_JOBS and job.conclusion == "success" for job in run.jobs)
+    )
+    state_chain = StateChainVerdict(
+        stale=bool(unreachable) and conclusions_seen,
+        last_success_at=last_success,
+        completed_runs_in_window=len(completed),
+        unreachable_runs=unreachable,
+    )
+
     if incidents:
         reason = (
             f"{len(incidents)} monitored job(s) did not succeed since {window_start.isoformat()}"
         )
-    elif already_reported:
+    elif state_chain.stale:
         reason = (
-            f"{len(already_reported)} earlier incident(s) in the window were already "
-            "reported by a previous watchdog alarm"
+            f"{len(state_chain.unreachable_runs)} run(s) did successful data work that "
+            "the state restore cannot reach, because the run as a whole went red and "
+            "the restore selects only successful runs: "
+            f"{', '.join(str(r) for r in state_chain.unreachable_runs)}. Whatever is "
+            "making those runs red is also hiding every data job's output in them."
         )
     elif stall.stalled and stall.last_run_at is not None and stall.hours_since is not None:
         reason = (
@@ -259,13 +326,21 @@ def evaluate(
             f"({stall.hours_since:.0f}h ago), past the {window_hours}h window. A "
             "schedule that stops firing produces no failing job to notice."
         )
+    elif already_reported:
+        # Ordered after the two real findings: this is a non-finding, and
+        # letting it take the reason line made the annotation say "already
+        # reported" while the error said state was unreachable.
+        reason = (
+            f"{len(already_reported)} earlier incident(s) in the window were already "
+            "reported by a previous watchdog alarm"
+        )
     elif not completed:
         reason = "no completed runs in the window"
     else:
         reason = f"all monitored jobs in {len(completed)} completed run(s) did their work"
 
     return HealthVerdict(
-        alarm=bool(incidents) or stall.stalled,
+        alarm=bool(incidents) or stall.stalled or state_chain.stale,
         incidents=tuple(incidents),
         window_start=window_start,
         window_floor=window_floor,
@@ -275,6 +350,7 @@ def evaluate(
         already_reported=tuple(already_reported),
         reason=reason,
         stall=stall,
+        state_chain=state_chain,
     )
 
 
@@ -309,12 +385,14 @@ def parse_runs(payload: Any) -> list[RunObservation]:
             for job in raw.get("jobs") or []
             if isinstance(job, dict)
         )
+        run_conclusion = raw.get("conclusion")
         runs.append(
             RunObservation(
                 run_id=int(run_id),
                 created_at=_parse_timestamp(created),
                 status=str(raw.get("status", "")),
                 jobs=jobs,
+                conclusion=(str(run_conclusion) if run_conclusion not in (None, "") else None),
             )
         )
     return runs
@@ -336,6 +414,14 @@ def markdown_summary(verdict: HealthVerdict) -> str:
         )
     if verdict.stall.stalled:
         lines.append(f"- **The pipeline has stopped running.** {verdict.reason}")
+    if verdict.state_chain.stale:
+        lines.append(
+            "- **Successful data work is unreachable.** The state restore selects "
+            f"only successful runs; the last one was "
+            f"`{verdict.state_chain.last_success_at}`, and "
+            f"{len(verdict.state_chain.unreachable_runs)} newer red run(s) packed "
+            "state that cannot be read again."
+        )
     if verdict.skipped_in_progress:
         lines.append(
             "- Runs still in progress, not judged: "
@@ -382,6 +468,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if verdict.stall.stalled:
         print(f"::error::the pipeline has stopped running. {verdict.reason}")
+    if verdict.state_chain.stale:
+        print(
+            f"::error::successful data work is unreachable to the state restore. {verdict.reason}"
+        )
     if verdict.incidents:
         print(
             f"::error::{len(verdict.incidents)} monitored pipeline job(s) did not succeed. "

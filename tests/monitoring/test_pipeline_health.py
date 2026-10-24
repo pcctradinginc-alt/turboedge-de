@@ -40,12 +40,22 @@ def _run(
     hours_ago: float,
     jobs: list[JobObservation],
     status: str = "completed",
+    conclusion: str | None = None,
 ) -> RunObservation:
+    # `conclusion` defaults to what the jobs imply, which is what GitHub
+    # reports: any failing job makes the run fail. The state-chain tests
+    # pass it explicitly, because the whole point there is that the two can
+    # disagree -- a run can be red while every data job in it succeeded.
+    if conclusion is None and status == "completed":
+        conclusion = (
+            "failure" if any(j.conclusion in FAILING_CONCLUSIONS for j in jobs) else "success"
+        )
     return RunObservation(
         run_id=run_id,
         created_at=NOW - timedelta(hours=hours_ago),
         status=status,
         jobs=tuple(jobs),
+        conclusion=conclusion,
     )
 
 
@@ -130,8 +140,11 @@ def test_a_failed_watchdog_is_not_itself_a_data_incident() -> None:
 
     verdict = evaluate(runs, now=NOW)
 
-    assert not verdict.alarm
     assert verdict.incidents == ()
+    # The run is red, so its packed state is out of the restore's reach --
+    # which is a separate, real finding, and the reason the watchdog no
+    # longer runs inside pipeline.yml at all.
+    assert verdict.state_chain.stale
 
 
 def test_the_watchdog_job_is_not_monitored() -> None:
@@ -150,7 +163,7 @@ def test_a_chain_of_watchdog_failures_never_compounds() -> None:
         for i in range(1, 11)
     ]
 
-    assert not evaluate(runs, now=NOW).alarm
+    assert evaluate(runs, now=NOW).incidents == ()
 
 
 # -- bug 3: the same incident re-reported on every later run --------------
@@ -164,7 +177,12 @@ def test_an_incident_already_reported_is_not_reported_again() -> None:
     # unnoticed.
     runs = [
         _run(2, hours_ago=10, jobs=[_job("eod", "cancelled"), _job(WATCHDOG_JOB, "success")]),
-        _run(1, hours_ago=8, jobs=[_job("scan", "success"), _job(WATCHDOG_JOB, "failure")]),
+        _run(
+            1,
+            hours_ago=8,
+            jobs=[_job("scan", "success"), _job(WATCHDOG_JOB, "failure")],
+            conclusion="success",
+        ),
     ]
 
     verdict = evaluate(runs, now=NOW)
@@ -484,24 +502,32 @@ def _observed(*, before: str | None = None) -> list[RunObservation]:
             created_at=datetime.fromisoformat(created.replace("Z", "+00:00")),
             status="completed",
             jobs=tuple(_job(name, conclusion) for name, conclusion in jobs),
+            # As GitHub reported them: every one of these runs except the
+            # first was red, and all of them had packed state.
+            conclusion="success" if run_id == 39956274493 else "failure",
         )
         for run_id, created, jobs in OBSERVED_RUNS
         if before is None or created < before
     ]
 
 
-def test_the_observed_cascade_produces_no_alarm() -> None:
+def test_the_observed_cascade_produces_no_data_incident() -> None:
     # Replayed at the moment run 40047953810's watchdog ran. The old rule
     # gave eight consecutive red runs here; seven of them said nothing
-    # except that the watchdog had failed.
+    # except that the watchdog had failed. None of them contains a failed
+    # data job, so none is reported as one.
     verdict = evaluate(
         _observed(),
         now=datetime(2026, 10, 24, 1, 3, tzinfo=UTC),
         current_run_id=40047953810,
     )
 
-    assert not verdict.alarm, [i.describe() for i in verdict.incidents]
+    assert verdict.incidents == (), [i.describe() for i in verdict.incidents]
     assert verdict.already_reported, "the real external cancel should still be accounted for"
+    # It does alarm, but for the right reason and only once: every one of
+    # those red runs packed state the restore cannot reach. See
+    # `test_the_observed_cascade_would_have_been_caught_as_a_hidden_state_chain`.
+    assert verdict.state_chain.stale
 
 
 def test_the_observed_external_cancel_is_detected_once() -> None:
@@ -616,3 +642,121 @@ def test_the_window_bound_still_applies_to_incidents_during_a_stall() -> None:
     assert verdict.alarm
     assert verdict.stall.stalled
     assert verdict.incidents == ()
+
+
+# -- the state chain -----------------------------------------------------
+
+
+def test_runs_happening_but_none_succeeding_alarms() -> None:
+    # `.github/actions/turboedge-state` restores from
+    # `gh run list --workflow pipeline.yml --status success`, so a run that
+    # went red for ANY reason takes its packed state out of reach -- even
+    # when every data job in it succeeded. The symptom is visible without
+    # knowing the cause: runs are happening and none of them succeeds.
+    runs = [
+        _run(i, hours_ago=float(i * 2), jobs=[_job("scan", "success")], conclusion="failure")
+        for i in range(1, 6)
+    ]
+
+    verdict = evaluate(runs, now=NOW)
+
+    assert verdict.alarm
+    assert verdict.state_chain.stale
+    assert verdict.incidents == (), "no data job failed; the finding is the hidden state"
+    assert "cannot reach" in verdict.reason
+    assert len(verdict.state_chain.unreachable_runs) == 5
+
+
+def test_the_observed_cascade_would_have_been_caught_as_a_hidden_state_chain() -> None:
+    # The incident this check exists for, replayed on the recorded data.
+    # Eight consecutive red runs, every data job in them successful, every
+    # one of them having uploaded `turboedge-state-enc`, and the newest
+    # reachable state from 12:49 that day.
+    verdict = evaluate(
+        _observed(),
+        now=datetime(2026, 10, 24, 1, 3, tzinfo=UTC),
+        current_run_id=40047953810,
+    )
+
+    assert verdict.state_chain.stale
+    assert verdict.state_chain.last_success_at == datetime(2026, 10, 23, 12, 49, 40, tzinfo=UTC)
+    assert verdict.alarm
+    # Every red run after the last success did successful data work.
+    assert set(verdict.state_chain.unreachable_runs) == {
+        39968420761,
+        39973892098,
+        39978874688,
+        39999355264,
+        40012410917,
+        40025944915,
+        40042567854,
+    }
+
+
+def test_a_red_run_older_than_the_last_success_is_not_flagged() -> None:
+    # The chain only needs to be reachable. A red run whose work a later
+    # successful run already carried forward is not a loss: the restore
+    # picks that later run, which built on the same state.
+    runs = [
+        _run(1, hours_ago=20, jobs=[_job("scan", "success")], conclusion="failure"),
+        _run(2, hours_ago=10, jobs=[_job("scan", "success")], conclusion="success"),
+    ]
+
+    verdict = evaluate(runs, now=NOW)
+
+    assert not verdict.state_chain.stale
+    assert not verdict.alarm
+
+
+def test_a_red_run_newer_than_the_last_success_is_flagged() -> None:
+    # Its packed state is the newest there is, and the restore cannot see
+    # it. This is the exact shape of the 2026-10-23 incident.
+    runs = [
+        _run(1, hours_ago=10, jobs=[_job("scan", "success")], conclusion="success"),
+        _run(2, hours_ago=2, jobs=[_job("external", "success")], conclusion="failure"),
+    ]
+
+    verdict = evaluate(runs, now=NOW)
+
+    assert verdict.state_chain.stale
+    assert verdict.state_chain.unreachable_runs == (2,)
+
+
+def test_absent_conclusions_do_not_alarm() -> None:
+    # A watchdog that alarms when it cannot see is one that cries wolf the
+    # first time a field is renamed upstream.
+    runs = [
+        RunObservation(
+            run_id=1,
+            created_at=NOW - timedelta(hours=2),
+            status="completed",
+            jobs=(_job("scan", "success"),),
+            conclusion=None,
+        )
+    ]
+
+    verdict = evaluate(runs, now=NOW)
+
+    assert not verdict.state_chain.stale
+    assert not verdict.alarm
+
+
+def test_a_stalled_pipeline_is_not_also_reported_as_a_hidden_chain() -> None:
+    # With nothing completing in the window the finding is the stall. Two
+    # alarms for one cause is noise.
+    history = [_ok_run(1, hours_ago=50)]
+
+    verdict = evaluate([], now=NOW, history=history)
+
+    assert verdict.stall.stalled
+    assert not verdict.state_chain.stale
+
+
+def test_the_summary_names_the_hidden_state_chain() -> None:
+    runs = [
+        _run(1, hours_ago=2, jobs=[_job("scan", "success")], conclusion="failure"),
+    ]
+
+    summary = markdown_summary(evaluate(runs, now=NOW))
+
+    assert "Successful data work is unreachable" in summary

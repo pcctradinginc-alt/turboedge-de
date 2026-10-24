@@ -73,6 +73,8 @@ def test_init_schema_creates_all_tables_empty(store: Store) -> None:
         "model_registry",
         "model_weight_history",
         "research_trials",
+        "research_screens",
+        "research_shelf",
         "drift_events",
         "shadow_portfolio",
         "forecasts",

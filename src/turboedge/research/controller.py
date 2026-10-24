@@ -126,6 +126,12 @@ class Candidate:
     data_ready: bool
     exploratory_done: bool
     has_exploratory_support: bool
+    #: Whether an approved harness exists for this question. Twelve of the
+    #: fourteen catalogue entries have none (`research/harness.py`), and
+    #: that is distinct from "already screened": the loop has learned
+    #: nothing about them and must not report that it has. It skips them
+    #: and screens a question it can actually answer.
+    screenable: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -253,8 +259,8 @@ def decide_next_action(
             evidence=base_evidence,
         )
 
-    pending = [c for c in admissible if not c.exploratory_done]
-    if not pending:
+    unscreened = [c for c in admissible if not c.exploratory_done]
+    if not unscreened:
         return ResearchAction(
             kind=ActionKind.NO_ACTION,
             reason=(
@@ -263,6 +269,19 @@ def decide_next_action(
                 "on the same data."
             ),
             evidence=base_evidence,
+        )
+
+    pending = [c for c in unscreened if c.screenable]
+    if not pending:
+        return ResearchAction(
+            kind=ActionKind.NO_ACTION,
+            reason=(
+                f"{len(unscreened)} admissible candidate(s) remain unscreened but none "
+                "has an approved harness. The loop does not build a procedure for a "
+                "question it cannot answer; writing one and registering it in "
+                "`research/harness.py` is a human change."
+            ),
+            evidence={**base_evidence, "unscreened_without_harness": len(unscreened)},
         )
 
     # 4./5. Best-ranked question first; an unmeasured priority sorts last

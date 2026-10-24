@@ -1430,14 +1430,19 @@ def research_step_cmd(
         typer.Option("--dry-run", help="Decide and print, but record nothing."),
     ] = False,
 ) -> None:
-    """One cycle of the autonomous research loop: decide and record.
+    """One cycle of the autonomous research loop: decide, run, record.
 
-    Reads the research queue, the quarter's recorded trials and the
-    negative memory, and records exactly one decision. Idempotent within a
-    quarter: a re-run that reaches the same conclusion writes nothing new,
-    so a retried or interrupted scheduled run cannot inflate the research
-    ledger -- which is the denominator the multiple-testing correction
-    depends on.
+    Reads the research queue, the quarter's recorded trials and screens, the
+    persisted shelf and the negative memory. Picks the highest-ranked
+    admissible question, and when the decision is to screen it, executes the
+    harness registered for it in `research/harness.py` -- never a procedure
+    built on the spot. A question with no approved harness is recorded as
+    such and the loop moves to the next one.
+
+    Idempotent within a quarter: a re-run that reaches the same conclusion
+    writes nothing new and re-runs no experiment, so a retried or
+    interrupted scheduled run cannot inflate the research ledger -- which is
+    the denominator the multiple-testing correction depends on.
 
     It never approves, never promotes and never starts a confirmatory
     trial. Those remain human-gated (`research approve`), and promotion is
@@ -1454,22 +1459,50 @@ def research_step_cmd(
             now=datetime.now(UTC),
             dry_run=dry_run,
         )
+        # Read back rather than threaded through the return value: the step
+        # may record several screens in one run (walking past questions it
+        # has no harness for) and the table is the record either way.
+        screens = [] if dry_run else store.list_research_screens()
 
     console.print(f"[bold]{action.kind}[/bold]")
     if action.hypothesis_id:
         console.print(f"  hypothesis: {action.hypothesis_id}  (family: {action.family})")
-    console.print(f"  reason: {action.reason}")
+    console.print(f"  reason: {action.reason}", markup=False, highlight=False)
+
+    executed = sorted(screens, key=lambda s: s.started_at)[-3:]
+    for screen in executed:
+        console.print(
+            f"  screen {screen.status.value}: {screen.hypothesis_id} via "
+            f"{screen.harness}@{screen.harness_version} -> {screen.verdict or '-'} "
+            f"(data {screen.data_version}, {screen.cost_seconds:.1f}s)",
+            markup=False,
+            highlight=False,
+        )
+        if screen.error:
+            console.print(f"    {screen.error}", markup=False, highlight=False)
     console.print(
         "  [dim]this loop never approves, promotes, or starts a confirmatory "
         "trial -- those need a named human[/dim]"
     )
     _write_summary(
         "research_step",
-        {"decided": 1, "recorded": 0 if dry_run else 1},
+        {"decided": 1, "recorded": 0 if dry_run else 1, "screens": len(executed)},
         kind=str(action.kind),
         hypothesis_id=action.hypothesis_id,
         reason=action.reason,
         evidence=action.evidence,
+        screens=[
+            {
+                "hypothesis_id": s.hypothesis_id,
+                "harness": f"{s.harness}@{s.harness_version}",
+                "status": s.status.value,
+                "verdict": s.verdict,
+                "data_version": s.data_version,
+                "cost_seconds": round(s.cost_seconds, 3),
+                "error": s.error,
+            }
+            for s in executed
+        ],
     )
 
 

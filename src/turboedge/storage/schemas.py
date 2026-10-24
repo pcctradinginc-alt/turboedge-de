@@ -858,6 +858,94 @@ class ResearchTrial(BaseModel):
     status: TrialStatus = TrialStatus.EXPERIMENTAL
 
 
+class ScreenStatus(StrEnum):
+    """`research_screens.status`: the lifecycle of one executed screen.
+
+    `RUNNING` is written before the harness is invoked, so a process that
+    dies mid-screen leaves a record that it tried. `NO_APPROVED_HARNESS` is
+    a legitimate terminal state, not an error: it records that the loop
+    reached a question it is not equipped to answer and moved on rather than
+    inventing a procedure for it.
+    """
+
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    NO_APPROVED_HARNESS = "no_approved_harness"
+
+
+class ResearchScreen(BaseModel):
+    """One row of `research_screens`: an exploratory screen the loop ran.
+
+    This is the evidence that a decision became an experiment. A decision
+    recorded in `research_trials` says what the loop chose; this says what
+    happened when it was carried out, including when nothing did.
+
+    `spec` and `data_version` together make the result reproducible: the
+    first is the harness's own parameters, the second identifies the data
+    the harness saw. Without the second, a screen result cannot be
+    distinguished from the same screen on more data a month later.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    screen_id: str
+    trial_id: str
+    hypothesis_id: str
+    family: str
+    harness: str
+    harness_version: str
+    spec: dict[str, Any] = Field(default_factory=dict)
+    data_version: str
+    quarter: str
+    status: ScreenStatus
+    verdict: str | None = None
+    metrics: dict[str, Any] = Field(default_factory=dict)
+    error: str | None = None
+    cost_seconds: float = Field(default=0.0, ge=0.0)
+    started_at: TzAwareDatetime
+    finished_at: TzAwareDatetime | None = None
+
+    @property
+    def produced_support(self) -> bool:
+        """Whether this screen found something worth confirming.
+
+        Only a completed screen whose harness returned a supporting verdict
+        counts, and `research/harness.py` owns that vocabulary -- an error,
+        an absent harness, INSUFFICIENT_SAMPLE, NO_IMPROVEMENT and
+        IMPROVEMENT_NOT_SIGNIFICANT are all legitimate answers and none of
+        them is support. The loop must not read its own failure to measure
+        as a reason to escalate.
+
+        The flag is stored rather than re-derived from the verdict, because
+        attributing a verdict to a hypothesis can need more than the
+        verdict string (see `_run_excursion`: one call reports one verdict
+        for two targets).
+        """
+        return self.status is ScreenStatus.COMPLETED and bool(self.metrics.get("supported"))
+
+
+class ShelvedFamily(BaseModel):
+    """One row of `research_shelf`: a family the loop has stopped screening.
+
+    Persisted because the shelving decision has to outlive the process that
+    made it. Without this the controller re-reaches `SHELVE_FAMILY` for the
+    same family on every run and never gets past it -- shelving is checked
+    before everything else, so an unrecorded shelf is a loop that decides
+    the same thing forever and screens nothing.
+
+    Reversing a shelf is a human act: nothing in the loop deletes a row
+    here.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    family: str
+    shelved_at: TzAwareDatetime
+    failure_count: int = Field(ge=0)
+    reason: str
+
+
 class ShadowPosition(BaseModel):
     """One row of `shadow_portfolio` (Master Spec §46): one baseline
     portfolio's paper position for one scan run, so a monthly report can

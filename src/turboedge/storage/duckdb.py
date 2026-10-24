@@ -83,9 +83,12 @@ from turboedge.storage.schemas import (
     ProductType,
     RatioDerivationOutcome,
     RejectedRatioDerivation,
+    ResearchScreen,
     ResearchTrial,
+    ScreenStatus,
     ShadowPortfolioKind,
     ShadowPosition,
+    ShelvedFamily,
     SignalSnapshot,
     SourceHealthRecord,
     TrialStatus,
@@ -647,6 +650,34 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS research_screens (
+        screen_id VARCHAR PRIMARY KEY,
+        trial_id VARCHAR NOT NULL,
+        hypothesis_id VARCHAR NOT NULL,
+        family VARCHAR NOT NULL,
+        harness VARCHAR NOT NULL,
+        harness_version VARCHAR NOT NULL,
+        spec VARCHAR NOT NULL,
+        data_version VARCHAR NOT NULL,
+        quarter VARCHAR NOT NULL,
+        status VARCHAR NOT NULL,
+        verdict VARCHAR,
+        metrics VARCHAR NOT NULL,
+        error VARCHAR,
+        cost_seconds DOUBLE NOT NULL,
+        started_at TIMESTAMPTZ NOT NULL,
+        finished_at TIMESTAMPTZ
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS research_shelf (
+        family VARCHAR PRIMARY KEY,
+        shelved_at TIMESTAMPTZ NOT NULL,
+        failure_count INTEGER NOT NULL,
+        reason VARCHAR NOT NULL
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS drift_events (
         event_id VARCHAR PRIMARY KEY,
         detected_at TIMESTAMPTZ NOT NULL,
@@ -837,6 +868,8 @@ _ALL_TABLES: tuple[str, ...] = (
     "model_registry",
     "model_weight_history",
     "research_trials",
+    "research_screens",
+    "research_shelf",
     "drift_events",
     "shadow_portfolio",
     "forecasts",
@@ -2359,6 +2392,106 @@ class Store:
             "UPDATE research_trials SET status = ? WHERE trial_id = ?",
             [status.value, trial_id],
         )
+
+    # -- executed exploratory screens (research/step.py) -----------------------
+
+    def upsert_research_screen(self, screen: ResearchScreen) -> None:
+        """Record one screen, replacing an earlier record of the same one.
+
+        `INSERT OR REPLACE` rather than `INSERT`: the screen is written once
+        as RUNNING before the harness is invoked and once again with the
+        result, and `screen_id` is derived from the question, the harness,
+        its version and the data version, so a re-run after a restart
+        updates the same row instead of recording a second experiment that
+        never happened.
+        """
+        self._conn.execute(
+            "INSERT OR REPLACE INTO research_screens "
+            "(screen_id, trial_id, hypothesis_id, family, harness, harness_version, "
+            "spec, data_version, quarter, status, verdict, metrics, error, "
+            "cost_seconds, started_at, finished_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                screen.screen_id,
+                screen.trial_id,
+                screen.hypothesis_id,
+                screen.family,
+                screen.harness,
+                screen.harness_version,
+                json.dumps(screen.spec, sort_keys=True, default=str),
+                screen.data_version,
+                screen.quarter,
+                screen.status.value,
+                screen.verdict,
+                json.dumps(screen.metrics, sort_keys=True, default=str),
+                screen.error,
+                screen.cost_seconds,
+                screen.started_at,
+                screen.finished_at,
+            ],
+        )
+
+    def list_research_screens(self, *, quarter: str | None = None) -> list[ResearchScreen]:
+        sql = (
+            "SELECT screen_id, trial_id, hypothesis_id, family, harness, harness_version, "
+            "spec, data_version, quarter, status, verdict, metrics, error, cost_seconds, "
+            "started_at, finished_at FROM research_screens"
+        )
+        params: list[Any] = []
+        if quarter is not None:
+            sql += " WHERE quarter = ?"
+            params.append(quarter)
+        rows = self._conn.execute(sql + " ORDER BY started_at ASC", params).fetchall()
+        return [
+            ResearchScreen(
+                screen_id=row[0],
+                trial_id=row[1],
+                hypothesis_id=row[2],
+                family=row[3],
+                harness=row[4],
+                harness_version=row[5],
+                spec=json.loads(row[6]),
+                data_version=row[7],
+                quarter=row[8],
+                status=ScreenStatus(row[9]),
+                verdict=row[10],
+                metrics=json.loads(row[11]),
+                error=row[12],
+                cost_seconds=row[13],
+                started_at=_to_utc(row[14]),
+                finished_at=_to_utc(row[15]) if row[15] is not None else None,
+            )
+            for row in rows
+        ]
+
+    # -- shelved research families (research/step.py) --------------------------
+
+    def upsert_shelved_family(self, entry: ShelvedFamily) -> None:
+        """Persist a shelving decision so it survives the process.
+
+        Nothing here removes a row. Un-shelving a family is a research
+        judgement about new evidence, which is a human's to make.
+        """
+        self._conn.execute(
+            "INSERT OR REPLACE INTO research_shelf "
+            "(family, shelved_at, failure_count, reason) VALUES (?, ?, ?, ?)",
+            [entry.family, entry.shelved_at, entry.failure_count, entry.reason],
+        )
+
+    def list_shelved_families(self) -> list[ShelvedFamily]:
+        rows = self._conn.execute(
+            "SELECT family, shelved_at, failure_count, reason "
+            "FROM research_shelf ORDER BY shelved_at ASC"
+        ).fetchall()
+        return [
+            ShelvedFamily(
+                family=row[0],
+                shelved_at=_to_utc(row[1]),
+                failure_count=row[2],
+                reason=row[3],
+            )
+            for row in rows
+        ]
 
     # -- drift events (W6, Master Spec §30) ------------------------------------
 

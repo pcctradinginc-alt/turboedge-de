@@ -598,6 +598,7 @@ __all__ = [
     "QuoteAgeStats",
     "SnapshotStalenessReport",
     "StalenessAssociation",
+    "WithinGroupAssociation",
     "classify",
     "exit_value_bounds",
     "ledger_census",
@@ -606,6 +607,7 @@ __all__ = [
     "quote_freshness",
     "snapshot_staleness_advantage",
     "staleness_advantage",
+    "within_group_staleness_association",
 ]
 
 
@@ -627,6 +629,7 @@ class SnapshotStalenessReport:
 
     groups: int
     association: StalenessAssociation
+    within_group: WithinGroupAssociation
     dropped: Mapping[str, int]
 
 
@@ -770,6 +773,7 @@ def snapshot_staleness_advantage(
 
     ages: list[float] = []
     cheapness: list[float] = []
+    per_group: list[tuple[list[float], list[float]]] = []
     usable_groups = 0
     for members in groups.values():
         if len({issuer for _, _, issuer in members}) < 2:
@@ -781,12 +785,129 @@ def snapshot_staleness_advantage(
             dropped["degenerate_group_cost"] += 1
             continue
         usable_groups += 1
+        group_ages: list[float] = []
+        group_cheapness: list[float] = []
         for cost, age, _ in members:
-            cheapness.append((median - cost) / median)
-            ages.append(age)
+            group_cheapness.append((median - cost) / median)
+            group_ages.append(age)
+        per_group.append((group_ages, group_cheapness))
+        cheapness.extend(group_cheapness)
+        ages.extend(group_ages)
 
     return SnapshotStalenessReport(
         groups=usable_groups,
         association=staleness_advantage(quote_ages=ages, advantages=cheapness),
+        within_group=within_group_staleness_association(per_group),
         dropped=dict(dropped),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class WithinGroupAssociation:
+    """The staleness/cheapness association, computed the honest way.
+
+    The pooled correlation in :class:`StalenessAssociation` mixes two
+    different comparisons. Cheapness is defined *relative to a group's
+    median*, so it is already within-group; quote age is absolute. Any
+    systematic difference *between* groups -- products fetched later in a
+    scan carrying both older quotes and a different price dispersion --
+    therefore enters the pooled number as if it were the within-group
+    effect under test. On the real archive the pooled value is +0.2952 and
+    the within-group mean is what this reports instead.
+
+    One group is one market moment, so one group is **one** observation,
+    not one per member. ``mean`` averages the per-group rank correlations
+    with equal weight and the interval resamples *groups*, which is the
+    only resampling that respects that.
+    """
+
+    groups_used: int
+    members: int
+    mean: float
+    ci_low: float
+    ci_high: float
+
+    @property
+    def excludes_zero(self) -> bool:
+        """Whether the interval is entirely on one side of zero.
+
+        Deliberately not called "significant": this is an observational
+        association over one archive, with no pre-registered hypothesis
+        behind it.
+        """
+        if math.isnan(self.ci_low) or math.isnan(self.ci_high):
+            return False
+        return (self.ci_low > 0.0) or (self.ci_high < 0.0)
+
+
+def within_group_staleness_association(
+    groups: Sequence[tuple[Sequence[float], Sequence[float]]],
+    *,
+    min_members: int = 4,
+    reps: int = 4000,
+    alpha: float = 0.05,
+    seed: int = 23,
+) -> WithinGroupAssociation:
+    """Average the per-group rank correlation, with a group bootstrap.
+
+    ``groups`` is one ``(quote_ages, cheapness)`` pair per comparison
+    group. A group with fewer than ``min_members`` usable points, or with
+    no variation on either side, contributes nothing: a rank correlation of
+    two or three points is noise, and averaging noise into the mean would
+    bias it toward whatever the small groups happen to show.
+
+    Raises:
+        ValueError: if ``min_members < 3``, ``reps < 1``, or ``alpha`` is
+            outside ``(0, 1)``.
+    """
+    if min_members < 3:
+        raise ValueError(f"min_members must be >= 3, got {min_members!r}")
+    if reps < 1:
+        raise ValueError(f"reps must be >= 1, got {reps!r}")
+    if not 0.0 < alpha < 1.0:
+        raise ValueError(f"alpha must be in (0, 1), got {alpha!r}")
+
+    per_group: list[float] = []
+    members = 0
+    for ages, advs in groups:
+        if len(ages) != len(advs):
+            raise ValueError("each group's ages and cheapness must have equal length")
+        if len(ages) < min_members:
+            continue
+        assoc = staleness_advantage(quote_ages=ages, advantages=advs)
+        if math.isnan(assoc.spearman):
+            continue
+        per_group.append(assoc.spearman)
+        members += len(ages)
+
+    if not per_group:
+        return WithinGroupAssociation(
+            groups_used=0,
+            members=0,
+            mean=float("nan"),
+            ci_low=float("nan"),
+            ci_high=float("nan"),
+        )
+
+    arr = np.asarray(per_group, dtype=np.float64)
+    mean = float(np.mean(arr))
+    if arr.size < 3:
+        # Too few groups for a bootstrap to mean anything; report the mean
+        # with an explicitly undefined interval rather than a fake one.
+        return WithinGroupAssociation(
+            groups_used=arr.size,
+            members=members,
+            mean=mean,
+            ci_low=float("nan"),
+            ci_high=float("nan"),
+        )
+    rng = np.random.default_rng(seed)
+    draws = rng.integers(0, arr.size, size=(reps, arr.size))
+    means = arr[draws].mean(axis=1)
+    return WithinGroupAssociation(
+        groups_used=arr.size,
+        members=members,
+        mean=mean,
+        ci_low=float(np.quantile(means, alpha / 2.0)),
+        ci_high=float(np.quantile(means, 1.0 - alpha / 2.0)),
     )

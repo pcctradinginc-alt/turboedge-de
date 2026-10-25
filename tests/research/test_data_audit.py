@@ -32,6 +32,7 @@ from turboedge.research.data_audit import (
     quote_freshness,
     snapshot_staleness_advantage,
     staleness_advantage,
+    within_group_staleness_association,
 )
 from turboedge.storage.schemas import (
     Category,
@@ -688,3 +689,84 @@ def test_the_audit_never_reaches_the_decision_path() -> None:
         if "research" not in path.relative_to(root).parts and pattern.search(path.read_text())
     )
     assert importers == ["cli_learn.py"], f"unexpected importer(s): {importers}"
+
+
+class TestWithinGroupAssociation:
+    """One group is one market moment, so one group is one observation."""
+
+    def test_a_planted_within_group_effect_is_recovered(self) -> None:
+        rng = np.random.default_rng(31)
+        groups = []
+        for _ in range(60):
+            # Each group has its own price level and its own age offset, so
+            # a pooled correlation would also see the between-group spread.
+            ages = rng.random(8) + rng.random() * 100.0
+            cheap = ages - (rng.random() * 100.0) + rng.normal(0, 0.05, 8)
+            groups.append((list(ages), list(cheap)))
+        result = within_group_staleness_association(groups)
+        assert result.groups_used == 60
+        assert result.mean > 0.7
+        assert result.excludes_zero
+
+    def test_no_within_group_effect_gives_an_interval_spanning_zero(self) -> None:
+        rng = np.random.default_rng(32)
+        groups = [(list(rng.random(8)), list(rng.random(8))) for _ in range(60)]
+        result = within_group_staleness_association(groups)
+        assert abs(result.mean) < 0.2
+        assert not result.excludes_zero
+        assert result.ci_low < 0.0 < result.ci_high
+
+    def test_a_between_group_effect_alone_does_not_create_a_within_group_one(self) -> None:
+        """The whole reason this exists.
+
+        Every group here is internally uncorrelated; only the group *means*
+        move together. A pooled correlation reports a strong association,
+        the within-group mean correctly reports none.
+        """
+        rng = np.random.default_rng(33)
+        groups, pooled_ages, pooled_cheap = [], [], []
+        for i in range(60):
+            base = float(i) * 10.0
+            ages = list(base + rng.random(8))
+            cheap = list(base * 0.01 + rng.random(8) * 0.001)
+            groups.append((ages, cheap))
+            pooled_ages.extend(ages)
+            pooled_cheap.extend(cheap)
+        pooled = staleness_advantage(quote_ages=pooled_ages, advantages=pooled_cheap)
+        within = within_group_staleness_association(groups)
+        assert pooled.spearman > 0.9
+        assert abs(within.mean) < 0.2
+
+    def test_small_and_flat_groups_are_skipped(self) -> None:
+        groups = [
+            ([1.0, 2.0], [1.0, 2.0]),  # too few members
+            ([1.0] * 8, list(range(8))),  # no age variation
+            (list(range(8)), [0.0] * 8),  # no cheapness variation
+        ]
+        result = within_group_staleness_association(groups)
+        assert result.groups_used == 0
+        assert math.isnan(result.mean)
+
+    def test_too_few_groups_reports_no_interval_rather_than_a_fake_one(self) -> None:
+        rng = np.random.default_rng(34)
+        groups = [(list(rng.random(8)), list(rng.random(8))) for _ in range(2)]
+        result = within_group_staleness_association(groups)
+        assert result.groups_used == 2
+        assert math.isnan(result.ci_low) and math.isnan(result.ci_high)
+        assert not result.excludes_zero
+
+    @pytest.mark.parametrize(
+        ("kwargs", "match"),
+        [
+            ({"min_members": 2}, "min_members must be >= 3"),
+            ({"reps": 0}, "reps must be >= 1"),
+            ({"alpha": 0.0}, r"alpha must be in \(0, 1\)"),
+        ],
+    )
+    def test_invalid_inputs_are_refused(self, kwargs: dict[str, object], match: str) -> None:
+        with pytest.raises(ValueError, match=match):
+            within_group_staleness_association([], **kwargs)  # type: ignore[arg-type]
+
+    def test_mismatched_group_lengths_are_refused(self) -> None:
+        with pytest.raises(ValueError, match="equal length"):
+            within_group_staleness_association([([1.0, 2.0, 3.0, 4.0], [1.0, 2.0])])

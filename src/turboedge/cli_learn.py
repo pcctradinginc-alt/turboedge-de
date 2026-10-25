@@ -75,6 +75,11 @@ from turboedge.reporting.html import save_monthly_report, save_weekly_report, su
 from turboedge.reporting.monthly import build_monthly_report
 from turboedge.reporting.redaction import redact_console_enabled
 from turboedge.reporting.weekly import run_research_tournament
+from turboedge.research.data_audit import (
+    ledger_census,
+    quote_freshness,
+    snapshot_staleness_advantage,
+)
 from turboedge.research.product_pairs import ComparabilityCriteria, census
 from turboedge.research.step import run_research_step
 from turboedge.simulation.ko_calibration import build_ko_calibration_dataset
@@ -1689,6 +1694,157 @@ def research_step_cmd(
     )
 
 
+def research_data_audit_cmd(
+    ctx: typer.Context,
+    underlying: str | None = typer.Option(
+        None, "--underlying", help="Restrict the snapshot analysis to one underlying"
+    ),
+    since: str | None = typer.Option(
+        None, "--since", help="Only snapshots at or after this ISO timestamp"
+    ),
+    window_seconds: int = typer.Option(
+        60, "--window-seconds", help="Window within which products count as simultaneous"
+    ),
+    barrier_tolerance: float = typer.Option(
+        0.10, "--barrier-tolerance", help="Relative barrier-distance tolerance"
+    ),
+    json_out: str = typer.Option(None, "--json-out", help="Write the full audit to PATH"),
+) -> None:
+    """Audit the forward dataset: what is missing, and how stale the quotes were.
+
+    Answers two questions that come before any forward result means
+    anything (`docs/data_audit_2026-10-25.md`):
+
+    1. Is the forward sample representative? Every ledger row is classified
+       into one of eight observation states, and the ones carrying a real
+       exit are contrasted against the ones carrying an assumed value. A
+       young ledger and a ledger losing data look identical in a bare
+       "labeled=0" and are reported separately here.
+    2. Were the quotes the decisions were made on actually current? Quote
+       age needs no labels, so it is measurable even on a fully unlabeled
+       ledger, and the association between apparent cheapness and quote age
+       says whether a price advantage is partly just staleness.
+
+    Read-only. Opens no trial, consumes no research budget, promotes
+    nothing and writes nothing to the store.
+    """
+    app_ctx = ctx.obj
+    since_dt = datetime.fromisoformat(since).astimezone(UTC) if since else None
+    now = datetime.now(UTC)
+
+    with Store(app_ctx.db_path) as store:
+        store.init_schema()
+        rows = store.list_ledger_entries()
+        snapshots = store.list_product_snapshots(underlying_id=underlying, since=since_dt)
+
+    census = ledger_census(rows, now=now)
+    freshness = quote_freshness([entry for entry, _ in rows])
+    # Run the comparison both with and without the verified-ratio
+    # requirement. The schema default is UNVERIFIED, so requiring it can
+    # legitimately drop the entire archive -- and an empty result must not
+    # be reportable as "no association found".
+    strict = snapshot_staleness_advantage(
+        snapshots,
+        criteria=ComparabilityCriteria(
+            barrier_pct_tolerance=barrier_tolerance,
+            window_seconds=window_seconds,
+            require_verified_ratio=True,
+        ),
+    )
+    permissive = snapshot_staleness_advantage(
+        snapshots,
+        criteria=ComparabilityCriteria(
+            barrier_pct_tolerance=barrier_tolerance,
+            window_seconds=window_seconds,
+            require_verified_ratio=False,
+        ),
+    )
+
+    console.print(f"FORWARD POPULATION  {census.summary()}", markup=False, highlight=False)
+    for state, count in sorted(census.by_state.items(), key=lambda kv: -kv[1]):
+        console.print(f"  {state}: {count}", markup=False, highlight=False)
+    console.print("  covariate contrasts (real exit vs assumed/missing):")
+    for contrast in census.contrasts:
+        if not contrast.comparable:
+            console.print(
+                f"    {contrast.name}: not comparable "
+                f"(n={contrast.n_trustworthy}/{contrast.n_assumed})",
+                markup=False,
+                highlight=False,
+            )
+            continue
+        console.print(
+            f"    {contrast.name}: real {contrast.mean_trustworthy:.6f} vs "
+            f"assumed {contrast.mean_assumed:.6f} (diff {contrast.difference:+.6f}, "
+            f"n={contrast.n_trustworthy}/{contrast.n_assumed})",
+            markup=False,
+            highlight=False,
+        )
+
+    console.print(f"QUOTE AGE AT DECISION  {freshness.summary()}", markup=False, highlight=False)
+    for label, report in (("verified-ratio only", strict), ("all ratios", permissive)):
+        assoc = report.association
+        verdict = (
+            f"spearman {assoc.spearman:+.4f}"
+            if assoc.interpretable
+            else f"n={assoc.n} too small to read"
+        )
+        console.print(
+            f"STALENESS vs CHEAPNESS ({label})  {report.groups} group(s), {verdict}",
+            markup=False,
+            highlight=False,
+        )
+        for reason, count in sorted(report.dropped.items(), key=lambda kv: -kv[1])[:6]:
+            console.print(f"    dropped {reason}: {count}", markup=False, highlight=False)
+
+    payload = {
+        "generated_at": now.isoformat(),
+        "forward_population": {
+            "total": census.total,
+            "by_state": dict(census.by_state),
+            "trustworthy": census.trustworthy,
+            "assumed": census.assumed,
+            "missing": census.missing,
+            "by_underlying": {k: dict(v) for k, v in census.by_underlying.items()},
+            "by_issuer": {k: dict(v) for k, v in census.by_issuer.items()},
+            "contrasts": [
+                {
+                    "name": c.name,
+                    "n_trustworthy": c.n_trustworthy,
+                    "n_assumed": c.n_assumed,
+                    "mean_trustworthy": c.mean_trustworthy,
+                    "mean_assumed": c.mean_assumed,
+                    "comparable": c.comparable,
+                }
+                for c in census.contrasts
+            ],
+        },
+        "quote_age_at_decision": {
+            "n": freshness.n,
+            "n_negative": freshness.n_negative,
+            "median_seconds": freshness.median_seconds,
+            "p90_seconds": freshness.p90_seconds,
+            "max_seconds": freshness.max_seconds,
+        },
+        "staleness_vs_cheapness": {
+            key: {
+                "groups": report.groups,
+                "n": report.association.n,
+                "spearman": report.association.spearman,
+                "interpretable": report.association.interpretable,
+                "dropped": dict(report.dropped),
+            }
+            for key, report in (("verified_ratio_only", strict), ("all_ratios", permissive))
+        },
+        "snapshots_read": len(snapshots),
+    }
+    if json_out:
+        json_path = Path(json_out)
+        json_path.parent.mkdir(parents=True, exist_ok=True)
+        json_path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+        console.print(f"  wrote {json_path}", markup=False, highlight=False)
+
+
 def register_learn_commands(app: typer.Typer, position_app: typer.Typer) -> None:
     """Wire every Contract v3 integration-wave command into the main CLI.
     Called once from ``cli.py``::
@@ -1717,6 +1873,7 @@ def register_learn_commands(app: typer.Typer, position_app: typer.Typer) -> None
     research_app.command("ko-calibration")(research_ko_calibration_cmd)
     research_app.command("step")(research_step_cmd)
     research_app.command("product-pairs")(research_product_pairs_cmd)
+    research_app.command("data-audit")(research_data_audit_cmd)
     app.add_typer(research_app, name="research")
 
     archive_app = typer.Typer(help="Deep, slow, once-daily research-only product archive")

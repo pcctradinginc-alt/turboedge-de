@@ -1,0 +1,123 @@
+# ---------------------------------------------------------------------
+# data-audit -- measure what the forward dataset is missing and how stale
+# the quotes behind the decisions were.
+#
+# WHY THIS EXISTS
+# Two questions come before any forward result means anything, and neither
+# is answerable from a laptop: the ledger and the quote archive live only
+# inside the encrypted state artifact.
+#
+#   1. Is the forward sample representative? `labeled=0` alone cannot
+#      distinguish "nothing was due yet" from "everything was due and
+#      failed". `research data-audit` reports the whole population by
+#      observation state and contrasts the rows carrying a real exit
+#      against the rows carrying an assumed one.
+#   2. Were the quotes current? Quote age needs no labels at all, so this
+#      half is measurable today, on a ledger with zero mature outcomes.
+#
+# WHY IT CANNOT DAMAGE ANYTHING
+#   * `workflow_dispatch` only. No schedule, nothing triggers it.
+#   * It never packs or uploads state. The restore is read-only and the
+#     only artifact produced is a JSON report. `pipeline.yml`'s restore
+#     looks exclusively at `pipeline.yml` runs, so the live chain cannot
+#     pick anything up from here even by accident.
+#   * `research data-audit` opens no trial, consumes no research budget,
+#     promotes nothing and writes nothing to the store.
+#   * Its own job, so a failure here cannot turn a data run red -- the
+#     mistake that cost eight runs' state on 2026-10-23
+#     (docs/state_recovery_2026-10-23.md).
+# ---------------------------------------------------------------------
+name: Data Audit
+
+on:
+  workflow_dispatch:
+    inputs:
+      underlying:
+        description: "Restrict the snapshot analysis to one underlying (blank = all)"
+        required: false
+        default: ""
+      since:
+        description: "Only snapshots at or after this ISO timestamp (blank = all)"
+        required: false
+        default: ""
+      window_seconds:
+        description: "Window within which products count as simultaneously quoted"
+        required: false
+        default: "60"
+
+permissions:
+  contents: read
+  actions: read
+
+# Read-only, but still serialised against the state group: a restore that
+# races a `pipeline.yml` pack would download a half-written artifact.
+concurrency:
+  group: turboedge-state
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Restore TurboEdge state (read-only)
+        uses: ./.github/actions/turboedge-state
+        with:
+          state_key: ${{ secrets.TURBOEDGE_STATE_KEY }}
+          mode: audit
+          github_token: ${{ github.token }}
+
+      - name: Record what was restored
+        run: |
+          set -uo pipefail
+          uv run turboedge --state-dir ./state db info || true
+
+      - name: Audit the forward dataset
+        # `workflow_dispatch` inputs arrive as strings, including the empty
+        # string, so each optional flag is appended only when it is
+        # actually set -- passing `--underlying ""` would filter to an
+        # underlying named "" and silently return nothing.
+        run: |
+          set -uo pipefail
+          mkdir -p reports
+          args=(--json-out reports/data_audit.json --window-seconds "${WINDOW_SECONDS}")
+          if [[ -n "${UNDERLYING}" ]]; then
+            args+=(--underlying "${UNDERLYING}")
+          fi
+          if [[ -n "${SINCE}" ]]; then
+            args+=(--since "${SINCE}")
+          fi
+          uv run turboedge --state-dir ./state --log-format console \
+            research data-audit "${args[@]}" | tee reports/data_audit.txt
+        env:
+          UNDERLYING: ${{ inputs.underlying }}
+          SINCE: ${{ inputs.since }}
+          WINDOW_SECONDS: ${{ inputs.window_seconds }}
+
+      - name: Job summary
+        if: always()
+        run: |
+          set -uo pipefail
+          {
+            echo "## Data audit"
+            echo
+            if [[ -f reports/data_audit.txt ]]; then
+              echo '```'
+              cat reports/data_audit.txt
+              echo '```'
+            else
+              echo "The audit produced no report; see the step log above."
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload the audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: turboedge-data-audit-${{ github.run_id }}
+          path: reports/
+          retention-days: 90
+          if-no-files-found: warn

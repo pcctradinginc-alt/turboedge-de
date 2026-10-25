@@ -534,8 +534,13 @@ def test_bnp_offset_cap_on_later_page_returns_partial_not_raise() -> None:
     page1 = [_bnp_product("DE000OFFCAP1"), _bnp_product("DE000OFFCAP2", direction="short")]
     respx.post(BNP_LEVERAGE_URL).mock(
         side_effect=[
+            # Ascending pass: one page, then the ceiling.
             httpx.Response(200, json=_bnp_page_response(page1, total=100)),
             httpx.Response(500),  # simulates the offset-ceiling 500 on page 2
+            # Descending pass (added 2026-10-25): the ceiling again, with
+            # nothing new to recover.
+            httpx.Response(200, json=_bnp_page_response(page1, total=100)),
+            httpx.Response(500),
         ]
     )
     adapter = _bnp_adapter(
@@ -551,8 +556,126 @@ def test_bnp_offset_cap_on_later_page_returns_partial_not_raise() -> None:
     assert {s.isin for s in snapshots} == {"DE000OFFCAP1", "DE000OFFCAP2"}
     assert adapter._partial_universe["DAX"] == (2, 100)
     offset_error_events = [e for e in logs if e.get("event") == "bnp_pagination_offset_error"]
-    assert len(offset_error_events) == 1
+    # Once per direction: the reverse pass is attempted and hits the same
+    # ceiling, which is the honest outcome when the tail is genuinely out of
+    # reach from both ends.
+    assert len(offset_error_events) == 2
     assert offset_error_events[0]["offset"] == 2  # page_index=1 * page_size=2
+    assert offset_error_events[0]["descending"] is False
+    assert offset_error_events[1]["descending"] is True
+
+
+@respx.mock
+def test_bnp_reverse_sort_recovers_the_high_leverage_tail() -> None:
+    """The coverage this adds.
+
+    BNP's `offset` ceiling cuts a book larger than ~10,000 rows, and the
+    request sorts by leverage ascending -- so the unreachable tail is
+    systematically the highest-leverage products, not a random remainder.
+    Asking for the same query sorted the other way reaches it without
+    exceeding the ceiling and without guessing at undocumented filter
+    vocabulary.
+    """
+    respx.get(BNP_INDEXES_URL).mock(
+        return_value=httpx.Response(
+            200, json=_load_fixture("bnp_paribas", "underlying_indexes.json")
+        )
+    )
+    low = [_bnp_product("DE000LOWLEV1"), _bnp_product("DE000LOWLEV2", direction="short")]
+    high = [_bnp_product("DE000HIGHLV1"), _bnp_product("DE000HIGHLV2", direction="short")]
+    respx.post(BNP_LEVERAGE_URL).mock(
+        side_effect=[
+            # Ascending: the low-leverage end, then the ceiling.
+            httpx.Response(200, json=_bnp_page_response(low, total=4)),
+            httpx.Response(500),
+            # Descending: the high-leverage end the ascending pass could
+            # not reach, then an empty page so pagination terminates.
+            httpx.Response(200, json=_bnp_page_response(high, total=4)),
+            httpx.Response(200, json=_bnp_page_response([], total=4)),
+        ]
+    )
+    adapter = _bnp_adapter(
+        max_pages=5,
+        page_size=2,
+        max_retries=1,
+        clock=_fixed_clock(datetime(2026, 9, 13, 12, 0, tzinfo=UTC)),
+    )
+
+    with structlog.testing.capture_logs() as logs:
+        snapshots = adapter.fetch_products(["DAX"])
+
+    assert {s.isin for s in snapshots} == {
+        "DE000LOWLEV1",
+        "DE000LOWLEV2",
+        "DE000HIGHLV1",
+        "DE000HIGHLV2",
+    }, "the reverse pass must contribute the rows the ascending pass could not reach"
+    recovery = [e for e in logs if e.get("event") == "bnp_reverse_sort_recovery"]
+    assert len(recovery) == 1
+    assert recovery[0]["recovered_rows"] == 2
+    assert recovery[0]["covered"] == 4
+    # Full coverage, so no partial-universe warning remains for DAX.
+    assert adapter._partial_universe.get("DAX", (4, 4)) == (4, 4)
+
+
+@respx.mock
+def test_bnp_does_not_make_a_second_pass_when_the_book_fits() -> None:
+    """An underlying under the ceiling costs exactly what it did before.
+
+    The reverse pass doubles the request count for that underlying, so it
+    must run only when the first pass actually came up short -- otherwise
+    every scan would pay twice for nothing, against someone else's rate
+    limit.
+    """
+    respx.get(BNP_INDEXES_URL).mock(
+        return_value=httpx.Response(
+            200, json=_load_fixture("bnp_paribas", "underlying_indexes.json")
+        )
+    )
+    page = [_bnp_product("DE000FITS001"), _bnp_product("DE000FITS002", direction="short")]
+    route = respx.post(BNP_LEVERAGE_URL).mock(
+        side_effect=[httpx.Response(200, json=_bnp_page_response(page, total=2))]
+    )
+    adapter = _bnp_adapter(
+        max_pages=5,
+        page_size=2,
+        max_retries=1,
+        clock=_fixed_clock(datetime(2026, 9, 13, 12, 0, tzinfo=UTC)),
+    )
+
+    snapshots = adapter.fetch_products(["DAX"])
+
+    assert len(snapshots) == 2
+    assert route.call_count == 1, "no second pass when the first one reached `total`"
+
+
+@respx.mock
+def test_bnp_does_not_make_a_second_pass_on_a_local_page_limit() -> None:
+    """`max_pages` is our own limit, not the server's ceiling.
+
+    A reverse pass would hit the same local limit and add nothing, so it
+    must not be attempted -- the honest report is the partial-universe gap.
+    """
+    respx.get(BNP_INDEXES_URL).mock(
+        return_value=httpx.Response(
+            200, json=_load_fixture("bnp_paribas", "underlying_indexes.json")
+        )
+    )
+    page = [_bnp_product("DE000LIMIT01"), _bnp_product("DE000LIMIT02", direction="short")]
+    route = respx.post(BNP_LEVERAGE_URL).mock(
+        return_value=httpx.Response(200, json=_bnp_page_response(page, total=100))
+    )
+    adapter = _bnp_adapter(
+        max_pages=2,
+        page_size=2,
+        max_retries=1,
+        clock=_fixed_clock(datetime(2026, 9, 13, 12, 0, tzinfo=UTC)),
+    )
+
+    adapter.fetch_products(["DAX"])
+
+    assert route.call_count == 2, "exactly max_pages requests, no reverse pass"
+    assert adapter._partial_universe["DAX"] == (4, 100)
 
 
 @respx.mock

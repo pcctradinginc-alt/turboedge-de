@@ -744,12 +744,72 @@ class BnpParibasTurboAdapter:
     def _fetch_all_pages(
         self, instrument_id: int, *, underlying_id: str
     ) -> tuple[list[dict[str, Any]], int | None, datetime | None]:
+        """Every page of one underlying's book, from both ends if necessary.
+
+        BNP's backend enforces a hard `offset` ceiling near 10,000 (see the
+        module docstring, Pitfall 4b). The request sorts by `leverage`
+        ascending, so for a book larger than the ceiling the unreachable
+        tail is not a random remainder: it is systematically the
+        **highest-leverage** products, the ones closest to the barrier.
+
+        That tail is reachable without exceeding the ceiling and without
+        guessing at undocumented filter vocabulary -- by asking for the same
+        query sorted the other way. Ascending returns the lowest ~10,000 by
+        leverage, descending the highest ~10,000; for any book up to twice
+        the ceiling their union is the whole of it. Deduplicated by ISIN,
+        which is what identifies a product.
+
+        The second pass runs only when the first one actually came up short,
+        so an underlying whose book fits under the ceiling costs exactly
+        what it did before.
+        """
+        ascending, total, response_date, hit_ceiling = self._fetch_one_direction(
+            instrument_id, underlying_id=underlying_id, descending=False
+        )
+        if not hit_ceiling or total is None or len(ascending) >= total:
+            return ascending, total, response_date
+
+        descending, _total_desc, response_date_desc, _ = self._fetch_one_direction(
+            instrument_id, underlying_id=underlying_id, descending=True
+        )
+        by_isin: dict[str, dict[str, Any]] = {}
+        for item in ascending:
+            isin = item.get("isin")
+            if isinstance(isin, str):
+                by_isin[isin] = item
+        recovered = 0
+        for item in descending:
+            isin = item.get("isin")
+            if isinstance(isin, str) and isin not in by_isin:
+                by_isin[isin] = item
+                recovered += 1
+        merged = list(by_isin.values())
+        logger.info(
+            "bnp_reverse_sort_recovery",
+            underlying_id=underlying_id,
+            ascending_rows=len(ascending),
+            descending_rows=len(descending),
+            recovered_rows=recovered,
+            covered=len(merged),
+            total=total,
+            detail=(
+                "the offset ceiling cut the highest-leverage tail; a reverse-sorted "
+                "pass of the same query recovered it"
+            ),
+        )
+        return merged, total, response_date_desc or response_date
+
+    def _fetch_one_direction(
+        self, instrument_id: int, *, underlying_id: str, descending: bool
+    ) -> tuple[list[dict[str, Any]], int | None, datetime | None, bool]:
+        """One full pagination pass. The fourth value is "hit the ceiling"."""
         url = f"{self._base_url}{_BNP_PRODUCTLIST_LEVERAGE_PATH}"
         headers = _bnp_headers(self._http.user_agent)
 
         collected: list[dict[str, Any]] = []
         total: int | None = None
         response_date: datetime | None = None
+        hit_ceiling = False
 
         for page_index in range(self._max_pages):
             offset = page_index * self._page_size
@@ -774,7 +834,15 @@ class BnpParibasTurboAdapter:
                 "limit": self._page_size,
                 "doNotTrimFilters": True,
                 "sortPreference": [
-                    {"sortField": "leverage", "sortDirection": "Ascending", "sortIndex": 0}
+                    {
+                        "sortField": "leverage",
+                        # The only parameter this partition changes, and one
+                        # already in use -- no guessed filter vocabulary. A
+                        # guessed non-null value elsewhere in this body
+                        # silently returns total=0 (see `productSetIds`).
+                        "sortDirection": "Descending" if descending else "Ascending",
+                        "sortIndex": 0,
+                    }
                 ],
                 "allowLeverageGrouping": False,
             }
@@ -811,7 +879,9 @@ class BnpParibasTurboAdapter:
                     offset=offset,
                     page_index=page_index,
                     covered_so_far=len(collected),
+                    descending=descending,
                 )
+                hit_ceiling = True
                 break
             if not isinstance(raw, dict) or "productListResponse" not in raw:
                 raise AdapterError(f"unexpected BNP productlist/leverage response shape: {raw!r}")
@@ -828,8 +898,13 @@ class BnpParibasTurboAdapter:
                 break
             if total is not None and offset + len(page_items) >= total:
                 break
+        else:
+            # Exhausted `max_pages` without reaching `total`. Not the
+            # server's ceiling, so a reverse pass would hit the same local
+            # limit and add nothing.
+            hit_ceiling = False
 
-        return collected, total, response_date
+        return collected, total, response_date, hit_ceiling
 
     def _normalize_products(
         self,

@@ -38,6 +38,7 @@ _EXPECTED_IDS = {
     "RO-ISSUER-SPREAD-BEHAVIOUR",
     "RO-FINANCING-BEHAVIOUR",
     "RO-PRODUCT-SELECTION-EDGE",
+    "RO-DAY-NIGHT-MOMENTUM",
 }
 
 # The three inputs another agent enriches from real repository state.
@@ -68,11 +69,14 @@ _REPO_UNDERLYINGS = {"DAX", "NDX", "EURUSD", "XAU"}
 _REPO_HORIZONS = {"3d", "5d", "7d", "10d", "14d"}
 
 
-def test_every_entry_is_valid_and_has_all_fourteen_ideas() -> None:
+def test_every_entry_is_valid_and_has_every_declared_idea() -> None:
     """Every catalog entry already validated at import time (pydantic); this
-    just asserts the exact set the user asked for is present, no more, no
-    fewer."""
-    assert len(CATALOG) == 14
+    just asserts the exact set is present, no more, no fewer.
+
+    Fifteen since 2026-10-25: RO-DAY-NIGHT-MOMENTUM was added as the first
+    catalogue question answerable without a matured forward ledger.
+    """
+    assert len(CATALOG) == 15
     assert {o.hypothesis_id for o in CATALOG} == _EXPECTED_IDS
 
 

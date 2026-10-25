@@ -11,6 +11,7 @@ parameters instead of importing them.
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Annotated
@@ -33,6 +34,7 @@ from turboedge.state.archive import (
 )
 from turboedge.state.backend import StateBackend, StateBackendError, backend_from_env
 from turboedge.state.crypto import StateCryptoError
+from turboedge.state.recovery import merge_recovered_state
 from turboedge.state.retention import (
     DEFAULT_HARD_DELETE_AFTER_DAYS,
     DEFAULT_KEEP_DAYS,
@@ -72,6 +74,111 @@ def _state_dir_from_ctx(ctx: typer.Context) -> Path:
     app_ctx = ctx.obj
     state_dir: Path = app_ctx.state_dir
     return state_dir
+
+
+@state_app.command("merge-recovered")
+def state_merge_recovered(
+    ctx: typer.Context,
+    source: Annotated[
+        str,
+        typer.Option(
+            "--from",
+            help="State directory of an already-unpacked recovered archive",
+        ),
+    ],
+    report_out: Annotated[
+        str | None,
+        typer.Option("--report-out", help="Write the merge report as JSON to PATH"),
+    ] = None,
+) -> None:
+    """Additively merge an unpacked recovered state into the current one.
+
+    For the recovery of 2026-10-23/24, when eight runs' packed state became
+    unreachable to the restore -- see `docs/state_recovery_2026-10-23.md`.
+    Four scans' `product_snapshots` are the irreplaceable part: a bid/ask
+    quote at a past minute cannot be fetched again.
+
+    Insert-only. Every table is merged by adding the rows the current
+    database does not already have, matched on its primary key or, for the
+    tables that have none, a configured natural key. Nothing is updated,
+    nothing is deleted, and a table whose identity is unknown is skipped
+    rather than merged on a guess -- `product_snapshots` has no primary key
+    and a naive merge would duplicate every row.
+
+    Running it twice is a no-op the second time, so an interrupted recovery
+    can simply be repeated.
+
+    This does **not** back anything up. Take a copy of the state first; a
+    backup owned by the thing being changed is not a backup.
+
+    Exit codes: 0 ok, 2 the source state is missing or has no database.
+    """
+    app_ctx = ctx.obj
+    source_db = Path(source) / "turboedge.duckdb"
+    if not source_db.is_file():
+        err_console.print(
+            f"[red]No state database at {source_db}.[/red] Pass the state directory of an "
+            "archive you already unpacked with `state unpack`."
+        )
+        raise typer.Exit(code=2)
+
+    with Store(app_ctx.db_path) as store:
+        store.init_schema()
+        report = merge_recovered_state(store, source_db)
+
+    console.print(f"MERGE {source}  {report.summary()}", markup=False, highlight=False)
+    for table in report.tables:
+        if not table.rows_inserted:
+            continue
+        console.print(
+            f"  {table.table}: {table.rows_before} -> {table.rows_after} "
+            f"(+{table.rows_inserted}) on {table.key_source} {list(table.key)}",
+            markup=False,
+            highlight=False,
+        )
+    for skipped_table, reason in sorted(report.skipped.items()):
+        if "absent from" in reason:
+            continue
+        console.print(f"  [dim]skipped {skipped_table}: {reason}[/dim]")
+
+    if report.duplicates_introduced:
+        err_console.print(
+            f"[red]Duplicate key groups exist after the merge in: "
+            f"{list(report.duplicates_introduced)}.[/red] Investigate before using this "
+            "state -- duplicated snapshots double the observation counts that retention "
+            "thinning and every effective-sample figure derive from."
+        )
+    if report.inconsistent:
+        err_console.print(
+            f"[red]Row counts moved by more than what was inserted in: "
+            f"{list(report.inconsistent)}.[/red]"
+        )
+
+    if report_out:
+        payload = {
+            "source": report.source,
+            "rows_inserted": report.rows_inserted,
+            "tables_changed": list(report.tables_changed),
+            "duplicates_introduced": list(report.duplicates_introduced),
+            "inconsistent": list(report.inconsistent),
+            "skipped": dict(report.skipped),
+            "tables": [
+                {
+                    "table": t.table,
+                    "key": list(t.key),
+                    "key_source": t.key_source,
+                    "rows_before": t.rows_before,
+                    "rows_inserted": t.rows_inserted,
+                    "rows_after": t.rows_after,
+                    "duplicate_groups_after": t.duplicate_groups_after,
+                }
+                for t in report.tables
+            ],
+        }
+        path = Path(report_out)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        console.print(f"Wrote {path}")
 
 
 @state_app.command("pack")

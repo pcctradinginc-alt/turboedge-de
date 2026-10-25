@@ -85,9 +85,47 @@ rebuilt from today's product information. That substitution is forbidden
 outright, and a gap left visible is the correct outcome where the original
 quote is gone.
 
-## 4. The procedure — operator steps
+## 4. The procedure
 
-Every step needs `TURBOEDGE_STATE_KEY` and must be run by the operator. Work
+**Updated 2026-10-25.** The original version of this section assumed the
+operator would set `TURBOEDGE_STATE_KEY` locally. That assumption was wrong
+in a way worth recording: GitHub does not reveal a secret to anyone after it
+is set, including the repository owner, so there may be no copy of the value
+anywhere. The key was registered on 2026-09-13 and has never been changed.
+
+That does not block the recovery, because the key does not need to leave
+Actions. `.github/workflows/state-recovery.yml` runs the whole procedure
+where the secret is already injected, exactly as every ordinary data job
+decrypts the state five times a day. **Nobody handles the key.**
+
+### 4a. The automated route (preferred)
+
+1. Dispatch **State Recovery** with `dry_run: true` (the default). It
+   restores the current state, downloads and unpacks each of the seven
+   archives into its own directory, merges them oldest first, verifies, and
+   uploads `turboedge-recovery-reports` — **without packing any state**.
+2. Read the reports. Each `merge-<run_id>.json` gives per-table counts
+   before and after, how many rows were inserted, and how many duplicate
+   key groups exist afterwards. The job fails outright if any merge
+   introduced a duplicate or moved a row count by more than it inserted.
+3. If the numbers look right, dispatch again with `dry_run: false`. The
+   merged state is uploaded as **`turboedge-state-recovered-enc`**, under
+   its own name and from its own workflow, so `pipeline.yml`'s restore
+   cannot select it.
+4. Promote it deliberately: re-upload that archive as `turboedge-state-enc`
+   from a `pipeline.yml` dispatch, or push it to the durable backend. This
+   step is intentionally not automated.
+
+Safety properties, each covered by a test in
+`tests/test_workflow_modes.py`: `workflow_dispatch` only, `dry_run`
+defaults to true, the result never carries the live artifact name, packing
+happens only after a clean verification, no archive is ever unpacked over
+`./state`, and the merge is insert-only.
+
+### 4b. The manual route (only if Actions is unavailable)
+
+Every step needs `TURBOEDGE_STATE_KEY` and must be run by the operator —
+which is possible only if a copy of the value exists outside GitHub. Work
 on a copy throughout; the live state is never the target.
 
 1. **Back up the current state first.** Download the newest
@@ -175,6 +213,23 @@ on a copy throughout; the live state is never the target.
    record in `docs/measured_results.md` which runs were merged, which tables
    grew by how much, and that two external ingests were re-fetched rather
    than recovered.
+
+## 4c. Merge semantics, in one place
+
+`state/recovery.py` and `turboedge state merge-recovered`:
+
+- **Insert-only.** Rows the current database lacks are added; nothing is
+  updated and nothing is deleted. On a key present in both, the live row
+  wins and the recovered one is discarded.
+- **Identity per table.** DuckDB's PRIMARY KEY where one exists (29 of 36
+  tables), a configured natural key for the seven that have none.
+- **Fail-closed.** A table with neither is skipped and reported, never
+  merged on a guess.
+- **Idempotent.** Running it twice inserts nothing the second time, so an
+  interrupted recovery can simply be repeated.
+- **`schema_migrations` is never merged.** It records what *this*
+  database's schema has been through; another database's log is not this
+  one's history.
 
 ## 5. What this system will not do
 

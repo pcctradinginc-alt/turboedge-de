@@ -1,0 +1,207 @@
+# ---------------------------------------------------------------------
+# state-recovery -- recover the state that eight red runs packed and the
+# restore could not reach.
+#
+# WHY THIS EXISTS
+# On 2026-10-23/24 eight pipeline runs went red for a reason unrelated to
+# the state they packed (a watchdog job, since moved to its own workflow),
+# and `.github/actions/turboedge-state` selected restore candidates by run
+# conclusion. All eight artifacts became unreachable and the chain resumed
+# from a day-old state. The cause is fixed -- the restore now treats the
+# artifact's existence as the proof, because "Pack and upload state" is the
+# last step of every data job and gated on `if: success()`. This workflow
+# is only about the data already lost. See
+# docs/state_recovery_2026-10-23.md.
+#
+# The irreplaceable part is four scans' `product_snapshots`: a bid/ask quote
+# with its issuer, barrier and timestamp as it stood at a past minute cannot
+# be fetched again at any later date. The two external ingests are
+# re-fetchable with a provenance caveat; the eod labels are recomputable
+# once the snapshots are back.
+#
+# WHY IT RUNS HERE RATHER THAN ON SOMEONE'S MACHINE
+# Decrypting needs TURBOEDGE_STATE_KEY, which GitHub does not reveal to
+# anyone after it is set -- not even to the repository owner. Actions
+# injects it the same way it does for every ordinary data job, so the
+# recovery can run without any person handling the key.
+#
+# WHY IT CANNOT DAMAGE ANYTHING
+#   * `workflow_dispatch` only. No schedule, no trigger from another
+#     workflow.
+#   * `dry_run` defaults to **true**: it merges, reports and uploads
+#     nothing. A dispatch made without thinking does no harm.
+#   * The merge is insert-only, matched on each table's primary key or, for
+#     the tables that have none, a configured natural key. A table whose
+#     identity is unknown is skipped, never merged on a guess
+#     (`state/recovery.py`). `product_snapshots` has no primary key, so a
+#     naive merge would duplicate every row.
+#   * Running it twice is a no-op the second time.
+#   * The result is uploaded under `turboedge-state-recovered-enc`, NOT
+#     `turboedge-state-enc`, and this is a different workflow file --
+#     `pipeline.yml`'s restore only ever looks at `pipeline.yml` runs. The
+#     live chain cannot pick this up by itself. Promoting it is a separate,
+#     deliberate act.
+# ---------------------------------------------------------------------
+name: State Recovery
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_ids:
+        description: >-
+          Pipeline run IDs to recover, oldest first, space-separated. The
+          default is the seven runs of 2026-10-23/24 that packed state the
+          restore could not reach (39978874688 is absent on purpose: its
+          external job was cancelled before the pack step, so it has no
+          artifact).
+        required: false
+        default: >-
+          39968420761 39973892098 39999355264 40012410917 40025944915
+          40042567854 40047953810
+      dry_run:
+        description: "true = merge and report only, upload no state"
+        required: false
+        default: "true"
+
+permissions:
+  contents: read
+  actions: read
+
+# Never run two recoveries at once, and never cancel one in progress: a
+# half-finished merge is harder to reason about than a slow one. The group
+# is shared with nothing else.
+concurrency:
+  group: turboedge-state-recovery
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Restores the CURRENT state, which is what the recovered archives are
+      # merged into. Also sets up uv/Python and verifies the key exists.
+      - name: Restore TurboEdge state
+        uses: ./.github/actions/turboedge-state
+        with:
+          state_key: ${{ secrets.TURBOEDGE_STATE_KEY }}
+          mode: recovery
+          github_token: ${{ github.token }}
+
+      - name: Record the state as it stands before the merge
+        run: |
+          set -euo pipefail
+          mkdir -p reports/recovery
+          uv run turboedge --state-dir ./state db info | tee reports/recovery/before.txt
+
+      - name: Download and unpack each recovered archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_IDS: ${{ inputs.run_ids }}
+        run: |
+          set -euo pipefail
+          for id in ${RUN_IDS}; do
+            echo "::group::run ${id}"
+            if ! gh run download "${id}" -n turboedge-state-enc -D "recover/${id}"; then
+              echo "::warning::run ${id} has no usable turboedge-state-enc artifact (expired, never uploaded, or download failed) -- skipping it"
+              echo "::endgroup::"
+              continue
+            fi
+            # Unpacks into its own directory. The live state is never the
+            # target of an unpack.
+            mkdir -p "recover/${id}/state"
+            uv run turboedge --state-dir "recover/${id}/state" state unpack \
+              --in "recover/${id}/state.tar.enc"
+            echo "::endgroup::"
+          done
+
+      # Chronological order, because the seven archives are siblings rather
+      # than a chain: each restored from the same 2026-10-23 12:49 state and
+      # added only its own work, so none of them contains all of it.
+      - name: Merge each recovered archive, oldest first
+        env:
+          RUN_IDS: ${{ inputs.run_ids }}
+        run: |
+          set -euo pipefail
+          for id in ${RUN_IDS}; do
+            if [[ ! -f "recover/${id}/state/turboedge.duckdb" ]]; then
+              continue
+            fi
+            echo "::group::merging run ${id}"
+            uv run turboedge --log-format json --state-dir ./state state merge-recovered \
+              --from "recover/${id}/state" \
+              --report-out "reports/recovery/merge-${id}.json"
+            echo "::endgroup::"
+          done
+
+      - name: Verify the merged state
+        run: |
+          set -euo pipefail
+          uv run turboedge --state-dir ./state db info | tee reports/recovery/after.txt
+
+          # Every merge report must be free of duplicates and internally
+          # consistent. A duplicated snapshot doubles the observation counts
+          # that retention thinning and every effective-sample figure derive
+          # from, so this is the one condition worth failing the job over.
+          python3 - <<'PY'
+          import json, pathlib, sys
+          bad = []
+          reports = sorted(pathlib.Path("reports/recovery").glob("merge-*.json"))
+          total = 0
+          for path in reports:
+              data = json.loads(path.read_text())
+              total += data["rows_inserted"]
+              if data["duplicates_introduced"]:
+                  bad.append(f"{path.name}: duplicates in {data['duplicates_introduced']}")
+              if data["inconsistent"]:
+                  bad.append(f"{path.name}: row counts inconsistent in {data['inconsistent']}")
+          print(f"{len(reports)} archive(s) merged, {total} row(s) recovered in total")
+          if bad:
+              for line in bad:
+                  print(f"::error::{line}")
+              sys.exit(1)
+          PY
+
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo "## State recovery"
+            echo
+            echo "- dry run: \`${{ inputs.dry_run }}\`"
+            echo "- runs: \`${{ inputs.run_ids }}\`"
+            echo
+            echo '### Before'
+            echo '```'
+            cat reports/recovery/before.txt 2>/dev/null || echo "(not recorded)"
+            echo '```'
+            echo '### After'
+            echo '```'
+            cat reports/recovery/after.txt 2>/dev/null || echo "(not recorded)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Always uploaded, dry run or not: the reports are the point of a dry
+      # run, and they are what a reviewer reads before promoting anything.
+      - name: Upload the merge reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: turboedge-recovery-reports
+          path: reports/recovery/
+          retention-days: 90
+
+      # Under its own name and from its own workflow, so `pipeline.yml`'s
+      # restore cannot select it. Promoting it is a separate, deliberate act
+      # -- see docs/state_recovery_2026-10-23.md step 8.
+      - name: Pack and upload the merged state (not the live chain)
+        if: success() && inputs.dry_run != 'true'
+        uses: ./.github/actions/turboedge-state-pack
+        with:
+          state_key: ${{ secrets.TURBOEDGE_STATE_KEY }}
+          artifact_name: turboedge-state-recovered-enc
+          retention_days: 90
+          out_file: state-recovered.tar.enc

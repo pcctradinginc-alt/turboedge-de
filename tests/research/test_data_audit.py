@@ -535,8 +535,11 @@ class TestSnapshotStalenessAdvantage:
             issuer=issuer,
             ask=ask,
             bid=ask * 0.99,
-            observation_time=observed,
+            # `observation_time` IS the quote's own timestamp in this
+            # schema, so the age has to come from `retrieved_at`.
+            observation_time=observed - timedelta(seconds=age_seconds),
             available_at=observed,
+            retrieved_at=observed,
             quote_timestamp=observed - timedelta(seconds=age_seconds),
             # The schema default is UNVERIFIED, and an unverified ratio is
             # correctly refused -- every per-unit cost divides by it.

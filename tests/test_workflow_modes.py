@@ -462,3 +462,42 @@ def test_the_recovery_merges_rather_than_replaces(recovery: dict[str, Any]) -> N
             f"{statement} appears in the merge; it must only ever insert rows the "
             "current database lacks"
         )
+
+
+def test_the_recovery_gives_the_unpack_step_the_key(recovery: dict[str, Any]) -> None:
+    # `state unpack` needs TURBOEDGE_STATE_KEY in its environment exactly as
+    # every data job's restore does. The first dry run of this workflow
+    # failed with exit 2 ("key missing/too short") for want of that one
+    # line, which is the kind of thing only running it finds.
+    step = next(
+        s
+        for s in recovery["jobs"]["recover"]["steps"]
+        if "unpack" in str(s.get("name", "")).lower()
+    )
+
+    assert "TURBOEDGE_STATE_KEY" in (step.get("env") or {}), (
+        "the unpack step has no state key, so every archive will fail to decrypt"
+    )
+
+
+def test_one_unreadable_archive_does_not_abandon_the_rest(
+    recovery: dict[str, Any],
+) -> None:
+    # The seven archives are siblings, each holding work the others do not,
+    # so losing six because of one would be the wrong trade. The job still
+    # fails if *none* could be unpacked, because that means either nothing
+    # is reachable or the key does not match.
+    step = next(
+        s
+        for s in recovery["jobs"]["recover"]["steps"]
+        if "unpack" in str(s.get("name", "")).lower()
+    )
+    run = str(step["run"])
+
+    assert "set -uo pipefail" in run, (
+        "`set -e` would abort the loop on the first archive that fails to unpack"
+    )
+    assert "set -euo pipefail" not in run
+    assert 'if [ "${unpacked}" -eq 0 ]' in run, (
+        "the job must still fail when not one archive could be unpacked"
+    )

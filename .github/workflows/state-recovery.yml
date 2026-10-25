@@ -101,8 +101,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_IDS: ${{ inputs.run_ids }}
+          # `state unpack` needs the key, exactly as every data job's
+          # restore does. Injected by Actions and never printed; the first
+          # dry run of this workflow failed with exit 2 ("key missing") for
+          # want of this line.
+          TURBOEDGE_STATE_KEY: ${{ secrets.TURBOEDGE_STATE_KEY }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
+          unpacked=0
           for id in ${RUN_IDS}; do
             echo "::group::run ${id}"
             if ! gh run download "${id}" -n turboedge-state-enc -D "recover/${id}"; then
@@ -113,10 +119,23 @@ jobs:
             # Unpacks into its own directory. The live state is never the
             # target of an unpack.
             mkdir -p "recover/${id}/state"
-            uv run turboedge --state-dir "recover/${id}/state" state unpack \
-              --in "recover/${id}/state.tar.enc"
+            # One unreadable archive must not abandon the rest: they are
+            # siblings, each holding work the others do not, so losing six
+            # because of one would be the wrong trade.
+            if uv run turboedge --state-dir "recover/${id}/state" state unpack \
+                --in "recover/${id}/state.tar.enc"; then
+              unpacked=$((unpacked + 1))
+            else
+              echo "::warning::run ${id} downloaded but could not be unpacked (wrong key, truncated or corrupted archive) -- skipping it"
+              rm -rf "recover/${id}/state"
+            fi
             echo "::endgroup::"
           done
+          echo "unpacked ${unpacked} archive(s)"
+          if [ "${unpacked}" -eq 0 ]; then
+            echo "::error::not one archive could be unpacked. Either none is reachable any more, or TURBOEDGE_STATE_KEY does not match the one they were packed with."
+            exit 1
+          fi
 
       # Chronological order, because the seven archives are siblings rather
       # than a chain: each restored from the same 2026-10-23 12:49 state and

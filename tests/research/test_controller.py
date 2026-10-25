@@ -217,3 +217,70 @@ def test_each_permitted_family_can_actually_be_screened(family: str) -> None:
     action = _decide(candidates=[_candidate(family=family)])
 
     assert action.kind is ActionKind.START_EXPLORATORY
+
+
+def test_a_blocked_top_question_does_not_starve_the_loop() -> None:
+    """The defect run 40235422444 exposed, pinned.
+
+    Until 2026-10-25 the controller took the top-ranked candidate and
+    returned AWAIT_DATA if its data were not ready, never looking further
+    down the ranking. In production the top question waited on matured
+    forward labels, of which there were none, so the loop sat idle
+    indefinitely while a lower-ranked question with an approved harness
+    and ready data was available the whole time.
+    """
+    action = _decide(
+        candidates=[
+            _candidate(hypothesis_id="RO-BLOCKED", priority=0.9, data_ready=False),
+            _candidate(hypothesis_id="RO-RUNNABLE", priority=0.2, data_ready=True),
+        ]
+    )
+
+    assert action.kind is ActionKind.START_EXPLORATORY
+    assert action.hypothesis_id == "RO-RUNNABLE"
+    # And the question it passed over is named, not silently dropped.
+    skipped = action.evidence["skipped_for_data"]
+    assert [s["hypothesis_id"] for s in skipped] == ["RO-BLOCKED"]
+    assert "passed over for want of data" in action.reason
+
+
+def test_priority_still_decides_among_questions_that_can_run() -> None:
+    """Skipping a blocked question must not become ignoring the ranking."""
+    action = _decide(
+        candidates=[
+            _candidate(hypothesis_id="RO-LOWER", priority=0.2),
+            _candidate(hypothesis_id="RO-HIGHER", priority=0.9),
+        ]
+    )
+
+    assert action.kind is ActionKind.START_EXPLORATORY
+    assert action.hypothesis_id == "RO-HIGHER"
+    assert action.evidence["skipped_for_data"] == []
+
+
+def test_an_undersized_sample_is_skipped_like_missing_data() -> None:
+    action = _decide(
+        candidates=[
+            _candidate(hypothesis_id="RO-THIN", priority=0.9, effective_sample=3.0),
+            _candidate(hypothesis_id="RO-RUNNABLE", priority=0.2),
+        ]
+    )
+
+    assert action.hypothesis_id == "RO-RUNNABLE"
+    assert action.evidence["skipped_for_data"][0]["reason"] == (
+        "effective_sample_below_requirement"
+    )
+
+
+def test_when_nothing_can_run_the_wait_names_the_best_question_and_the_rest() -> None:
+    action = _decide(
+        candidates=[
+            _candidate(hypothesis_id="RO-BEST", priority=0.9, data_ready=False),
+            _candidate(hypothesis_id="RO-ALSO", priority=0.2, effective_sample=1.0),
+        ]
+    )
+
+    assert action.kind is ActionKind.AWAIT_DATA
+    assert action.hypothesis_id == "RO-BEST"
+    assert "The other 1 screenable candidate(s) are blocked too." in action.reason
+    assert len(action.evidence["skipped_for_data"]) == 2

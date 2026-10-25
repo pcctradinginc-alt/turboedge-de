@@ -655,6 +655,12 @@ def research_synthetic_ev_cmd(
     )
 
 
+#: Exit code for "the evaluation works, the data has not matured". Chosen
+#: distinct from 1 so a workflow can accept it while still failing on a real
+#: fault -- see `.github/workflows/pipeline.yml`'s weekly job.
+EXCURSION_INSUFFICIENT_DATA = 3
+
+
 def research_excursion_cmd(
     ctx: typer.Context,
     underlying: str | None = typer.Option(
@@ -677,25 +683,64 @@ def research_excursion_cmd(
     app_ctx = ctx.obj
     now = datetime.now(UTC)
 
+    # Three outcomes, three exit codes, because a workflow that cannot tell
+    # them apart hides the only one that matters:
+    #
+    #   0  SUCCESS            -- a valid evaluation ran, whatever its verdict
+    #   EXCURSION_INSUFFICIENT_DATA  -- working, but not enough real
+    #                          observations have matured yet. Expected for a
+    #                          long time, and not a defect.
+    #   1  ERROR              -- a technical fault. Must fail the job.
+    #
+    # Until 2026-10-25 "no usable rows" and a genuine crash both exited 1 and
+    # the weekly step carried a blanket `continue-on-error`, so a real fault
+    # was indistinguishable from a young ledger.
     with Store(app_ctx.db_path) as store:
         store.init_schema()
         try:
             dataset = build_excursion_dataset(store, underlying=underlying, as_of=now)
         except ValueError as exc:
-            # No usable rows is a legitimate answer here, not a crash: it means
-            # the forward ledger has nothing matured and labelled yet. Report
-            # it as the finding it is, and exit non-zero so a pipeline step
-            # does not read silence as a measured result.
-            console.print(f"EXCURSION NO_DATA  ({underlying or 'all underlyings'})")
+            health = ledger_health(store, as_of=now)
+            console.print(f"EXCURSION INSUFFICIENT_DATA  ({underlying or 'all underlyings'})")
             console.print(f"  {exc}", markup=False, highlight=False)
-            _write_summary("research_excursion", {"rows": 0}, verdict="NO_DATA")
+            console.print(f"  ledger: {health.summary()}", markup=False, highlight=False)
+            _write_summary(
+                "research_excursion",
+                {"rows": 0},
+                verdict="INSUFFICIENT_DATA",
+                ledger_open=health.open_entries,
+                ledger_overdue_unlabeled=health.overdue_unlabeled,
+                ledger_next_due=(
+                    health.next_due_date.isoformat() if health.next_due_date else None
+                ),
+                ledger_usable_for_research=health.usable_for_research,
+            )
+            # Only legitimate while nothing is overdue. An overdue entry means
+            # the shortage is a labeling fault, not a maturity question, and
+            # that must not be reported as "waiting for data".
+            raise typer.Exit(code=EXCURSION_INSUFFICIENT_DATA if health.healthy else 1) from exc
+        except Exception as exc:
+            console.print(f"EXCURSION ERROR  ({underlying or 'all underlyings'})")
+            err_console.print(f"[red]{type(exc).__name__}: {exc}[/red]")
+            _write_summary("research_excursion", {"rows": 0}, verdict="ERROR", error=str(exc))
             raise typer.Exit(code=1) from exc
-        result = evaluate_excursion(
-            dataset,
-            splitter=PurgedWalkForwardSplit(
-                horizon=horizon, embargo=horizon, min_train=min_train, step=step
-            ),
-        )
+        try:
+            result = evaluate_excursion(
+                dataset,
+                splitter=PurgedWalkForwardSplit(
+                    horizon=horizon, embargo=horizon, min_train=min_train, step=step
+                ),
+            )
+        except Exception as exc:
+            console.print(f"EXCURSION ERROR  ({underlying or 'all underlyings'})")
+            err_console.print(f"[red]{type(exc).__name__}: {exc}[/red]")
+            _write_summary(
+                "research_excursion",
+                {"rows": len(dataset.y_mae)},
+                verdict="ERROR",
+                error=str(exc),
+            )
+            raise typer.Exit(code=1) from exc
 
     console.print(f"EXCURSION {result.verdict}  ({underlying or 'all underlyings'})")
     console.print(
@@ -734,6 +779,12 @@ def research_excursion_cmd(
         verdict=result.verdict,
         effective_sample=result.effective_sample,
     )
+
+    if result.verdict == "INSUFFICIENT_SAMPLE":
+        # The evaluation ran and is working; there is simply not enough
+        # independent observation yet. Reported as such rather than as a
+        # success, so "it ran" is not mistaken for "it measured something".
+        raise typer.Exit(code=EXCURSION_INSUFFICIENT_DATA)
 
 
 def research_product_pairs_cmd(

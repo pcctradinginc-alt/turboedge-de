@@ -660,9 +660,29 @@ jobs:
       # harness needs an effective sample in the hundreds and currently has
       # 1.00. Running them weekly is what makes the day they stop saying that
       # visible without anyone remembering to check.
+      # Three outcomes, and only one of them may pass silently:
+      #   0 SUCCESS           -- a valid evaluation ran
+      #   3 INSUFFICIENT_DATA -- working, not enough matured observations yet
+      #   * ERROR             -- a technical fault, which must fail the job
+      #
+      # A blanket `continue-on-error: true` used to cover all three, so a
+      # real fault in the only research harness this system has was
+      # indistinguishable from a young forward ledger. The exit code now
+      # carries the distinction (`cli_learn.EXCURSION_INSUFFICIENT_DATA`).
       - name: Measure MAE/MFE excursion prediction
-        continue-on-error: true
-        run: uv run turboedge --log-format json research excursion --json-out reports/weekly/excursion.json
+        run: |
+          set -uo pipefail
+          uv run turboedge --log-format json research excursion \
+            --json-out reports/weekly/excursion.json
+          status=$?
+          if [ "${status}" -eq 0 ]; then
+            echo "excursion: a valid evaluation ran"
+          elif [ "${status}" -eq 3 ]; then
+            echo "::notice::excursion reported INSUFFICIENT_DATA -- the evaluation works, not enough real observations have matured yet. Not a fault."
+          else
+            echo "::error::excursion exited ${status}: a technical fault, not a data shortage."
+            exit "${status}"
+          fi
 
       # The precondition for pre-registering the product-selection cost
       # question (docs/research_plan_product_selection_cost_edge.md, §4):

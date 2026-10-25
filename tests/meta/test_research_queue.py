@@ -96,10 +96,10 @@ def queue(store: Store, failed_path: Path) -> ResearchQueue:
 
 def test_seed_from_catalog_inserts_all_proposed(queue: ResearchQueue, store: Store) -> None:
     inserted = queue.seed_from_catalog(now=NOW)
-    assert len(inserted) == 14
-    assert len(set(inserted)) == 14  # no duplicate ids in the catalog itself
+    assert len(inserted) == 15
+    assert len(set(inserted)) == 15  # no duplicate ids in the catalog itself
     stored = store.list_research_opportunities()
-    assert len(stored) == 14
+    assert len(stored) == 15
     assert all(s.opportunity.status == ResearchStatus.PROPOSED for s in stored)
     assert all(s.priority is None for s in stored)  # not scored yet
 
@@ -152,7 +152,7 @@ def test_rescore_persists_enriched_estimates_and_stamps_scored_at(
 ) -> None:
     queue.seed_from_catalog(now=NOW)
     results = queue.rescore(now=NOW)
-    assert len(results) == 14
+    assert len(results) == 15
     assert all(r.priority is not None for r in results)
     assert all(r.scored_at == NOW for r in results)
     for r in results:

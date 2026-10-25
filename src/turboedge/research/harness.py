@@ -14,14 +14,19 @@ loop can ever acquire a new capability.
 
 WHAT IS IN HERE, AND WHY SO LITTLE
 ----------------------------------
-One harness, covering two of the catalogue's fourteen questions. That is
-the honest extent of what exists, and the gap is the finding, not a
-shortfall in this module:
+Two harnesses. That is the honest extent of what exists, and the gap is
+the finding, not a shortfall in this module:
 
 * `excursion` (`backtest/excursion_eval.py`) answers RO-MAE-PREDICTION and
   RO-MFE-PREDICTION. It is read-only, promotes nothing, changes no weight,
   gate or threshold, and is allowed to answer "not enough data to tell".
   That makes it exploratory in the sense `research/partitions.py` means.
+* `day_night` (`backtest/day_night_eval.py`) answers
+  RO-DAY-NIGHT-MOMENTUM. It needs only underlying bars, so unlike every
+  other question here it is testable before a single forward label has
+  matured -- which is why it is the one that could actually run. It
+  carries a mandatory look-ahead audit and cannot return a candidate for
+  a cell whose signal and target share a price.
 
 Two existing harnesses are deliberately NOT here:
 
@@ -49,6 +54,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from turboedge.backtest.day_night_eval import evaluate_family
 from turboedge.backtest.excursion_eval import build_excursion_dataset, evaluate_excursion
 from turboedge.backtest.purged_cv import PurgedWalkForwardSplit
 from turboedge.models.excursion import ExcursionTarget
@@ -61,6 +67,33 @@ if TYPE_CHECKING:  # pragma: no cover - import cycle guard
 #: INSUFFICIENT_SAMPLE, NO_IMPROVEMENT and IMPROVEMENT_NOT_SIGNIFICANT are
 #: all legitimate answers and none of them is support.
 SUPPORTING_VERDICTS: frozenset[str] = frozenset({"CANDIDATE"})
+
+#: Underlyings the day/night screen reads, pinned here rather than taken
+#: from the caller: a loop that could choose which markets to include
+#: would be selecting a sample, not screening one. These are the
+#: `enabled: true` ids in `configs/universe.yaml`.
+#:
+#: EURUSD and XAU are included and measured, but their decomposition is
+#: not economically interpretable and the screen says so: both trade
+#: close to 24 hours, so the "overnight" boundary is the data vendor's
+#: rather than the market's. Measured 2026-10-25, EURUSD's overnight
+#: standard deviation is 1.709x its session one -- for a continuously
+#: traded market that is an artefact of where the day was cut, not a
+#: property of the market. They are left in so the multiple-testing
+#: denominator stays conservative; dropping cells after seeing them would
+#: make survival easier.
+_DAY_NIGHT_SPEC: Mapping[str, Any] = {
+    "underlyings": ("DAX", "EURUSD", "NDX", "XAU"),
+    "bars": 4000,
+    "min_train": 500,
+    "step": 250,
+    "embargo": 1,
+    "alpha": 0.10,
+    "null_draws": 2000,
+    "seed": 20261025,
+    "partition": "DEVELOPMENT",
+    "interpretable_underlyings": ("DAX", "NDX"),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,6 +226,75 @@ def _run_excursion(store: Store, hypothesis_id: str, now: datetime) -> HarnessOu
 #: Every harness the loop may execute. A frozen tuple of direct function
 #: references -- extending it is a reviewed source change, which is the
 #: only way this loop gains a capability.
+def _run_day_night(store: Store, hypothesis_id: str, now: datetime) -> HarnessOutcome:
+    """Screen the night/day return decomposition against a shift null.
+
+    Reads only underlying bars, so this screen is answerable while the
+    forward ledger is still immature -- `research data-audit` measured
+    3,670 open entries and zero resolved on 2026-10-25, which blocks every
+    label-dependent question in the catalogue but not this one.
+
+    Raises `ValueError` when no underlying has enough usable history. That
+    is deliberate: an empty family would otherwise be reported as
+    NO_IMPROVEMENT, which is a measurement, and "we had no data" is not.
+    """
+    underlyings: tuple[str, ...] = tuple(_DAY_NIGHT_SPEC["underlyings"])
+    bars_by_underlying = {
+        uid: store.latest_underlying_bars(uid, int(_DAY_NIGHT_SPEC["bars"])) for uid in underlyings
+    }
+    usable = {uid: bars for uid, bars in bars_by_underlying.items() if len(bars) >= 2}
+    if not usable:
+        raise ValueError(f"no usable bar history for any of {underlyings}; the screen cannot run")
+
+    family = evaluate_family(
+        usable,
+        alpha=float(_DAY_NIGHT_SPEC["alpha"]),
+        min_train=int(_DAY_NIGHT_SPEC["min_train"]),
+        step=int(_DAY_NIGHT_SPEC["step"]),
+        null_draws=int(_DAY_NIGHT_SPEC["null_draws"]),
+        seed=int(_DAY_NIGHT_SPEC["seed"]),
+    )
+
+    metrics: dict[str, Any] = {
+        "n_cells": len(family.cells),
+        "n_surviving_bh": sum(family.survives),
+        "best_break_even_round_trip_cost": family.best_break_even_cost,
+        "bars_read": {uid: len(bars) for uid, bars in bars_by_underlying.items()},
+        "cells": [
+            {
+                "underlying": c.underlying_id,
+                "sub_hypothesis": c.sub_hypothesis.value,
+                "n_oos": c.n_oos,
+                "folds": c.folds,
+                "rule_mean": c.rule_mean,
+                "always_long_mean": c.always_long_mean,
+                "directional_accuracy": c.directional_accuracy,
+                "p_value": c.p_value,
+                "ci_low": c.ci_low,
+                "ci_high": c.ci_high,
+                "night_day_correlation": c.night_day_correlation,
+                "shares_a_price_with_target": c.shares_a_price_with_target,
+                "survives_bh": survived,
+            }
+            for c, survived in zip(family.cells, family.survives, strict=True)
+        ],
+    }
+
+    return HarnessOutcome(
+        verdict=family.verdict,
+        metrics=metrics,
+        data_version=_data_version(
+            "day_night",
+            sorted((uid, len(bars)) for uid, bars in usable.items()),
+            sorted((uid, bars[-1].ts.isoformat() if bars else "") for uid, bars in usable.items()),
+        ),
+        # LOOKAHEAD_SUSPECT is not in SUPPORTING_VERDICTS, so a cell that
+        # only wins through a shared price can never register as support.
+        supported=family.verdict in SUPPORTING_VERDICTS,
+        spec={**_DAY_NIGHT_SPEC, "as_of": now.isoformat()},
+    )
+
+
 APPROVED_HARNESSES: tuple[ApprovedHarness, ...] = (
     ApprovedHarness(
         name="excursion",
@@ -206,6 +308,22 @@ APPROVED_HARNESSES: tuple[ApprovedHarness, ...] = (
         ),
         spec=_EXCURSION_SPEC,
         run=_run_excursion,
+    ),
+    ApprovedHarness(
+        name="day_night",
+        version="1",
+        hypothesis_ids=frozenset({"RO-DAY-NIGHT-MOMENTUM"}),
+        description=(
+            "Does splitting a daily return into its overnight and session "
+            "halves predict the next such return better than chance, under a "
+            "circular-shift null that preserves drift and serial dependence? "
+            "Six sub-hypotheses across four underlyings, corrected together as "
+            "one family, with a mandatory look-ahead audit that refuses any "
+            "cell whose signal and target share a price. Read-only; promotes "
+            "nothing."
+        ),
+        spec=_DAY_NIGHT_SPEC,
+        run=_run_day_night,
     ),
 )
 

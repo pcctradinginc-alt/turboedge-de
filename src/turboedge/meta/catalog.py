@@ -2,7 +2,7 @@
 
 In version 1 the controller must never invent a research question. It may
 only prioritise among a fixed, human-authored list. This module *is* that
-list: fourteen static entries, each a falsifiable hypothesis with the ten
+list: fifteen static entries, each a falsifiable hypothesis with the ten
 ranking inputs required by `research_opportunity.ResearchOpportunity`,
 supplied here as `Estimate`s.
 
@@ -21,7 +21,7 @@ against. A later stage enriches these three from real repository state.
 The other seven inputs are `DECLARED`, each with a `note` that is meant to
 be argued with -- particularly `estimated_sample_size`, which is stated as
 an honest count of *independent* observations, not raw rows. Two of the
-fourteen entries (Cboe volatility state, CFTC positioning) were already
+fifteen entries (Cboe volatility state, CFTC positioning) were already
 measured in Research Wave 2 (September 2026) and found not to clear the
 promotion ladder; their `DECLARED` inputs here reflect that prior result
 (low remaining information gain, low remaining economic value) rather than
@@ -925,6 +925,74 @@ _PRODUCT_SELECTION_EDGE = _opportunity(
 
 #: The fixed, human-authored research catalog (§11). Order matches the user's
 #: original list; nothing here is generated or inferred.
+_DAY_NIGHT_MOMENTUM = _opportunity(
+    "RO-DAY-NIGHT-MOMENTUM",
+    "A daily return splits into an overnight half (ln(open/prev_close), markets shut) and a "
+    "session half (ln(close/open)), and these are different economic objects: the first is a "
+    "repricing against news with no trading, the second is the trading itself. The hypothesis is "
+    "that one half predicts the next better than chance, beyond what close-to-close momentum -- "
+    "already dormant in state/registry/failed_hypotheses.json -- captures.",
+    InformationFamily.MICROSTRUCTURE,
+    _ALL_UNDERLYINGS,
+    # The signal is intrinsically a ONE-day signal, and this repository has
+    # no one-day horizon: `configs/forecast.yaml` runs 3, 5, 7, 10 and 14
+    # days, and the forward ledger, products and gates all follow it. The
+    # shortest existing horizon is named here because that is where a
+    # one-day signal would have to land, but implementing it would mean
+    # adding a horizon to the production pipeline first -- a structural
+    # barrier that exists regardless of whether the statistics work.
+    ("3d",),
+    expected_information_gain=Estimate.declared(
+        0.3,
+        "Published as an effect in the equity literature (Barardehi, Bogousslavsky and Muravyev "
+        "2026 on day/night signals; Gao, Han, Li and Zhou 2018 on the intraday variant), and "
+        "every dormant hypothesis in this repository is built on close-to-close returns, so the "
+        "decomposition has not been tried here. Against that: the published intraday result is "
+        "at half-hour granularity, which is not what daily bars contain.",
+    ),
+    expected_economic_value=Estimate.declared(
+        0.15,
+        "A daily signal trades every bar, so the edge must clear a full round trip of turbo "
+        "spread plus financing each day. That is a demanding bar for a signal whose published "
+        "in-sample R-squared is about 0.02, and it is the reason the economic endpoint is "
+        "expressed as the break-even round-trip cost rather than as a return.",
+    ),
+    probability_of_resolving_uncertainty=Estimate.declared(
+        0.8,
+        "The highest in this catalog, and for a structural reason rather than an optimistic one: "
+        "the test needs only daily open/close bars, which exist back to 1990. It is the one "
+        "question here that does not wait on the forward ledger -- measured 2026-10-25, that "
+        "ledger holds 3,670 open entries and zero resolved outcomes.",
+    ),
+    implementation_cost=Estimate.declared(
+        1.0,
+        "No new data source. The decomposition is two logarithms per bar; the work is the test "
+        "procedure, the multiple-testing account and the look-ahead audit.",
+    ),
+    implementation_complexity=Estimate.declared(
+        0.2,
+        "Low, and deliberately kept so: the rule is parameter-free (trade the sign of the "
+        "predictor), because a fitted coefficient would need its own multiple-testing account.",
+    ),
+    estimated_sample_size=Estimate.declared(
+        8000.0,
+        "Single-bar, non-overlapping targets, so the effective sample equals the nominal one -- "
+        "the rare case in this repository needing no uniqueness correction. About 8,800 "
+        "out-of-sample days per cell on DAX and NDX, 5,400 on EURUSD, 6,000 on XAU.",
+    ),
+    leakage_risk=Estimate.declared(
+        0.7,
+        "High, and it is the dominant risk rather than a footnote. The overnight return and the "
+        "session that follows it share the opening price, so the signal cannot be read without "
+        "transacting at the price the target starts from; a stale open leaves part of the "
+        "overnight gap inside the session return as well. Measured 2026-10-25: removing the "
+        "shared price shrank the rule's mean by a factor of 5 on the DAX and 25 on the Euro "
+        "Stoxx 50, whose night/day correlation is +0.264. The harness therefore refuses to "
+        "report a candidate from a shared-price cell at all.",
+    ),
+)
+
+
 CATALOG: tuple[ResearchOpportunity, ...] = (
     _CBOE_VOL_STATE,
     _EUREX_POSITIONING,
@@ -940,6 +1008,7 @@ CATALOG: tuple[ResearchOpportunity, ...] = (
     _ISSUER_SPREAD_BEHAVIOUR,
     _FINANCING_BEHAVIOUR,
     _PRODUCT_SELECTION_EDGE,
+    _DAY_NIGHT_MOMENTUM,
 )
 
 

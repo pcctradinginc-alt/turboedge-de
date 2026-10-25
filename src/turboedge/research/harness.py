@@ -51,10 +51,10 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from turboedge.backtest.day_night_eval import evaluate_family
+from turboedge.backtest.day_night_eval import MIN_OOS_OBSERVATIONS, evaluate_family
 from turboedge.backtest.excursion_eval import build_excursion_dataset, evaluate_excursion
 from turboedge.backtest.purged_cv import PurgedWalkForwardSplit
 from turboedge.models.excursion import ExcursionTarget
@@ -114,6 +114,40 @@ class HarnessOutcome:
 
 
 @dataclass(frozen=True, slots=True)
+class HarnessReadiness:
+    """Whether a screen's own data are there, measured by the screen itself.
+
+    WHY THIS EXISTS. Until 2026-10-25 the loop derived a question's
+    readiness from two catalogue fields, and neither could ever say yes:
+
+    * `estimated_sample_size` is DECLARED in `meta/catalog.py` by design,
+      and nothing enriched it, so `build_candidates` turned it into
+      `effective_sample=None` for every question -- which the controller
+      correctly reads as "wait".
+    * `data_availability` is the reachability of a *family's* primary
+      source (`research_memory._FAMILY_PRIMARY_SOURCE`). For
+      RO-DAY-NIGHT-MOMENTUM that is `bnp_paribas`, because the question
+      sits in MICROSTRUCTURE -- but the screen reads underlying bars and
+      never touches a product feed. A family-level proxy cannot answer a
+      question-level requirement.
+
+    Together those made `START_EXPLORATORY` unreachable for every question
+    in the catalogue, so the loop could never run an experiment at all.
+    Run 40236515594 shows all fourteen screenable candidates reporting
+    `data_ready=False, effective_sample=None`.
+
+    A harness knows what its own screen needs, so it is asked. Every value
+    here is counted from the store; a harness that cannot count returns
+    `ready=False` with `effective_sample=None` and says why in `detail`,
+    which is still a measurement and never a guess.
+    """
+
+    ready: bool
+    effective_sample: float | None
+    detail: str
+
+
+@dataclass(frozen=True, slots=True)
 class ApprovedHarness:
     """One reviewed procedure the loop may run, pinned to a version.
 
@@ -129,6 +163,11 @@ class ApprovedHarness:
     description: str
     spec: Mapping[str, Any]
     run: Callable[[Store, str, datetime], HarnessOutcome]
+    #: Measures whether `run` has the data it needs. Optional only so that
+    #: a harness can be registered before its readiness check is written;
+    #: without one the loop falls back to the catalogue proxy, which in
+    #: practice means the question never becomes ready.
+    readiness: Callable[[Store], HarnessReadiness] | None = None
 
 
 #: Walk-forward parameters for the excursion screen. Fixed here rather than
@@ -226,6 +265,66 @@ def _run_excursion(store: Store, hypothesis_id: str, now: datetime) -> HarnessOu
 #: Every harness the loop may execute. A frozen tuple of direct function
 #: references -- extending it is a reviewed source change, which is the
 #: only way this loop gains a capability.
+def _excursion_readiness(store: Store) -> HarnessReadiness:
+    """Count matured, labelled ledger entries the excursion screen can use.
+
+    Builds the dataset and reports its own effective sample, which already
+    accounts for overlapping label windows. `ValueError` from
+    `build_excursion_dataset` means nothing has matured yet -- a
+    measurement of zero, not an error to propagate.
+    """
+    try:
+        dataset = build_excursion_dataset(store, underlying=None, as_of=datetime.now(UTC))
+    except ValueError as exc:
+        return HarnessReadiness(
+            ready=False,
+            effective_sample=0.0,
+            detail=f"no matured labelled ledger entries yet: {exc}",
+        )
+    effective = float(dataset.effective_sample)
+    return HarnessReadiness(
+        ready=effective > 0.0,
+        effective_sample=effective,
+        detail=(
+            f"{len(dataset.y_mae)} labelled row(s) over {dataset.n_distinct_dates} "
+            f"distinct date(s), effective sample {effective:.1f}"
+        ),
+    )
+
+
+def _day_night_readiness(store: Store) -> HarnessReadiness:
+    """Count usable daily bars per pinned underlying.
+
+    The screen needs nothing but bars, so readiness is a bar count and
+    not a label count. The effective sample equals the nominal one here --
+    single-bar, non-overlapping targets -- which is why no uniqueness
+    discount is applied, and the reason is in
+    `backtest/day_night_eval.evaluate_cell`.
+
+    Ready once at least one underlying has enough history for the
+    walk-forward's training block plus the minimum out-of-sample window
+    the screen will report on.
+    """
+    needed = int(_DAY_NIGHT_SPEC["min_train"]) + MIN_OOS_OBSERVATIONS
+    counts = {
+        uid: len(store.latest_underlying_bars(uid, int(_DAY_NIGHT_SPEC["bars"])))
+        for uid in tuple(_DAY_NIGHT_SPEC["underlyings"])
+    }
+    best = max(counts.values()) if counts else 0
+    # One observation per bar beyond the training block, for the best-covered
+    # underlying -- the one that decides whether the screen can report at all.
+    effective = float(max(0, best - int(_DAY_NIGHT_SPEC["min_train"])))
+    return HarnessReadiness(
+        ready=best >= needed,
+        effective_sample=effective,
+        detail=(
+            f"bars per underlying {counts}; needs {needed} on at least one "
+            f"({int(_DAY_NIGHT_SPEC['min_train'])} train + {MIN_OOS_OBSERVATIONS} "
+            "out-of-sample)"
+        ),
+    )
+
+
 def _run_day_night(store: Store, hypothesis_id: str, now: datetime) -> HarnessOutcome:
     """Screen the night/day return decomposition against a shift null.
 
@@ -308,6 +407,7 @@ APPROVED_HARNESSES: tuple[ApprovedHarness, ...] = (
         ),
         spec=_EXCURSION_SPEC,
         run=_run_excursion,
+        readiness=_excursion_readiness,
     ),
     ApprovedHarness(
         name="day_night",
@@ -324,6 +424,7 @@ APPROVED_HARNESSES: tuple[ApprovedHarness, ...] = (
         ),
         spec=_DAY_NIGHT_SPEC,
         run=_run_day_night,
+        readiness=_day_night_readiness,
     ),
 )
 
@@ -342,6 +443,24 @@ def resolve_harness(hypothesis_id: str) -> ApprovedHarness | None:
     return None
 
 
+def measure_readiness(store: Store) -> dict[str, HarnessReadiness]:
+    """Readiness for every question some harness can answer and measure.
+
+    Keyed by hypothesis id so the caller can look one up without knowing
+    which harness owns it. A harness is asked once even when it answers
+    several questions, since its data requirement is the same for all of
+    them.
+    """
+    out: dict[str, HarnessReadiness] = {}
+    for harness in APPROVED_HARNESSES:
+        if harness.readiness is None:
+            continue
+        measured = harness.readiness(store)
+        for hypothesis_id in harness.hypothesis_ids:
+            out[hypothesis_id] = measured
+    return out
+
+
 def harnessable_hypothesis_ids() -> frozenset[str]:
     """Every question some approved harness can answer."""
     return frozenset().union(*(h.hypothesis_ids for h in APPROVED_HARNESSES))
@@ -352,6 +471,8 @@ __all__ = [
     "SUPPORTING_VERDICTS",
     "ApprovedHarness",
     "HarnessOutcome",
+    "HarnessReadiness",
     "harnessable_hypothesis_ids",
+    "measure_readiness",
     "resolve_harness",
 ]

@@ -60,7 +60,7 @@ from turboedge.research.step import (
     screen_id_for,
 )
 from turboedge.storage.duckdb import Store
-from turboedge.storage.schemas import ResearchTrial, ScreenStatus, TrialStatus
+from turboedge.storage.schemas import ResearchTrial, ScreenStatus, TrialStatus, UnderlyingBar
 
 _NOW = datetime(2026, 10, 23, 12, 0, tzinfo=UTC)
 _QUARTER = "2026Q4"
@@ -1087,3 +1087,121 @@ def test_the_complete_cycle_on_controlled_data(
     #    do -- and that is reported rather than re-screened.
     assert third.kind is ActionKind.NO_ACTION
     assert store.list_alpha_sources() == []
+
+
+# ---------------------------------------------------------------------
+# Harness-measured readiness. Until 2026-10-25 the loop could never start
+# a screen at all, for any question, because readiness came from
+# catalogue fields that are DECLARED by design -- see
+# `harness.HarnessReadiness` for the runs that showed it.
+# ---------------------------------------------------------------------
+
+
+def test_every_registered_harness_can_measure_its_own_readiness() -> None:
+    """A harness without one leaves its question permanently unready.
+
+    Optional in the dataclass so a harness can be registered before its
+    check is written; this test is what stops that staying the case.
+    """
+    for harness in harness_module.APPROVED_HARNESSES:
+        assert harness.readiness is not None, harness.name
+
+
+def test_an_empty_store_is_measured_as_not_ready_rather_than_unknown(store: Store) -> None:
+    """Zero is a measurement. `None` would be read as "wait" either way,
+    but it would hide whether the count was taken."""
+    readiness = harness_module.measure_readiness(store)
+
+    assert set(readiness) == harness_module.harnessable_hypothesis_ids()
+    for hypothesis_id, measured in readiness.items():
+        assert not measured.ready, hypothesis_id
+        assert measured.detail
+
+
+def test_day_night_readiness_turns_true_once_enough_bars_exist(store: Store) -> None:
+    """The decisive case: this screen needs bars, not labels.
+
+    Its catalogue family is MICROSTRUCTURE, whose primary source is mapped
+    to `bnp_paribas` -- a product feed the screen never reads. The
+    family-level proxy therefore cannot answer for it, which is why the
+    harness counts for itself.
+    """
+    needed = int(harness_module._DAY_NIGHT_SPEC["min_train"]) + 260
+    base = datetime(2015, 1, 1, 17, 30, tzinfo=UTC)
+    bars = [
+        UnderlyingBar(
+            observation_time=base + timedelta(days=i),
+            available_at=base + timedelta(days=i),
+            retrieved_at=base + timedelta(days=i),
+            source="test",
+            schema_version="1",
+            parser_version="1",
+            quality_score=1.0,
+            underlying_id="DAX",
+            ts=base + timedelta(days=i),
+            interval="1d",
+            open=100.0 + i * 0.01,
+            high=101.0 + i * 0.01,
+            low=99.0 + i * 0.01,
+            close=100.5 + i * 0.01,
+        )
+        for i in range(needed)
+    ]
+    store.append_underlying_bars(bars)
+
+    measured = harness_module.measure_readiness(store)["RO-DAY-NIGHT-MOMENTUM"]
+    assert measured.ready
+    assert measured.effective_sample is not None
+    assert measured.effective_sample > 0.0
+    assert "DAX" in measured.detail
+
+
+def test_harness_readiness_overrides_the_catalogue_proxy() -> None:
+    """`build_candidates` must prefer the counted value over the declared one."""
+    from turboedge.meta.catalog import catalog_by_id
+    from turboedge.meta.research_queue import StoredOpportunity
+    from turboedge.research.harness import HarnessReadiness
+    from turboedge.research.step import build_candidates
+
+    opportunity = catalog_by_id()["RO-DAY-NIGHT-MOMENTUM"]
+    stored = [StoredOpportunity(opportunity=opportunity, priority=None, scored_at=None)]
+
+    # Without a measurement the catalogue proxy stands, and it never says yes.
+    before = build_candidates(stored, screened_hypothesis_ids=frozenset())[0]
+    assert not before.data_ready
+    assert before.effective_sample is None
+
+    after = build_candidates(
+        stored,
+        screened_hypothesis_ids=frozenset(),
+        harness_readiness={
+            "RO-DAY-NIGHT-MOMENTUM": HarnessReadiness(
+                ready=True, effective_sample=8000.0, detail="counted"
+            )
+        },
+    )[0]
+    assert after.data_ready
+    assert after.effective_sample == 8000.0
+
+
+def test_a_question_without_harness_readiness_keeps_the_catalogue_proxy() -> None:
+    """The override is additive; it must not change unmeasured questions."""
+    from turboedge.meta.catalog import catalog_by_id
+    from turboedge.meta.research_queue import StoredOpportunity
+    from turboedge.research.harness import HarnessReadiness
+    from turboedge.research.step import build_candidates
+
+    other = catalog_by_id()["RO-CBOE-VOL-STATE"]
+    stored = [StoredOpportunity(opportunity=other, priority=None, scored_at=None)]
+    candidate = build_candidates(
+        stored,
+        screened_hypothesis_ids=frozenset(),
+        harness_readiness={
+            "RO-DAY-NIGHT-MOMENTUM": HarnessReadiness(
+                ready=True, effective_sample=8000.0, detail="counted"
+            )
+        },
+    )[0]
+
+    assert not candidate.data_ready
+    assert candidate.effective_sample is None

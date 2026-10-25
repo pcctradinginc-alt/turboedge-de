@@ -284,63 +284,124 @@ def decide_next_action(
             evidence={**base_evidence, "unscreened_without_harness": len(unscreened)},
         )
 
-    # 4./5. Best-ranked question first; an unmeasured priority sorts last
-    #       rather than being treated as zero-and-therefore-comparable.
+    # 4./5. In rank order, screen the best question whose data are ready.
+    #       An unmeasured priority sorts last rather than being treated as
+    #       zero-and-therefore-comparable.
+    #
+    #       WHY RANK ORDER AND NOT JUST THE TOP ONE. Until 2026-10-25 this
+    #       took `ranked[0]` and returned AWAIT_DATA if its data were not
+    #       ready, without ever looking further down. One data-blocked
+    #       question therefore starved the whole loop for as long as it
+    #       stayed blocked. Observed in run 40235422444: the top-ranked
+    #       RO-MFE-PREDICTION waits on matured forward labels, of which
+    #       there were none (3,670 open ledger entries, zero resolved), so
+    #       the loop reported AWAIT_DATA and stopped -- while
+    #       RO-DAY-NIGHT-MOMENTUM sat at rank 4, needing only daily bars,
+    #       with an approved harness and its data ready. Indefinitely idle
+    #       with a runnable experiment in hand is the failure the research
+    #       brief names: a standing AWAIT_DATA when suitable data exist is
+    #       a technical fault, not patience.
+    #
+    #       The ranking is a priority, not a precondition. Skipping past a
+    #       blocked question does not loosen anything: the quarterly
+    #       exploratory cap still bounds how many screens run at all, the
+    #       permitted-family and shelving checks above are unchanged, and
+    #       a question that is skipped is skipped for a stated, recorded
+    #       reason rather than silently.
     ranked = sorted(
         pending,
         key=lambda c: (c.priority is None, -(c.priority or 0.0), c.hypothesis_id),
     )
-    best = ranked[0]
 
-    if not best.data_ready or best.effective_sample is None:
-        return ResearchAction(
-            kind=ActionKind.AWAIT_DATA,
-            hypothesis_id=best.hypothesis_id,
-            family=best.family,
-            reason=(
-                f"{best.hypothesis_id} ranks highest but its data are not ready "
-                f"(data_ready={best.data_ready}, effective_sample="
-                f"{best.effective_sample}). Waiting is the correct step; shortening "
-                "the window to get a result sooner is not available to this loop."
-            ),
-            evidence={**base_evidence, "required_sample": best.required_sample},
-        )
+    skipped: list[dict[str, Any]] = []
+    for candidate in ranked:
+        if not candidate.data_ready or candidate.effective_sample is None:
+            skipped.append(
+                {
+                    "hypothesis_id": candidate.hypothesis_id,
+                    "reason": "data_not_ready",
+                    "data_ready": candidate.data_ready,
+                    "effective_sample": candidate.effective_sample,
+                    "required_sample": candidate.required_sample,
+                }
+            )
+            continue
+        if candidate.effective_sample < candidate.required_sample:
+            skipped.append(
+                {
+                    "hypothesis_id": candidate.hypothesis_id,
+                    "reason": "effective_sample_below_requirement",
+                    "data_ready": candidate.data_ready,
+                    "effective_sample": candidate.effective_sample,
+                    "required_sample": candidate.required_sample,
+                }
+            )
+            continue
 
-    if best.effective_sample < best.required_sample:
         return ResearchAction(
-            kind=ActionKind.AWAIT_DATA,
-            hypothesis_id=best.hypothesis_id,
-            family=best.family,
+            kind=ActionKind.START_EXPLORATORY,
+            hypothesis_id=candidate.hypothesis_id,
+            family=candidate.family,
             reason=(
-                f"{best.hypothesis_id} has an effective sample of "
-                f"{best.effective_sample:.1f} against the {best.required_sample:.0f} "
-                "its screen requires. Effective, not nominal: rows from one day are "
-                "one observation repeated."
+                f"{candidate.hypothesis_id} is the highest-ranked admissible "
+                "unscreened candidate whose data are ready, its family is "
+                f"permitted, its effective sample ({candidate.effective_sample:.1f}) "
+                f"meets the required {candidate.required_sample:.0f}, and the quarter "
+                f"has {EXPLORATORY_SCREENS_PER_QUARTER - exploratory_screens_this_quarter} "
+                "screens left. DEVELOPMENT partition only."
+                + (
+                    f" {len(skipped)} higher-ranked question(s) were passed over for "
+                    "want of data; they are named in the evidence and stay in the "
+                    "queue."
+                    if skipped
+                    else ""
+                )
             ),
             evidence={
                 **base_evidence,
-                "effective_sample": best.effective_sample,
-                "required_sample": best.required_sample,
+                "priority": candidate.priority,
+                "effective_sample": candidate.effective_sample,
+                "required_sample": candidate.required_sample,
+                "skipped_for_data": skipped,
             },
         )
 
+    # Nothing in the queue has its data. Report against the highest-ranked
+    # question, because that is the one whose data would unblock the most
+    # valuable next step, and name every other as well.
+    best = ranked[0]
+    blocking = skipped[0]
+    if blocking["reason"] == "effective_sample_below_requirement":
+        shortfall = (
+            f"{best.hypothesis_id} has an effective sample of "
+            f"{best.effective_sample:.1f} against the {best.required_sample:.0f} its "
+            "screen requires. Effective, not nominal: rows from one day are one "
+            "observation repeated."
+        )
+    else:
+        shortfall = (
+            f"{best.hypothesis_id} ranks highest and its data are not ready "
+            f"(data_ready={best.data_ready}, effective_sample={best.effective_sample})."
+        )
+    others = (
+        f" The other {len(skipped) - 1} screenable candidate(s) are blocked too."
+        if len(skipped) > 1
+        else ""
+    )
     return ResearchAction(
-        kind=ActionKind.START_EXPLORATORY,
+        kind=ActionKind.AWAIT_DATA,
         hypothesis_id=best.hypothesis_id,
         family=best.family,
         reason=(
-            f"{best.hypothesis_id} ranks highest among admissible unscreened "
-            f"candidates, its family is permitted, its effective sample "
-            f"({best.effective_sample:.1f}) meets the required "
-            f"{best.required_sample:.0f}, and the quarter has "
-            f"{EXPLORATORY_SCREENS_PER_QUARTER - exploratory_screens_this_quarter} "
-            "screens left. DEVELOPMENT partition only."
+            shortfall + others + " Waiting is the correct step; shortening the window "
+            "to get a result sooner is not available to this loop."
         ),
         evidence={
             **base_evidence,
-            "priority": best.priority,
-            "effective_sample": best.effective_sample,
             "required_sample": best.required_sample,
+            "effective_sample": best.effective_sample,
+            "blocking_reason": blocking["reason"],
+            "skipped_for_data": skipped,
         },
     )
 

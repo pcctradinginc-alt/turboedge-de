@@ -1784,11 +1784,17 @@ def research_data_audit_cmd(
     console.print(f"QUOTE AGE AT DECISION  {freshness.summary()}", markup=False, highlight=False)
     for label, report in (("verified-ratio only", strict), ("all ratios", permissive)):
         assoc = report.association
-        verdict = (
-            f"spearman {assoc.spearman:+.4f}"
-            if assoc.interpretable
-            else f"n={assoc.n} too small to read"
-        )
+        if assoc.interpretable:
+            verdict = f"spearman {assoc.spearman:+.4f}"
+        elif (flat := assoc.degenerate_side) is not None:
+            # A constant input is a data defect, not a null result.
+            verdict = (
+                f"n={assoc.n} but {flat} has no variation "
+                f"(distinct ages {assoc.distinct_ages}, cheapness {assoc.distinct_advantages}) "
+                "-- not answerable from this archive"
+            )
+        else:
+            verdict = f"n={assoc.n} too small to read"
         console.print(
             f"STALENESS vs CHEAPNESS ({label})  {report.groups} group(s), {verdict}",
             markup=False,
@@ -1832,6 +1838,9 @@ def research_data_audit_cmd(
                 "n": report.association.n,
                 "spearman": report.association.spearman,
                 "interpretable": report.association.interpretable,
+                "distinct_ages": report.association.distinct_ages,
+                "distinct_advantages": report.association.distinct_advantages,
+                "degenerate_side": report.association.degenerate_side,
                 "dropped": dict(report.dropped),
             }
             for key, report in (("verified_ratio_only", strict), ("all_ratios", permissive))

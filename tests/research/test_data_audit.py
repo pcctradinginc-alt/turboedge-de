@@ -490,6 +490,30 @@ class TestStalenessAdvantage:
         with pytest.raises(ValueError, match="equal length"):
             staleness_advantage(quote_ages=[1.0, 2.0], advantages=[1.0])
 
+    def test_a_constant_input_is_not_an_interpretable_null(self) -> None:
+        """A nan on 100 points is a question about the data, not a result.
+
+        Without this, an archive that records one quote timestamp per batch
+        would report "no association found" when what it actually has is no
+        variation to find one in.
+        """
+        assoc = staleness_advantage(quote_ages=[7.0] * 100, advantages=list(range(100)))
+        assert not assoc.interpretable
+        assert assoc.degenerate_side == "quote_age"
+        assert assoc.distinct_ages == 1
+        assert assoc.distinct_advantages == 100
+
+    def test_the_degenerate_side_is_named(self) -> None:
+        flat_cheapness = staleness_advantage(quote_ages=list(range(50)), advantages=[0.0] * 50)
+        assert flat_cheapness.degenerate_side == "cheapness"
+        both = staleness_advantage(quote_ages=[1.0] * 50, advantages=[0.0] * 50)
+        assert both.degenerate_side == "both"
+        neither = staleness_advantage(
+            quote_ages=list(range(50)), advantages=[float(x % 7) for x in range(50)]
+        )
+        assert neither.degenerate_side is None
+        assert neither.interpretable
+
 
 class TestSnapshotStalenessAdvantage:
     """Phase 2's core question, on comparable products from different issuers."""

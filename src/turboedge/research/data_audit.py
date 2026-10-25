@@ -492,19 +492,43 @@ class StalenessAssociation:
     advantage. Positive means the cheaper-looking quotes are the older
     ones, which is the adverse-selection pattern. It is an association on
     observational data and names no cause.
+
+    ``distinct_ages`` and ``distinct_advantages`` exist because a ``nan``
+    correlation on a large sample is not a result, it is a question: it
+    means one of the two inputs has no variation at all, and which one
+    decides what is actually wrong with the data. Reporting the
+    correlation without them makes a degenerate input look like "no
+    association found".
     """
 
     n: int
     spearman: float
+    distinct_ages: int = 0
+    distinct_advantages: int = 0
 
     @property
     def interpretable(self) -> bool:
-        """Whether the sample is large enough to be worth reading.
+        """Whether this is worth reading at all.
 
-        30 is a convention, not a test; below it the rank correlation of a
-        handful of points is noise and should not be quoted at all.
+        Needs a sample (30 is a convention, not a test; below it the rank
+        correlation of a handful of points is noise) *and* variation on
+        both sides. Without the second condition a constant input reads as
+        an interpretable null.
         """
-        return self.n >= 30
+        return self.n >= 30 and self.distinct_ages > 1 and self.distinct_advantages > 1
+
+    @property
+    def degenerate_side(self) -> str | None:
+        """Which input has no variation, when one of them has none."""
+        flat_age = self.distinct_ages <= 1
+        flat_adv = self.distinct_advantages <= 1
+        if flat_age and flat_adv:
+            return "both"
+        if flat_age:
+            return "quote_age"
+        if flat_adv:
+            return "cheapness"
+        return None
 
 
 def staleness_advantage(
@@ -526,13 +550,28 @@ def staleness_advantage(
             f"{len(quote_ages)} and {len(advantages)}"
         )
     n = len(quote_ages)
+    ages = np.asarray(quote_ages, dtype=np.float64)
+    advs = np.asarray(advantages, dtype=np.float64)
+    # Rounded before counting: float noise far below any meaningful
+    # difference would otherwise report variation that is not there.
+    n_ages = int(np.unique(np.round(ages, 6)).size) if n else 0
+    n_advs = int(np.unique(np.round(advs, 12)).size) if n else 0
     if n < 2:
-        return StalenessAssociation(n=n, spearman=float("nan"))
-    a = _ranks(np.asarray(quote_ages, dtype=np.float64))
-    b = _ranks(np.asarray(advantages, dtype=np.float64))
+        return StalenessAssociation(
+            n=n, spearman=float("nan"), distinct_ages=n_ages, distinct_advantages=n_advs
+        )
+    a = _ranks(ages)
+    b = _ranks(advs)
     if np.std(a) == 0.0 or np.std(b) == 0.0:
-        return StalenessAssociation(n=n, spearman=float("nan"))
-    return StalenessAssociation(n=n, spearman=float(np.corrcoef(a, b)[0, 1]))
+        return StalenessAssociation(
+            n=n, spearman=float("nan"), distinct_ages=n_ages, distinct_advantages=n_advs
+        )
+    return StalenessAssociation(
+        n=n,
+        spearman=float(np.corrcoef(a, b)[0, 1]),
+        distinct_ages=n_ages,
+        distinct_advantages=n_advs,
+    )
 
 
 def _ranks(values: np.ndarray) -> np.ndarray:

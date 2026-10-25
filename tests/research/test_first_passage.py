@@ -295,12 +295,17 @@ def test_nothing_in_production_imports_this_module() -> None:
     # imports it, that is a model change and must be a deliberate one.
     import pathlib
 
+    # Scoped to *production* modules, which is the whole intent: another
+    # research module may reuse the first-passage law, and should, because
+    # the alternative is a second implementation of it (CLAUDE.md rule 9's
+    # sibling -- one formula, one place). `research/ko_reference.py` does
+    # exactly that.
     src = pathlib.Path("src/turboedge")
     importers = [
         path.relative_to(src).as_posix()
         for path in src.rglob("*.py")
-        if "research.first_passage" in path.read_text(encoding="utf-8")
-        and path.name != "first_passage.py"
+        if "research" not in path.relative_to(src).parts
+        and "research.first_passage" in path.read_text(encoding="utf-8")
     ]
 
-    assert importers == [], f"first_passage is imported by {importers}"
+    assert importers == [], f"first_passage is imported by production module(s) {importers}"

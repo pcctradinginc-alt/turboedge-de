@@ -630,15 +630,20 @@ class SnapshotStalenessReport:
     dropped: Mapping[str, int]
 
 
-def _observation_window(observed: datetime, window_seconds: int) -> datetime:
-    """Floor an observation time to its window, in UTC.
+def _observation_window(retrieved: datetime, window_seconds: int) -> datetime:
+    """Floor a retrieval time to its window, in UTC.
 
     Deliberately not ``product_pairs._window_start``: that one prefers the
-    quote timestamp, which is the dimension under measurement here.
+    quote timestamp, which is the dimension under measurement here -- it
+    would give every quote age its own window, so no stale quote could ever
+    be compared against a fresh one. Grouping on the retrieval time asks
+    the right question: of the products this process saw at the same
+    moment, were the cheaper-looking ones the ones already more out of
+    date?
     """
     if window_seconds < 1:
         raise ValueError(f"window_seconds must be >= 1, got {window_seconds!r}")
-    epoch = int(observed.astimezone(UTC).timestamp())
+    epoch = int(retrieved.astimezone(UTC).timestamp())
     return datetime.fromtimestamp(epoch - epoch % window_seconds, tz=UTC)
 
 
@@ -687,9 +692,22 @@ def snapshot_staleness_advantage(
     the comparison is about that issuer's own curve, not about choosing
     between issuers.
 
-    Quote age is ``observation_time - quote_timestamp``, the age at the
-    moment the archive saw it. A snapshot without a quote timestamp is
-    dropped and counted rather than treated as fresh.
+    Quote age is ``retrieved_at - quote_timestamp``: how old the issuer's
+    own quote already was when this process fetched it. It is deliberately
+    **not** measured against ``observation_time``, and getting that wrong
+    once is worth recording -- the schema defines ``observation_time`` as
+    "when the underlying fact became true (e.g. a quote's own timestamp
+    when known)", and ``adapters/issuer_feeds.py`` duly sets it *equal to*
+    ``quote_timestamp``. The difference is therefore identically zero by
+    construction. Measured against the real archive it produced exactly one
+    distinct age across 4,752 comparable snapshots (run 40230382857), which
+    looked like a dead field in the data and was a subtraction of a field
+    from itself. ``retrieved_at`` is documented as "purely when this
+    process fetched it", which is the only one of the three that carries
+    the latency.
+
+    A snapshot without a quote timestamp is dropped and counted rather than
+    treated as fresh.
     """
     crit = criteria or ComparabilityCriteria()
     dropped: Counter[str] = Counter()
@@ -740,12 +758,12 @@ def snapshot_staleness_advantage(
             dropped["leverage_not_positive"] += 1
             continue
 
-        age = (snap.observation_time - snap.quote_timestamp).total_seconds()
+        age = (snap.retrieved_at - snap.quote_timestamp).total_seconds()
         cost = float(snap.ask) / float(snap.ratio)
         key = (
             snap.underlying_id,
             snap.direction,
-            _observation_window(snap.observation_time, crit.window_seconds),
+            _observation_window(snap.retrieved_at, crit.window_seconds),
             _relative_bucket(barrier_pct, crit.barrier_pct_tolerance),
         )
         groups.setdefault(key, []).append((cost, age, snap.issuer))

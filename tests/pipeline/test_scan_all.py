@@ -218,6 +218,7 @@ def _held_product(
     *,
     isin: str,
     underlying_id: str = "DAX",
+    issuer: str = "BankA",
 ) -> ProductSnapshot:
     """A snapshot whose only job is to let ``Store.underlying_for_isin``
     resolve a held position's ISIN to ``underlying_id``.
@@ -228,7 +229,7 @@ def _held_product(
     """
     return dax_product_factory(
         isin=isin,
-        issuer="BankA",
+        issuer=issuer,
         direction=Direction.LONG,
         financing_level=19000.0,
         ratio=0.01,
@@ -437,20 +438,21 @@ def test_a_held_position_lowers_a_later_candidate_in_the_same_cluster(
     ``ranking/sizing.py`` applies ``min(fraction, max_cluster_fraction -
     cluster_fraction_used)``. Measured that day: nothing ever supplied
     ``cluster_fraction_used``, so it defaulted to 0.0 and the cap reduced to
-    a 15% per-position cap -- looser than the 5% single-position cap, i.e.
+    a per-position cap looser than the single-position cap, i.e.
     structurally inert. With research capital configured, an open position
     whose ISIN resolves to an underlying in this cluster must consume that
     headroom, and the candidate scanned in the same cluster must be sized
     into what is left.
 
-    The holding is deliberately large enough (14% of capital) that the
-    cluster cap -- not ``max_position_fraction`` and not ``max_total_risk``
-    -- is the binding one, so the resulting size identifies *which* cap
-    bound. No limit value is modified to achieve that (GOVERNANCE.md §5.2
-    keeps both as UNRESOLVED); only the position's size is chosen.
+    The holding is deliberately sized (4% of capital, against the 5%
+    cluster cap decided on 2026-10-25) so that the cluster cap -- not
+    ``max_position_fraction``, not ``max_total_risk`` and not
+    ``max_issuer_fraction`` -- is the binding one, and the resulting size
+    therefore identifies *which* cap bound. No limit value is modified to
+    achieve that; only the position's size and its issuer are chosen.
     """
     sizing = cfg.ranking.sizing
-    held_fraction = 0.14
+    held_fraction = 0.04
     qty, entry_price = 1000.0, held_fraction * _CAPITAL_EUR / 1000.0
     assert held_fraction < sizing.max_cluster_fraction, (
         "the holding must leave the cluster cap with some headroom, so that "
@@ -460,6 +462,17 @@ def test_a_held_position_lowers_a_later_candidate_in_the_same_cluster(
     assert headroom < sizing.max_position_fraction, (
         "with this much held, the cluster cap -- not the per-position cap -- "
         "must be the binding one for the reduction to mean what it says"
+    )
+    assert headroom < sizing.max_total_risk - held_fraction, (
+        "the portfolio total must not be the binding cap either"
+    )
+    # The holding is from a different issuer than the candidates, so the
+    # issuer cap (5% since 2026-10-25) leaves them their full budget and
+    # cannot be what bound. Without this the issuer and cluster headroom
+    # would be identical and the reduction would not identify either.
+    held_issuer = "BankZ"
+    assert headroom < sizing.max_issuer_fraction, (
+        "the issuer cap must leave more headroom than the cluster cap here"
     )
 
     with_capital = _with_capital(cfg, _CAPITAL_EUR)
@@ -476,7 +489,7 @@ def test_a_held_position_lowers_a_later_candidate_in_the_same_cluster(
         label="cap_held",
         underlying_ids=["DAX", _PEER],
         products=products,
-        snapshots=[_held_product(dax_product_factory, isin="DE000HELD001")],
+        snapshots=[_held_product(dax_product_factory, isin="DE000HELD001", issuer=held_issuer)],
         positions=[_position("DE000HELD001", qty=qty, entry_price=entry_price)],
     )
 

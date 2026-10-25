@@ -42,7 +42,7 @@ from turboedge.positions.usage import portfolio_risk_verdict, portfolio_usage
 from turboedge.provenance import new_run_id
 from turboedge.ranking.cluster import OpenClusterPosition, cluster_id_for, compute_clusters
 from turboedge.storage.duckdb import Store
-from turboedge.storage.schemas import Category, UnderlyingBar
+from turboedge.storage.schemas import Category, LedgerEntryStatus, UnderlyingBar
 
 logger = structlog.get_logger(__name__)
 
@@ -183,6 +183,7 @@ def run_scan_all(
         usage,
         max_total_risk=cfg.ranking.sizing.max_total_risk,
         max_cluster_fraction=cfg.ranking.sizing.max_cluster_fraction,
+        max_issuer_fraction=cfg.ranking.sizing.max_issuer_fraction,
     )
     for breach in risk_verdict.breach_reasons:
         # Only actual cap breaches. The missing-input cases are already in
@@ -197,6 +198,12 @@ def run_scan_all(
     # a cluster, so no cluster list carries them. Held separately so that
     # recomputing the total from those lists below does not lose them.
     unattributed_fraction = usage.unattributed_fraction
+    # Capital per issuer, held plus already reserved. Unlike the cluster and
+    # the portfolio total this is not recomputed per underlying: an issuer's
+    # usage changes only when a proposal is admitted, which the per-cluster
+    # lists below already track, and projecting it onto candidates is the
+    # scan's job (`pipeline/scan.py`).
+    issuer_fraction_used: dict[str, float] = dict(usage.by_issuer)
 
     for uid in ids:
         u_start = time.perf_counter()
@@ -222,6 +229,7 @@ def run_scan_all(
                 cluster_open_positions=prior_positions,
                 portfolio_fraction_used=portfolio_fraction_used,
                 portfolio_risk_pass=risk_verdict.passed,
+                issuer_fraction_used=issuer_fraction_used,
             )
         except NoProductsError as exc:
             skipped[uid] = f"no_products:{exc}"
@@ -245,6 +253,20 @@ def run_scan_all(
             for positions in cluster_positions.values()
             for position in positions
         )
+        # And the issuer budgets this run has consumed, so the next
+        # underlying's candidates are sized net of them. Read back from the
+        # store rather than from `result`, which carries only a count -- and
+        # the persisted rows are the more faithful source anyway.
+        for entry, _label in store.list_ledger_entries(
+            run_id=run_id,
+            status=LedgerEntryStatus.OPEN,
+            category=Category.ACTIONABLE,
+            is_shadow=False,
+        ):
+            if entry.suggested_position_fraction:
+                issuer_fraction_used[entry.issuer] = (
+                    issuer_fraction_used.get(entry.issuer, 0.0) + entry.suggested_position_fraction
+                )
         counts_by_underlying[uid] = {}
         for cat, count in result.counts.items():
             counts[cat.value] += count

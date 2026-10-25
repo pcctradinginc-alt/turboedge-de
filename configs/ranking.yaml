@@ -30,11 +30,18 @@ utility:
   lambda_cluster: 0.3
 
 # ranking/sizing.py (Master Spec Section 32, fractional-Kelly position sizing).
+# Worst-case capital limits, operator decision of 2026-10-25
+# (GOVERNANCE.md 5.2). A turbo can lose its entire value at the barrier, so
+# a position's capital fraction IS the maximum it can lose. These are
+# independent of any modelled P(KO). `ranking/sizing.py::SizingConfig` holds
+# the same values as its defaults and is the single source;
+# tests/test_risk_limit_consistency.py enforces that the two agree.
 sizing:
   kelly_multiplier: 0.25
-  max_position_fraction: 0.05
-  max_cluster_fraction: 0.15
-  max_total_risk: 0.30
+  max_position_fraction: 0.02
+  max_cluster_fraction: 0.05
+  max_total_risk: 0.08
+  max_issuer_fraction: 0.05
   max_ko_loss_contribution: 0.02
   uncertainty_sensitivity: 2.0
   kelly_search_upper_bound: 4.0
@@ -46,7 +53,11 @@ cluster:
   linkage_method: "average"
   distance_threshold: 0.5
   max_active_positions_per_cluster: 3
-  max_capital_fraction_per_cluster: 0.25
+  # Reconciled with sizing.max_cluster_fraction on 2026-10-25: there must be
+  # no second, looser cluster check. This gates `cluster_risk_pass`
+  # (ranking/cluster.py) while sizing.max_cluster_fraction caps the
+  # suggested size; both now express the same 5% limit.
+  max_capital_fraction_per_cluster: 0.05
 
 # Pre-filter applied BEFORE the EV simulation (Contract v3 Abschnitt B
 # "Performance"): only candidates already passing every hard, simulation-free

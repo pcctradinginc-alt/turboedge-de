@@ -15,6 +15,7 @@ Caps applied on top of fractional Kelly (Master Spec §32):
 
 - ``max_position_fraction``
 - ``max_cluster_fraction`` (net of the cluster's already-used fraction)
+- ``max_issuer_fraction`` (net of that issuer's already-used fraction)
 - ``max_total_risk`` (net of the portfolio's already-used fraction)
 - ``max_KO_loss_contribution``: ``P_KO * position_fraction <= limit``
 
@@ -53,17 +54,49 @@ class SizingConfig(BaseModel):
 
     #: Fraction of full Kelly actually suggested (Master Spec §32: 0.25).
     kelly_multiplier: float = Field(default=0.25, gt=0.0, le=1.0)
-    #: Hard cap on any single position's capital fraction.
-    max_position_fraction: float = Field(default=0.05, gt=0.0)
+    # --- the four worst-case capital limits ------------------------------
+    # Operator decision of 2026-10-25, GOVERNANCE.md 5.2. These are
+    # WORST-CASE capital-loss limits: a turbo certificate can lose its
+    # entire value at the barrier, so a position's capital fraction *is* the
+    # maximum it can lose. They are deliberately independent of any
+    # modelled knock-out probability, and `max_ko_loss_contribution` below
+    # is not a substitute for them -- see its own comment.
+    #
+    # This class is the single source for all four. `configs/ranking.yaml`
+    # may restate them but must not diverge;
+    # `tests/test_risk_limit_consistency.py` enforces equality with
+    # GOVERNANCE.md and the config.
+    #
+    #: Hard cap on any single position's capital fraction. 2%: the most one
+    #: mistake can cost.
+    max_position_fraction: float = Field(default=0.02, gt=0.0)
     #: Hard cap on total capital fraction concurrently deployed in one
-    #: correlation cluster (``ranking/cluster.py``).
-    max_cluster_fraction: float = Field(default=0.15, gt=0.0)
+    #: correlation cluster (``ranking/cluster.py``). 5%: a correlated gap
+    #: through several barriers at once is one event, not several.
+    max_cluster_fraction: float = Field(default=0.05, gt=0.0)
     #: Hard cap on total capital fraction deployed across the whole
-    #: portfolio at once.
-    max_total_risk: float = Field(default=0.30, gt=0.0)
-    #: Hard cap on ``P_KO * position_fraction`` -- the position's expected
-    #: contribution to "capital lost to a knockout", as a fraction of total
-    #: capital.
+    #: portfolio at once, including proposals already emitted and not yet
+    #: resolved. 8%: the worst case if every held turbo knocked out.
+    max_total_risk: float = Field(default=0.08, gt=0.0)
+    #: Hard cap on total capital fraction in certificates of one issuer.
+    #: 5%: bounds issuer concentration and the shared liquidity/quote risk
+    #: that comes with it, which no amount of underlying diversification
+    #: addresses.
+    max_issuer_fraction: float = Field(default=0.05, gt=0.0)
+    #: Hard cap on ``P_KO * position_fraction`` -- the position's *expected*
+    #: contribution to capital lost to a knockout, which is NOT the same
+    #: quantity as the worst-case limits above and must never be read as a
+    #: replacement for them.
+    #:
+    #: At `max_position_fraction = 0.02` this can no longer bind: it caps
+    #: the fraction at `0.02 / p_ko`, which is below 0.02 only for
+    #: `p_ko > 1`. It is kept rather than removed because removing a cap
+    #: changes a schema for no safety gain, and because it would start
+    #: binding again if the position cap were ever raised.
+    #: `tests/ranking/test_sizing.py` pins that arithmetic so the inertness
+    #: is a recorded fact rather than a surprise. `simulation/paths.py`
+    #: documents `p_ko` as conservatively biased and not calibrated, which
+    #: is the second reason it cannot carry a worst-case limit.
     max_ko_loss_contribution: float = Field(default=0.02, gt=0.0)
     #: Sensitivity of the uncertainty haircut: suggested size is scaled by
     #: ``1 / (1 + uncertainty_sensitivity * uncertainty)``.
@@ -133,6 +166,7 @@ def suggested_position_fraction(
     uncertainty: float,
     *,
     cluster_fraction_used: float = 0.0,
+    issuer_fraction_used: float = 0.0,
     total_risk_used: float = 0.0,
     cfg: SizingConfig | None = None,
 ) -> float:
@@ -153,6 +187,8 @@ def suggested_position_fraction(
         raise ValueError(f"uncertainty must be >= 0, got {uncertainty!r}")
     if cluster_fraction_used < 0.0:
         raise ValueError(f"cluster_fraction_used must be >= 0, got {cluster_fraction_used!r}")
+    if issuer_fraction_used < 0.0:
+        raise ValueError(f"issuer_fraction_used must be >= 0, got {issuer_fraction_used!r}")
     if total_risk_used < 0.0:
         raise ValueError(f"total_risk_used must be >= 0, got {total_risk_used!r}")
 
@@ -167,6 +203,7 @@ def suggested_position_fraction(
 
     fraction = min(fraction, c.max_position_fraction)
     fraction = min(fraction, max(0.0, c.max_cluster_fraction - cluster_fraction_used))
+    fraction = min(fraction, max(0.0, c.max_issuer_fraction - issuer_fraction_used))
     fraction = min(fraction, max(0.0, c.max_total_risk - total_risk_used))
     if p_ko > 0.0:
         fraction = min(fraction, c.max_ko_loss_contribution / p_ko)

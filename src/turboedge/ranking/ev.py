@@ -285,6 +285,7 @@ def evaluate_product_horizons(
     positive_memory_factor: float = 1.0,
     cluster_fraction_used: float = 0.0,
     total_risk_used: float = 0.0,
+    issuer_fraction_used_by_isin: Mapping[str, float] | None = None,
     fair_value_fn: Callable[..., float] | None = None,
 ) -> list[ProductHorizonEvaluation]:
     """Evaluate every ``(isin, horizon)`` pair for one underlying's
@@ -336,6 +337,12 @@ def evaluate_product_horizons(
     c = cfg if cfg is not None else EvConfig()
     liquidity_map = liquidity_factor_by_isin or {}
     leverage_map = leverage_by_isin or {}
+    # Per ISIN rather than one scalar, because the issuer varies between
+    # candidates of the same underlying while the cluster and the portfolio
+    # total do not. GOVERNANCE.md 5.2 (2026-10-25) caps capital per issuer
+    # at 5%, and that has to bind on a new proposal and not only on what is
+    # already held.
+    issuer_used_map = issuer_fraction_used_by_isin or {}
 
     if not terms_by_isin:
         return []
@@ -451,6 +458,7 @@ def evaluate_product_horizons(
                 central_dist.p_ko,
                 forecast_by_horizon[h].uncertainty,
                 cluster_fraction_used=cluster_fraction_used,
+                issuer_fraction_used=issuer_used_map.get(isin, 0.0),
                 total_risk_used=total_risk_used,
                 cfg=c.sizing,
             )

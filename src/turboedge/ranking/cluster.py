@@ -68,7 +68,14 @@ class ClusterConfig(BaseModel):
     max_active_positions_per_cluster: int = Field(default=3, gt=0)
     #: Max total capital fraction allowed concurrently deployed in one
     #: correlation cluster (Master Spec §31 "max_capital_fraction").
-    max_capital_fraction_per_cluster: float = Field(default=0.25, gt=0.0)
+    #:
+    #: Reconciled with `sizing.SizingConfig.max_cluster_fraction` on
+    #: 2026-10-25 (operator decision, GOVERNANCE.md 5.2). It was 0.25 while
+    #: sizing capped at 0.15, which meant two cluster checks with different
+    #: limits and the looser one gating `cluster_risk_pass`. There must be
+    #: no alternative path with a weaker limit, so both now express the same
+    #: 5%. `tests/test_risk_limit_consistency.py` enforces the equality.
+    max_capital_fraction_per_cluster: float = Field(default=0.05, gt=0.0)
 
 
 @dataclass(frozen=True, slots=True)

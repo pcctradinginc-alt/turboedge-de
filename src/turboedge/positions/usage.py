@@ -53,7 +53,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from turboedge.storage.schemas import PositionStatus
+from turboedge.storage.schemas import Category, LedgerEntryStatus, PositionStatus
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle guard
     from turboedge.storage.duckdb import Store
@@ -74,7 +74,15 @@ class HeldFraction:
     position_id: str
     underlying_id: str | None
     cluster_id: str | None
+    issuer: str | None
     fraction: float
+    #: True for an ACTIONABLE proposal already emitted and not yet
+    #: resolved, as opposed to a position actually held. Both consume the
+    #: worst-case budgets -- GOVERNANCE.md 5.2 counts "bereits verbindlich
+    #: reservierte neue Positionen" in the 8% total -- but only one of them
+    #: is real, and a report that conflated them would misstate what is
+    #: held.
+    reserved: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +115,30 @@ class PortfolioUsage:
     def unattributed_fraction(self) -> float:
         """The part of the total that no cluster budget can be charged for."""
         return sum(item.fraction for item in self.held if item.cluster_id is None)
+
+    @property
+    def by_issuer(self) -> Mapping[str, float]:
+        """Capital fraction per issuer, attributed positions only.
+
+        The issuer limit (GOVERNANCE.md 5.2) bounds concentration and the
+        shared liquidity and quote risk that comes with one issuer, which no
+        amount of underlying diversification addresses.
+        """
+        sums: dict[str, float] = {}
+        for item in self.held:
+            if item.issuer is None:
+                continue
+            sums[item.issuer] = sums.get(item.issuer, 0.0) + item.fraction
+        return sums
+
+    @property
+    def unattributed_issuers(self) -> tuple[str, ...]:
+        return tuple(item.position_id for item in self.held if item.issuer is None)
+
+    @property
+    def reserved_fraction(self) -> float:
+        """Capital committed by proposals already emitted, not yet resolved."""
+        return sum(item.fraction for item in self.held if item.reserved)
 
     @property
     def enforceable(self) -> bool:
@@ -165,7 +197,11 @@ class PortfolioRiskVerdict:
         for one condition. The verdict still fails closed either way; this
         only decides what is worth a second sentence.
         """
-        return tuple(r for r in self.reasons if r.startswith(("total_risk_", "cluster_risk_")))
+        return tuple(
+            r
+            for r in self.reasons
+            if r.startswith(("total_risk_", "cluster_risk_", "issuer_risk_"))
+        )
 
 
 def portfolio_risk_verdict(
@@ -173,13 +209,18 @@ def portfolio_risk_verdict(
     *,
     max_total_risk: float,
     max_cluster_fraction: float,
+    max_issuer_fraction: float,
 ) -> PortfolioRiskVerdict:
     """Evaluate the portfolio-level caps against what is actually held.
 
-    The caps themselves are not re-defined here and no value is chosen:
-    both come from `SizingConfig`, which is the single place they live.
-    This only answers whether the portfolio as a whole is inside them, and
-    says why when it is not.
+    Three worst-case capital limits, from the operator decision of
+    2026-10-25 (GOVERNANCE.md 5.2): total exposure, per correlation
+    cluster, per issuer. The fourth -- per position -- is enforced in
+    `ranking/sizing.py` where a single position's size is decided.
+
+    No value is chosen here: all three come from `SizingConfig`, which is
+    the single place they live. This only answers whether the portfolio as
+    a whole is inside them, and says why when it is not.
     """
     if not usage.capital_known:
         return PortfolioRiskVerdict(
@@ -203,6 +244,21 @@ def portfolio_risk_verdict(
                 f"cluster_risk_exceeded: {cluster} holds {fraction:.4f} of capital "
                 f"against a cap of {max_cluster_fraction:.4f}"
             )
+    for issuer, fraction in sorted(usage.by_issuer.items()):
+        if fraction > max_issuer_fraction:
+            reasons.append(
+                f"issuer_risk_exceeded: {issuer} holds {fraction:.4f} of capital "
+                f"against a cap of {max_issuer_fraction:.4f}"
+            )
+    if usage.unattributed_issuers:
+        # The issuer cap genuinely cannot be checked for a position whose
+        # issuer is unknown, so the honest answer is that the check is
+        # incomplete -- which fail-closed means blocking.
+        reasons.append(
+            f"unattributed_issuer: {len(usage.unattributed_issuers)} open position(s) "
+            "could not be attributed to an issuer, so the per-issuer cap cannot be "
+            "evaluated for them"
+        )
     if usage.unattributed:
         # Capital that no cluster budget can be charged for. It counts in
         # the total, but the per-cluster cap genuinely cannot be checked for
@@ -228,6 +284,14 @@ def portfolio_usage(
     cluster. Passed in rather than computed here so this module does not
     import the clustering, which needs bars and an as-of time that only the
     scan has.
+
+    Also counts **reserved** exposure: ACTIONABLE proposals already written
+    to the forward ledger and not yet resolved. GOVERNANCE.md 5.2 puts
+    "bereits verbindlich reservierte neue Positionen" inside the 8% total,
+    and without this two scans on the same day could each propose up to the
+    full budget -- the system cannot know which proposal the operator acted
+    on, so a proposal that has gone out has to count until it is resolved.
+    WATCH candidates are not reserved: they are not a proposal to act on.
     """
     if research_capital_eur is None or research_capital_eur <= 0.0:
         # Deliberately not "assume zero deployed". The caller must see that
@@ -263,7 +327,35 @@ def portfolio_usage(
                 position_id=position.position_id,
                 underlying_id=underlying,
                 cluster_id=cluster,
+                issuer=store.issuer_for_isin(position.isin) if position.isin else None,
                 fraction=fraction,
+            )
+        )
+
+    # Proposals already emitted and not yet resolved. Their own
+    # `suggested_position_fraction` is already a capital fraction, so this
+    # needs no capital figure of its own -- but it is only reached when the
+    # capital base is known, because the two must be comparable.
+    for entry, _label in store.list_ledger_entries(
+        status=LedgerEntryStatus.OPEN, category=Category.ACTIONABLE, is_shadow=False
+    ):
+        reserved_fraction = entry.suggested_position_fraction
+        if reserved_fraction is None or reserved_fraction <= 0.0:
+            continue
+        total += reserved_fraction
+        reserved_cluster = (
+            cluster_for_underlying(entry.underlying) if cluster_for_underlying else None
+        )
+        if reserved_cluster is None:
+            unattributed.append(entry.entry_id)
+        held.append(
+            HeldFraction(
+                position_id=entry.entry_id,
+                underlying_id=entry.underlying,
+                cluster_id=reserved_cluster,
+                issuer=entry.issuer,
+                fraction=reserved_fraction,
+                reserved=True,
             )
         )
 
@@ -279,6 +371,8 @@ def portfolio_usage(
         open_positions=usage.open_positions,
         total_fraction=round(usage.total_fraction, 6),
         clusters=len(usage.by_cluster),
+        issuers=len(usage.by_issuer),
+        reserved_fraction=round(usage.reserved_fraction, 6),
         unattributed=len(usage.unattributed),
     )
     return usage

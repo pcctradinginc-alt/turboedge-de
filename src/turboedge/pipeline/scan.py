@@ -2039,6 +2039,7 @@ def _run_ev_pipeline(
     cluster_open_positions: Sequence[OpenClusterPosition],
     portfolio_fraction_used: float,
     portfolio_risk_pass: bool | None,
+    issuer_fraction_used: Mapping[str, float],
     warnings: list[str],
 ) -> EvPipelineResult:
     """Forecast -> paths -> EV -> gates -> ledger (+ shadow sample), the core
@@ -2221,6 +2222,14 @@ def _run_ev_pipeline(
         cluster_risk=baseline_cluster_risk,
         cluster_fraction_used=cluster_fraction_used,
         total_risk_used=portfolio_fraction_used,
+        # Per ISIN, because the issuer varies between candidates of the same
+        # underlying. `issuer_fraction_used` arrives keyed by issuer (held
+        # positions plus proposals already emitted, from
+        # `positions/usage.py`); this projects it onto the candidates.
+        issuer_fraction_used_by_isin={
+            isin: issuer_fraction_used.get(priced[isin].product.issuer, 0.0)
+            for isin in terms_by_isin
+        },
         liquidity_factor_by_isin={isin: priced[isin].liquidity for isin in terms_by_isin},
         leverage_by_isin={isin: priced[isin].leverage_value for isin in terms_by_isin},
         fair_value_fn=theoretical_fair_value,
@@ -2622,6 +2631,7 @@ def _run_scan_body(
     cluster_open_positions: Sequence[OpenClusterPosition],
     portfolio_fraction_used: float,
     portfolio_risk_pass: bool | None,
+    issuer_fraction_used: Mapping[str, float],
 ) -> ScanResult:
     warnings: list[str] = []
     underlying_id = options.underlying_id
@@ -2798,6 +2808,7 @@ def _run_scan_body(
             cluster_open_positions=cluster_open_positions,
             portfolio_fraction_used=portfolio_fraction_used,
             portfolio_risk_pass=portfolio_risk_pass,
+            issuer_fraction_used=issuer_fraction_used,
             warnings=warnings,
         )
         candidates = ev_result.candidates
@@ -2910,6 +2921,7 @@ def run_scan(
     cluster_open_positions: Sequence[OpenClusterPosition] = (),
     portfolio_fraction_used: float = 0.0,
     portfolio_risk_pass: bool | None = None,
+    issuer_fraction_used: Mapping[str, float] | None = None,
 ) -> ScanResult:
     """Run one full scan for ``options.underlying_id``.
 
@@ -2981,6 +2993,7 @@ def run_scan(
             cluster_open_positions=cluster_open_positions,
             portfolio_fraction_used=portfolio_fraction_used,
             portfolio_risk_pass=portfolio_risk_pass,
+            issuer_fraction_used=issuer_fraction_used or {},
         )
     except Exception as exc:
         store.finish_run(run_id, status="error", error=str(exc), finished_at=clock())

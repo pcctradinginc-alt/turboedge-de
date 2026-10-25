@@ -2020,6 +2020,23 @@ class Store:
         ).fetchall()
         return [_row_to_product_snapshot(row) for row in rows]
 
+    def issuer_for_isin(self, isin: str) -> str | None:
+        """The issuer this product was last seen under, or `None`.
+
+        Needed because `positions_manual` records only `wkn`/`isin` and the
+        issuer exposure limit (GOVERNANCE.md 5.2, 2026-10-25) is expressed
+        per issuer. A manually entered position whose ISIN this system never
+        scanned has no answer here, and `positions/usage.py` reports it as
+        unattributed rather than guessing an issuer for it.
+        """
+        row = self._conn.execute(
+            "SELECT issuer FROM product_snapshots "
+            "WHERE isin = ? AND issuer IS NOT NULL AND issuer <> '' "
+            "ORDER BY observation_time DESC LIMIT 1",
+            [isin],
+        ).fetchone()
+        return str(row[0]) if row is not None and row[0] is not None else None
+
     def underlying_for_isin(self, isin: str) -> str | None:
         """The underlying this product was last seen on, or `None`.
 

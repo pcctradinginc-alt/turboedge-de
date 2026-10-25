@@ -56,12 +56,18 @@ RANKING_YAML = Path("configs/ranking.yaml")
 SCAN = Path("src/turboedge/pipeline/scan.py")
 SCAN_ALL = Path("src/turboedge/pipeline/scan_all.py")
 
-#: The two caps where GOVERNANCE.md §5.2 and the config describe the *same*
-#: quantity with different numbers. Transcribed from the §5.2 table; the test
-#: below re-reads the document so a silent edit there is caught.
-CONFLICTING_CAPS: dict[str, float] = {
+#: The worst-case capital limits decided by the operator on 2026-10-25
+#: (GOVERNANCE.md §5.2). Transcribed here; the tests below re-read both the
+#: document and the config, so a silent edit to either is caught.
+#:
+#: Until that decision, two of these were a live divergence recorded as an
+#: expected failure with both numbers. It is decided now, so the suite
+#: asserts equality: a divergence fails the build instead of being filed.
+DECIDED_CAPS: dict[str, float] = {
     "max_position_fraction": 0.02,
     "max_cluster_fraction": 0.05,
+    "max_total_risk": 0.08,
+    "max_issuer_fraction": 0.05,
 }
 
 
@@ -75,8 +81,10 @@ def _governance_caps() -> dict[str, float]:
     """Parse the §5.2 table rather than trusting the copy above."""
     text = _governance_text()
     found: dict[str, float] = {}
-    for name in CONFLICTING_CAPS:
-        match = re.search(rf"^\|\s*`?{name}`?\s*\|\s*([0-9.]+)\s*%", text, re.M)
+    for name in DECIDED_CAPS:
+        # The §5.2 table marks the decided values in bold, e.g.
+        # "| `max_position_fraction` | **2 %** |".
+        match = re.search(rf"^\|\s*`?{name}`?\s*\|\s*\**\s*([0-9.]+)\s*%", text, re.M)
         if match:
             found[name] = float(match.group(1)) / 100.0
     return found
@@ -96,33 +104,33 @@ def _configured() -> dict[str, float]:
 def test_the_governance_document_still_states_the_caps_this_test_knows() -> None:
     # If the table is reworded or a row removed, the comparison below would
     # silently stop comparing anything.
-    assert _governance_caps() == CONFLICTING_CAPS
+    assert _governance_caps() == DECIDED_CAPS
 
 
-@pytest.mark.parametrize("name", sorted(CONFLICTING_CAPS))
-def test_the_known_divergence_between_governance_and_config_is_reported(
-    name: str,
-) -> None:
-    # Deliberately a single expected-failure surface rather than an
-    # assertion that the numbers match: they do not, and relaxing the
-    # expectation to the looser value would be exactly the "quietly adjust
-    # the threshold to the observation" move GOVERNANCE.md forbids. This
-    # records the open conflict with both numbers, so it cannot be forgotten
-    # and cannot be resolved by accident.
-    governance = CONFLICTING_CAPS[name]
+@pytest.mark.parametrize("name", sorted(DECIDED_CAPS))
+def test_governance_config_and_code_agree_on_every_decided_cap(name: str) -> None:
+    # One source of truth, enforced. `SizingConfig` holds the defaults,
+    # `configs/ranking.yaml` restates them, GOVERNANCE.md §5.2 records the
+    # decision; all three must say the same number.
+    #
+    # This replaced a standing expected failure that carried both numbers of
+    # an undecided conflict. The operator decided it on 2026-10-25, so a
+    # divergence is now a build failure rather than a filed note -- which is
+    # the whole difference between a decided limit and an open question.
+    expected = DECIDED_CAPS[name]
     configured = _configured().get(name)
-    if configured is None:
-        pytest.skip(f"{name} is not set in configs/ranking.yaml")
+    default = getattr(SizingConfig(), name)
+    governance = _governance_caps().get(name)
 
-    if configured != pytest.approx(governance):
-        pytest.xfail(
-            f"UNRESOLVED: {name} is {configured} in configs/ranking.yaml and "
-            f"{governance} in GOVERNANCE.md §5.2. Provenance (§5.2a): the stricter "
-            "figure predates the sizing code; the looser one arrived with it, in a "
-            "commit that edited GOVERNANCE.md but not §5.2. Reconciling needs a "
-            "dated human decision; the safety-relevant direction is covered by "
-            "test_no_configured_cap_is_looser_than_the_code_default."
-        )
+    assert default == pytest.approx(expected), (
+        f"the code default for {name} is {default}, not the decided {expected}"
+    )
+    assert configured == pytest.approx(expected), (
+        f"configs/ranking.yaml sets {name}={configured}, not the decided {expected}"
+    )
+    assert governance == pytest.approx(expected), (
+        f"GOVERNANCE.md §5.2 states {name}={governance}, not the decided {expected}"
+    )
 
 
 # -- 2. the direction that must never happen quietly ---------------------
@@ -170,16 +178,20 @@ def test_the_governance_document_names_the_total_exposure_cap_the_code_has() -> 
     )
 
 
-def test_the_governance_document_records_the_ko_cap_as_per_position() -> None:
-    # The implementation caps one position's expected KO loss contribution.
-    # Presenting 8% and 2% as the same number in conflict claims a
-    # comparability that does not exist.
+def test_the_governance_document_separates_the_ko_cap_from_the_worst_case_caps() -> None:
+    # The implementation caps one position's *expected* KO loss
+    # contribution. The four caps decided on 2026-10-25 are worst-case
+    # capital limits. Reading one as the other is the confusion the
+    # operator decision explicitly ruled out, so the document has to keep
+    # them apart.
     text = _governance_text()
 
-    assert "per position" in text
+    assert "is a different quantity" in text
+    assert "*expected*" in text
+    assert "worst-case" in text
     assert "not implemented" in text, (
         "GOVERNANCE.md should still record that the portfolio-wide KO loss "
-        "budget it describes has no implementation."
+        "budget it used to describe has no implementation."
     )
 
 
@@ -201,6 +213,51 @@ def test_the_portfolio_wide_ko_budget_is_still_unimplemented() -> None:
     assert "ko_loss_used" not in names, (
         "a portfolio-wide KO budget now exists in sizing.py -- update "
         "GOVERNANCE.md §5.2a, which records it as unimplemented."
+    )
+
+
+def test_the_cluster_gate_is_not_looser_than_the_sizing_cluster_cap() -> None:
+    # There must be no alternative path with a weaker cluster limit.
+    # `cluster.max_capital_fraction_per_cluster` gates `cluster_risk_pass`
+    # while `sizing.max_cluster_fraction` caps the suggested size; until
+    # 2026-10-25 they were 25 % and 15 %, so the gate was the looser of the
+    # two and a candidate could pass it on capital grounds that sizing would
+    # never have allowed.
+    gate = ClusterConfig().max_capital_fraction_per_cluster
+    sizing_cap = SizingConfig().max_cluster_fraction
+
+    assert gate <= sizing_cap + 1e-12, (
+        f"the cluster gate allows {gate} while sizing caps a cluster at "
+        f"{sizing_cap}; the looser one would be the effective limit"
+    )
+    raw = yaml.safe_load(RANKING_YAML.read_text(encoding="utf-8")) or {}
+    configured_gate = (raw.get("cluster") or {}).get("max_capital_fraction_per_cluster")
+    assert configured_gate == pytest.approx(gate)
+
+
+def test_margin_is_recorded_as_not_permitted() -> None:
+    # Part of the same operator decision: turbos only as fully paid long
+    # positions in the certificate, no portfolio-level leverage. There is no
+    # code path that could borrow -- this system never executes -- so the
+    # control is the recorded rule, and it must stay recorded.
+    text = _governance_text()
+
+    assert "Margin / credit" in text
+    assert "not permitted" in text
+
+
+def test_the_ko_cap_cannot_bind_at_the_decided_position_cap() -> None:
+    # `max_ko_loss_contribution` limits `p_ko * fraction`, i.e. it caps the
+    # fraction at `limit / p_ko`. With both at 0.02 that is below the
+    # position cap only for `p_ko > 1`, which cannot happen -- so it is
+    # inert, by arithmetic rather than by opinion. Recorded so that raising
+    # the position cap makes its return visible instead of silent.
+    cfg = SizingConfig()
+    worst_case_p_ko = 1.0
+
+    assert cfg.max_ko_loss_contribution / worst_case_p_ko >= cfg.max_position_fraction, (
+        "the KO cap now binds before the position cap. That is not wrong, but "
+        "GOVERNANCE.md §5.2 records it as inert -- update it."
     )
 
 

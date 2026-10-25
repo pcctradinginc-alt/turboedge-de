@@ -91,7 +91,16 @@ def test_suggested_position_fraction_decreases_with_uncertainty() -> None:
     rng = np.random.default_rng(11)
     wins = rng.random(50_000) < 0.9
     returns = np.where(wins, 2.0, -0.9)
-    cfg = SizingConfig(max_position_fraction=1.0, max_cluster_fraction=1.0, max_total_risk=1.0)
+    # Every cap lifted, the issuer one included: this test is about the
+    # uncertainty haircut, and a cap that binds in both branches would hide
+    # it. `max_issuer_fraction` defaults to 0.05 since 2026-10-25, so one
+    # position of one issuer is capped there even with nothing held.
+    cfg = SizingConfig(
+        max_position_fraction=1.0,
+        max_cluster_fraction=1.0,
+        max_issuer_fraction=1.0,
+        max_total_risk=1.0,
+    )
     low_unc = suggested_position_fraction(returns, p_ko=0.0, uncertainty=0.0, cfg=cfg)
     high_unc = suggested_position_fraction(returns, p_ko=0.0, uncertainty=0.5, cfg=cfg)
     assert high_unc < low_unc

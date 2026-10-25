@@ -354,7 +354,12 @@ def test_unknown_capital_fails_the_portfolio_check(store: Store) -> None:
     # deployed" -- and ACTIONABLE was reachable on that basis.
     usage = portfolio_usage(store, research_capital_eur=None)
 
-    verdict = portfolio_risk_verdict(usage, max_total_risk=0.30, max_cluster_fraction=0.15)
+    verdict = portfolio_risk_verdict(
+        usage,
+        max_total_risk=0.30,
+        max_cluster_fraction=0.15,
+        max_issuer_fraction=0.05,
+    )
 
     assert not verdict.passed
     assert any("research_capital_unknown" in r for r in verdict.reasons)
@@ -368,7 +373,12 @@ def test_an_empty_portfolio_with_known_capital_passes(store: Store) -> None:
     # to be a safeguard.
     usage = portfolio_usage(store, research_capital_eur=25_000.0)
 
-    verdict = portfolio_risk_verdict(usage, max_total_risk=0.30, max_cluster_fraction=0.15)
+    verdict = portfolio_risk_verdict(
+        usage,
+        max_total_risk=0.30,
+        max_cluster_fraction=0.15,
+        max_issuer_fraction=0.05,
+    )
 
     assert verdict.passed
     assert verdict.reasons == ()
@@ -382,7 +392,12 @@ def test_a_total_risk_breach_fails_and_is_a_breach_reason(store: Store) -> None:
     usage = portfolio_usage(
         store, research_capital_eur=25_000.0, cluster_for_underlying=_cluster_for
     )
-    verdict = portfolio_risk_verdict(usage, max_total_risk=0.30, max_cluster_fraction=0.50)
+    verdict = portfolio_risk_verdict(
+        usage,
+        max_total_risk=0.30,
+        max_cluster_fraction=0.50,
+        max_issuer_fraction=0.05,
+    )
 
     assert not verdict.passed
     assert any("total_risk_exceeded" in r for r in verdict.reasons)
@@ -396,7 +411,12 @@ def test_a_cluster_breach_fails(store: Store) -> None:
     usage = portfolio_usage(
         store, research_capital_eur=25_000.0, cluster_for_underlying=_cluster_for
     )
-    verdict = portfolio_risk_verdict(usage, max_total_risk=0.90, max_cluster_fraction=0.15)
+    verdict = portfolio_risk_verdict(
+        usage,
+        max_total_risk=0.90,
+        max_cluster_fraction=0.15,
+        max_issuer_fraction=0.05,
+    )
 
     assert not verdict.passed
     assert any("cluster_risk_exceeded" in r and "corr_1" in r for r in verdict.reasons)
@@ -411,7 +431,12 @@ def test_an_unattributable_holding_fails_the_check(store: Store) -> None:
     usage = portfolio_usage(
         store, research_capital_eur=25_000.0, cluster_for_underlying=_cluster_for
     )
-    verdict = portfolio_risk_verdict(usage, max_total_risk=0.30, max_cluster_fraction=0.15)
+    verdict = portfolio_risk_verdict(
+        usage,
+        max_total_risk=0.30,
+        max_cluster_fraction=0.15,
+        max_issuer_fraction=0.05,
+    )
 
     assert not verdict.passed
     assert any("unattributed_exposure" in r for r in verdict.reasons)
@@ -429,3 +454,211 @@ def test_the_verdict_never_invents_a_cap(store: Store) -> None:
     assert "0.0" not in source.replace("0.0000", ""), source
     for literal in ("0.05", "0.15", "0.02", "0.30"):
         assert literal not in source, f"{literal} is hard-coded in the verdict"
+
+
+# -- the four worst-case limits (operator decision 2026-10-25) -----------
+
+
+def _at_fraction(fraction: float) -> tuple[float, float]:
+    """(qty, entry_price) worth `fraction` of a 25,000 EUR capital base."""
+    return 1000.0, fraction * 25_000.0 / 1000.0
+
+
+def _held(store: Store, isin: str, *, fraction: float, underlying: str | None, issuer: str) -> None:
+    if underlying is not None:
+        store.append_product_snapshots(
+            [_snapshot(isin, underlying=underlying).model_copy(update={"issuer": issuer})]
+        )
+    qty, price = _at_fraction(fraction)
+    store.insert_position(_position(isin, qty=qty, price=price))
+
+
+def _verdict(store: Store):  # type: ignore[no-untyped-def]
+    usage = portfolio_usage(
+        store, research_capital_eur=25_000.0, cluster_for_underlying=_cluster_for
+    )
+    return usage, portfolio_risk_verdict(
+        usage,
+        max_total_risk=0.08,
+        max_cluster_fraction=0.05,
+        max_issuer_fraction=0.05,
+    )
+
+
+def test_a_portfolio_inside_every_limit_passes(store: Store) -> None:
+    _held(store, "DE000TEST001", fraction=0.02, underlying="DAX", issuer="BankA")
+    _held(store, "DE000TEST003", fraction=0.02, underlying="NDX", issuer="BankB")
+
+    usage, verdict = _verdict(store)
+
+    assert verdict.passed, verdict.reasons
+    assert usage.total_fraction == pytest.approx(0.04)
+
+
+def test_a_cluster_over_five_percent_fails(store: Store) -> None:
+    # DAX and MDAX share a correlation cluster, so two 3 % positions put 6 %
+    # in one cluster even though each is inside the 2 % position cap.
+    _held(store, "DE000TEST001", fraction=0.03, underlying="DAX", issuer="BankA")
+    _held(store, "DE000TEST002", fraction=0.03, underlying="MDAX", issuer="BankB")
+
+    _usage, verdict = _verdict(store)
+
+    assert not verdict.passed
+    assert any("cluster_risk_exceeded" in r and "corr_1" in r for r in verdict.reasons)
+
+
+def test_one_issuer_over_five_percent_fails(store: Store) -> None:
+    # Same issuer across two uncorrelated underlyings: no cluster is
+    # breached, the total is inside 8 %, and the issuer cap is what catches
+    # it. This is the limit that nothing enforced before 2026-10-25.
+    _held(store, "DE000TEST001", fraction=0.03, underlying="DAX", issuer="BankA")
+    _held(store, "DE000TEST003", fraction=0.03, underlying="NDX", issuer="BankA")
+
+    _usage, verdict = _verdict(store)
+
+    assert not verdict.passed
+    assert any("issuer_risk_exceeded" in r and "BankA" in r for r in verdict.reasons)
+    assert not any("cluster_risk_exceeded" in r for r in verdict.reasons)
+    assert not any("total_risk_exceeded" in r for r in verdict.reasons)
+
+
+def test_several_issuers_inside_their_own_limits_pass(store: Store) -> None:
+    for i, issuer in enumerate(("BankA", "BankB", "BankC")):
+        _held(
+            store,
+            f"DE000TEST00{i + 1}",
+            fraction=0.02,
+            underlying=("DAX", "MDAX", "NDX")[i],
+            issuer=issuer,
+        )
+
+    usage, verdict = _verdict(store)
+
+    assert sorted(usage.by_issuer) == ["BankA", "BankB", "BankC"]
+    # corr_1 holds DAX+MDAX = 4 %, inside the 5 % cluster cap.
+    assert verdict.passed, verdict.reasons
+
+
+def test_a_total_over_eight_percent_fails(store: Store) -> None:
+    # Spread across three clusters and three issuers so that neither of
+    # those caps is what catches it.
+    for i, (underlying, issuer) in enumerate(
+        (("DAX", "BankA"), ("NDX", "BankB"), ("SMI", "BankC"))
+    ):
+        _held(store, f"DE000TEST00{i + 1}", fraction=0.03, underlying=underlying, issuer=issuer)
+
+    _usage, verdict = _verdict(store)
+
+    assert not verdict.passed
+    assert any("total_risk_exceeded" in r for r in verdict.reasons)
+
+
+def test_an_unattributable_issuer_fails_the_check(store: Store) -> None:
+    # The issuer cap genuinely cannot be evaluated for a holding whose
+    # issuer is unknown, so fail-closed means blocking.
+    qty, price = _at_fraction(0.01)
+    store.insert_position(_position("DE000UNKNOWN", qty=qty, price=price))
+
+    _usage, verdict = _verdict(store)
+
+    assert not verdict.passed
+    assert any("unattributed_issuer" in r for r in verdict.reasons)
+
+
+# -- reserved exposure closes the cross-scan gap -------------------------
+
+
+def _actionable_entry(isin: str, *, issuer: str, fraction: float, underlying: str = "DAX"):  # type: ignore[no-untyped-def]
+    from turboedge.storage.schemas import (
+        Category,
+        LedgerEntry,
+        LedgerEntryStatus,
+    )
+
+    return LedgerEntry(
+        run_id="run-1",
+        candidate_id=f"cand-{isin}",
+        signal_id="sig-1",
+        signal_version_hash="h",
+        trial_id="TR-test",
+        prediction_time=_AS_OF,
+        underlying=underlying,
+        direction=Direction.LONG,
+        horizon_days=5,
+        regime_bucket=None,
+        cluster_id=None,
+        feature_hash="fh",
+        model_hash="mh",
+        config_hash="ch",
+        git_commit=None,
+        category=Category.ACTIONABLE,
+        selected_wkn=None,
+        selected_isin=isin,
+        issuer=issuer,
+        entry_bid=4.99,
+        entry_ask=5.0,
+        entry_spread=0.002,
+        entry_quote_timestamp=_AS_OF,
+        entry_underlying_timestamp=_AS_OF,
+        financing_level_entry=19_000.0,
+        barrier_entry=19_000.0,
+        ratio=0.01,
+        fx=1.0,
+        predicted_return=0.0,
+        p_profit=0.5,
+        p_ko=0.05,
+        expected_shortfall=-0.1,
+        lcb_ev=0.01,
+        uncertainty=0.02,
+        shrinkage_intensity=0.5,
+        is_shadow=False,
+        shadow_stratum=None,
+        suggested_position_fraction=fraction,
+        exit_due=_AS_OF.date(),
+        alternatives=[],
+        feature_snapshot={},
+        status=LedgerEntryStatus.OPEN,
+    )
+
+
+def test_a_proposal_already_emitted_consumes_the_budget(store: Store) -> None:
+    # GOVERNANCE.md §5.2 counts "bereits verbindlich reservierte neue
+    # Positionen" in the 8 % total. Without this, two scans on the same day
+    # could each propose up to the full budget -- the system cannot know
+    # which proposal the operator acted on.
+    store.append_ledger_entries([_actionable_entry("DE000PROP001", issuer="BankA", fraction=0.02)])
+
+    usage, verdict = _verdict(store)
+
+    assert usage.reserved_fraction == pytest.approx(0.02)
+    assert usage.total_fraction == pytest.approx(0.02)
+    assert verdict.passed, verdict.reasons
+
+
+def test_reserved_proposals_can_breach_the_issuer_limit(store: Store) -> None:
+    # Three 2 % proposals from one issuer are 6 %, past the 5 % issuer cap,
+    # even with nothing held at all.
+    store.append_ledger_entries(
+        [_actionable_entry(f"DE000PROP00{i}", issuer="BankA", fraction=0.02) for i in range(1, 4)]
+    )
+
+    _usage, verdict = _verdict(store)
+
+    assert not verdict.passed
+    assert any("issuer_risk_exceeded" in r for r in verdict.reasons)
+
+
+def test_a_watch_candidate_reserves_nothing(store: Store) -> None:
+    # WATCH is not a proposal to act on, so it consumes no budget. Counting
+    # it would starve the limits on candidates nobody was asked to buy.
+    from turboedge.storage.schemas import Category
+
+    entry = _actionable_entry("DE000WATCH01", issuer="BankA", fraction=0.02).model_copy(
+        update={"category": Category.WATCH}
+    )
+    store.append_ledger_entries([entry])
+
+    usage, _verdict_result = _verdict(store)
+
+    assert usage.reserved_fraction == 0.0
+    assert usage.total_fraction == 0.0

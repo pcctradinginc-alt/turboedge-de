@@ -47,6 +47,7 @@ from turboedge.learning.drift import PageHinkley, PageHinkleyConfig, record_drif
 from turboedge.learning.failed_hypotheses import default_path as failed_hypotheses_default_path
 from turboedge.learning.labeler import label_due_entries
 from turboedge.learning.ledger import ForwardLedger
+from turboedge.learning.ledger_health import ledger_health
 from turboedge.learning.posterior import StrategyPosterior
 from turboedge.learning.registry import ModelRegistry
 from turboedge.learning.trials import backfill_w9_trials
@@ -263,6 +264,12 @@ def label_cmd(ctx: typer.Context) -> None:
             return store.latest_underlying_bars(underlying_id, 2000)
 
         result = label_due_entries(store, now, price_bars_lookup=price_bars_lookup)
+        # Reported alongside the outcome, because every outcome count is
+        # zero both when nothing was due and when everything was due and
+        # none of it could be labelled. Without the population, `labeled=0`
+        # is unattributable -- and on 2026-10-23 that ambiguity sat next to
+        # a ledger holding 3,670 entries and no labels.
+        health = ledger_health(store, as_of=now)
 
     counts = {
         "labeled": result.labeled,
@@ -271,11 +278,38 @@ def label_cmd(ctx: typer.Context) -> None:
         "missing_data": result.missing_data,
         "shadow_positions_labeled": result.shadow_positions_labeled,
     }
-    if redact_console_enabled():
-        _print_counts("label", counts)
-    else:
-        _print_counts("label", counts)
-    _write_summary("label", counts)
+    _print_counts("label", counts)
+    console.print(f"  ledger: {health.summary()}", markup=False, highlight=False)
+    console.print(
+        f"  open {health.open_entries}  due {health.due_now}  "
+        f"overdue {health.overdue_unlabeled}  labelled {health.labeled_entries}  "
+        f"usable for research {health.usable_for_research}",
+        markup=False,
+        highlight=False,
+    )
+    if not health.healthy:
+        err_console.print(
+            f"[red]{health.overdue_unlabeled} forward-ledger entry(ies) are overdue and "
+            f"still unlabelled (oldest {health.oldest_overdue_days} days).[/red] That is "
+            "not a data-maturity question -- an entry past its exit_due should have been "
+            "labelled or marked expired_no_data by now."
+        )
+    _write_summary(
+        "label",
+        counts,
+        ledger_open=health.open_entries,
+        ledger_due_now=health.due_now,
+        ledger_overdue_unlabeled=health.overdue_unlabeled,
+        ledger_oldest_overdue_days=health.oldest_overdue_days,
+        ledger_next_due=health.next_due_date.isoformat() if health.next_due_date else None,
+        ledger_entries_created_today=health.entries_created_today,
+        ledger_newest_label_age_days=health.newest_label_age_days,
+        ledger_usable_for_research=health.usable_for_research,
+        ledger_ko_hits=health.ko_hits,
+        ledger_ambiguous=health.ambiguous_paths,
+        ledger_missing_exit_quote=health.missing_exit_quote,
+        ledger_waiting_for_data=health.waiting_for_data,
+    )
 
 
 # --------------------------------------------------------------------------

@@ -74,6 +74,7 @@ from turboedge.reporting.html import save_monthly_report, save_weekly_report, su
 from turboedge.reporting.monthly import build_monthly_report
 from turboedge.reporting.redaction import redact_console_enabled
 from turboedge.reporting.weekly import run_research_tournament
+from turboedge.research.product_pairs import ComparabilityCriteria, census
 from turboedge.research.step import run_research_step
 from turboedge.simulation.ko_calibration import build_ko_calibration_dataset
 from turboedge.storage.duckdb import Store
@@ -699,6 +700,103 @@ def research_excursion_cmd(
         verdict=result.verdict,
         effective_sample=result.effective_sample,
     )
+
+
+def research_product_pairs_cmd(
+    ctx: typer.Context,
+    underlying: str | None = typer.Option(
+        None, "--underlying", help="Restrict to one underlying (default: all)"
+    ),
+    since: str | None = typer.Option(
+        None, "--since", help="Only snapshots at or after this ISO timestamp"
+    ),
+    barrier_tolerance: float = typer.Option(
+        0.10, "--barrier-tolerance", help="Relative barrier-distance tolerance"
+    ),
+    leverage_tolerance: float = typer.Option(
+        0.15, "--leverage-tolerance", help="Relative leverage tolerance"
+    ),
+    window_seconds: int = typer.Option(
+        60, "--window-seconds", help="Quote window within which products count as simultaneous"
+    ),
+    json_out: str = typer.Option(None, "--json-out", help="Write the full census to PATH"),
+) -> None:
+    """Count comparable cross-issuer product pairs in the stored archive.
+
+    The precondition for pre-registering the product-selection cost question
+    (`docs/research_plan_product_selection_cost_edge.md` §4): before asking
+    whether choosing between comparable products of different issuers buys a
+    real cost advantage, it has to be established how often the archive even
+    contains such a pair.
+
+    Read-only. Computes no cost, tests no hypothesis, opens no trial and
+    consumes no research budget. Every count is a lower bound -- matching
+    buckets at the tolerance width rather than comparing all pairs, so two
+    products either side of a bucket edge are not counted.
+    """
+    app_ctx = ctx.obj
+    criteria = ComparabilityCriteria(
+        barrier_pct_tolerance=barrier_tolerance,
+        leverage_tolerance=leverage_tolerance,
+        window_seconds=window_seconds,
+    )
+    since_dt = datetime.fromisoformat(since).astimezone(UTC) if since else None
+
+    with Store(app_ctx.db_path) as store:
+        store.init_schema()
+        snapshots = store.list_product_snapshots(underlying_id=underlying, since=since_dt)
+        result = census(snapshots, criteria=criteria)
+
+    console.print(f"COMPARABLE PAIRS  {result.summary()}")
+    console.print(
+        f"  snapshots stored {len(snapshots)}  usable {result.snapshots_considered}",
+        markup=False,
+        highlight=False,
+    )
+    if result.dropped:
+        for reason, count in sorted(result.dropped.items(), key=lambda kv: -kv[1]):
+            console.print(f"    dropped {reason}: {count}", markup=False, highlight=False)
+    for uid, count in sorted(result.pairs_by_underlying.items()):
+        dates = result.distinct_dates_by_underlying.get(uid, 0)
+        console.print(
+            f"  {uid}: {count} pair(s) on {dates} distinct date(s)",
+            markup=False,
+            highlight=False,
+        )
+    for (issuer_a, issuer_b), count in sorted(
+        result.pairs_by_issuer_pair.items(), key=lambda kv: -kv[1]
+    ):
+        console.print(f"  {issuer_a} vs {issuer_b}: {count}", markup=False, highlight=False)
+    if not result.pairs:
+        console.print(
+            "  [dim]no cross-issuer pair: the question is not measurable on this "
+            "archive yet, and issuer coverage is the reason to check first[/dim]"
+        )
+
+    payload = {
+        "pair_count": result.pair_count,
+        "snapshots_stored": len(snapshots),
+        "snapshots_considered": result.snapshots_considered,
+        "dropped": result.dropped,
+        "pairs_by_underlying": dict(result.pairs_by_underlying),
+        "distinct_dates_by_underlying": dict(result.distinct_dates_by_underlying),
+        "pairs_by_issuer_pair": {
+            f"{a}|{b}": n for (a, b), n in result.pairs_by_issuer_pair.items()
+        },
+        "criteria": {
+            "barrier_pct_tolerance": criteria.barrier_pct_tolerance,
+            "leverage_tolerance": criteria.leverage_tolerance,
+            "window_seconds": criteria.window_seconds,
+            "require_verified_ratio": criteria.require_verified_ratio,
+        },
+    }
+    if json_out:
+        json_path = Path(json_out)
+        json_path.parent.mkdir(parents=True, exist_ok=True)
+        json_path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+        console.print(f"Wrote {json_path}")
+
+    _write_summary("research_product_pairs", {"pairs": result.pair_count}, **payload)
 
 
 def research_queue_cmd(
@@ -1533,6 +1631,7 @@ def register_learn_commands(app: typer.Typer, position_app: typer.Typer) -> None
     research_app.command("backfill-trials")(research_backfill_trials_cmd)
     research_app.command("ko-calibration")(research_ko_calibration_cmd)
     research_app.command("step")(research_step_cmd)
+    research_app.command("product-pairs")(research_product_pairs_cmd)
     app.add_typer(research_app, name="research")
 
     archive_app = typer.Typer(help="Deep, slow, once-daily research-only product archive")

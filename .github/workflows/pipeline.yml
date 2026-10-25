@@ -664,6 +664,18 @@ jobs:
         continue-on-error: true
         run: uv run turboedge --log-format json research excursion --json-out reports/weekly/excursion.json
 
+      # The precondition for pre-registering the product-selection cost
+      # question (docs/research_plan_product_selection_cost_edge.md, §4):
+      # how often does the archive contain two genuinely comparable
+      # products from different issuers? Read-only -- it computes no cost,
+      # tests no hypothesis and opens no trial. `continue-on-error` because
+      # a census that fails must not cost the weekly state save.
+      - name: Count comparable cross-issuer product pairs (census only)
+        continue-on-error: true
+        run: |
+          uv run turboedge --log-format json research product-pairs \
+            --json-out reports/weekly/product_pairs.json
+
       - name: Re-score the research queue
         run: uv run turboedge --log-format json research queue --limit 14
 

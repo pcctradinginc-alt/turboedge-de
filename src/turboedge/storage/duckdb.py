@@ -1984,6 +1984,42 @@ class Store:
             ],
         )
 
+    def list_product_snapshots(
+        self,
+        *,
+        underlying_id: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+    ) -> list[ProductSnapshot]:
+        """Stored product snapshots, optionally narrowed by underlying and time.
+
+        Ordered by effective timestamp (`quote_timestamp` if present, else
+        `observation_time`) so a caller that groups by quote moment does not
+        have to sort again. Reads the archive as it stands; it applies no
+        point-in-time cutoff, because the questions it serves are about what
+        the archive *contains*, not about what was knowable at some past
+        moment -- see `tests/features/test_pit_read_paths.py` for the
+        guard that keeps that distinction explicit.
+        """
+        clauses: list[str] = []
+        params: list[Any] = []
+        if underlying_id is not None:
+            clauses.append("underlying_id = ?")
+            params.append(underlying_id)
+        if since is not None:
+            clauses.append("COALESCE(quote_timestamp, observation_time) >= ?")
+            params.append(since)
+        if until is not None:
+            clauses.append("COALESCE(quote_timestamp, observation_time) <= ?")
+            params.append(until)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self._conn.execute(
+            f"SELECT {', '.join(_PRODUCT_SNAPSHOT_COLUMNS)} FROM product_snapshots {where} "
+            "ORDER BY COALESCE(quote_timestamp, observation_time) ASC, isin ASC",
+            params,
+        ).fetchall()
+        return [_row_to_product_snapshot(row) for row in rows]
+
     def underlying_for_isin(self, isin: str) -> str | None:
         """The underlying this product was last seen on, or `None`.
 

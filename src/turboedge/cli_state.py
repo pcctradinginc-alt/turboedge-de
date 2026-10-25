@@ -170,7 +170,9 @@ def state_merge_recovered(
                     "rows_before": t.rows_before,
                     "rows_inserted": t.rows_inserted,
                     "rows_after": t.rows_after,
+                    "duplicate_groups_before": t.duplicate_groups_before,
                     "duplicate_groups_after": t.duplicate_groups_after,
+                    "duplicates_introduced": t.duplicates_introduced,
                 }
                 for t in report.tables
             ],

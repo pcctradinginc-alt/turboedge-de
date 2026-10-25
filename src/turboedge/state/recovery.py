@@ -88,12 +88,23 @@ class TableMerge:
     rows_before: int
     rows_inserted: int
     rows_after: int
+    duplicate_groups_before: int
     duplicate_groups_after: int
 
     @property
     def consistent(self) -> bool:
         """Whether the row count moved by exactly what was inserted."""
         return self.rows_after == self.rows_before + self.rows_inserted
+
+    @property
+    def duplicates_introduced(self) -> int:
+        """Duplicate key groups this merge added, not ones it inherited.
+
+        The first recovery dry run reported pre-existing duplicates as
+        introduced and refused to pack on that basis -- correctly refusing,
+        for the wrong reason.
+        """
+        return max(0, self.duplicate_groups_after - self.duplicate_groups_before)
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,7 +125,7 @@ class MergeReport:
 
     @property
     def duplicates_introduced(self) -> tuple[str, ...]:
-        return tuple(t.table for t in self.tables if t.duplicate_groups_after)
+        return tuple(t.table for t in self.tables if t.duplicates_introduced)
 
     @property
     def inconsistent(self) -> tuple[str, ...]:
@@ -141,8 +152,18 @@ def _primary_keys(store: Store) -> dict[str, tuple[str, ...]]:
 
 
 def _tables(store: Store) -> list[str]:
+    """The LIVE database's tables, not every attached database's.
+
+    `duckdb_tables()` spans all attached databases, so inside the ATTACH
+    block an unfiltered query returns each table twice -- once for the live
+    database and once for the recovered one. The first recovery dry run
+    (40189568686) showed every table merged twice and every name listed
+    twice in the report. The second pass inserted nothing, so no data was
+    harmed, but the counts were meaningless.
+    """
     rows = store._conn.execute(
-        "SELECT table_name FROM duckdb_tables() ORDER BY table_name"
+        "SELECT table_name FROM duckdb_tables() WHERE database_name = current_database() "
+        "ORDER BY table_name"
     ).fetchall()
     return [str(row[0]) for row in rows]
 
@@ -202,6 +223,20 @@ def merge_recovered_state(
                 )
                 continue
 
+            duplicates_before = _duplicate_groups(store, table, key)
+            if duplicates_before:
+                # The configured key is not unique in the data that is
+                # already here, so it does not identify a row and merging on
+                # it could skip genuinely distinct rows. Fail-closed, same as
+                # having no key at all. Observed on
+                # `rejected_ratio_derivations` in run 40189568686.
+                skipped[table] = (
+                    f"the key {list(key)} is not unique in the existing data "
+                    f"({duplicates_before} duplicate group(s)) -- not merged, because it "
+                    "cannot tell a row already present from a new one"
+                )
+                continue
+
             before = _count(store, f"SELECT count(*) FROM {table}")
             on = " AND ".join(f"c.{column} IS NOT DISTINCT FROM r.{column}" for column in key)
             inserted = store._conn.execute(
@@ -217,6 +252,7 @@ def merge_recovered_state(
                     rows_before=before,
                     rows_inserted=after - before,
                     rows_after=after,
+                    duplicate_groups_before=duplicates_before,
                     duplicate_groups_after=_duplicate_groups(store, table, key),
                 )
             )

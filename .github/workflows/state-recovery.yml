@@ -174,7 +174,11 @@ jobs:
               data = json.loads(path.read_text())
               total += data["rows_inserted"]
               if data["duplicates_introduced"]:
-                  bad.append(f"{path.name}: duplicates in {data['duplicates_introduced']}")
+                  bad.append(f"{path.name}: merge introduced duplicates in {data['duplicates_introduced']}")
+              for table in data.get("skipped", {}):
+                  reason = data["skipped"][table]
+                  if "not unique" in reason or "no primary key" in reason:
+                      print(f"::warning::{path.name}: {table} not merged -- {reason}")
               if data["inconsistent"]:
                   bad.append(f"{path.name}: row counts inconsistent in {data['inconsistent']}")
           print(f"{len(reports)} archive(s) merged, {total} row(s) recovered in total")

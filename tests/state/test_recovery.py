@@ -285,3 +285,65 @@ def test_nothing_is_deleted(live: Store, tmp_path: Path) -> None:
     after = live.table_counts()
     for table, count in before.items():
         assert after[table] >= count, f"{table} lost rows"
+
+
+# -- two defects the first real dry run exposed --------------------------
+
+
+def test_each_table_is_processed_exactly_once(live: Store, tmp_path: Path) -> None:
+    # `duckdb_tables()` spans every attached database, so inside the ATTACH
+    # block an unfiltered query returns each table twice -- once for the
+    # live database and once for the recovered one. Run 40189568686 merged
+    # every table twice and listed every name twice in its report. The
+    # second pass inserted nothing, so no data was harmed, but the counts
+    # were meaningless.
+    path = _recovered(tmp_path)
+    with Store(path) as source:
+        source.append_product_snapshots([_snapshot("DE000LOST001")])
+
+    report = merge_recovered_state(live, path)
+
+    tables = [t.table for t in report.tables]
+    assert len(tables) == len(set(tables)), f"a table appears more than once: {tables}"
+    assert len(report.tables_changed) == len(set(report.tables_changed))
+
+
+def test_pre_existing_duplicates_are_not_blamed_on_the_merge(live: Store, tmp_path: Path) -> None:
+    # Run 40189568686 refused to pack because `rejected_ratio_derivations`
+    # had duplicate keys -- which were already there. Refusing was right;
+    # the reason was wrong, and a report that cannot tell inherited from
+    # introduced makes every recovery look unsafe.
+    #
+    # `product_snapshots` has no primary key, so two rows with the same
+    # natural key can be inserted directly.
+    shared = _snapshot("DE000DUPED01")
+    live.append_product_snapshots([shared, shared])
+    path = _recovered(tmp_path)
+    with Store(path) as source:
+        source.append_product_snapshots([_snapshot("DE000LOST001")])
+
+    report = merge_recovered_state(live, path)
+
+    assert report.duplicates_introduced == (), (
+        "duplicates that were already present must not be reported as introduced"
+    )
+    # And the table is skipped rather than merged on a key the data shows is
+    # not unique -- the same fail-closed rule as having no key at all.
+    assert "not unique in the existing data" in report.skipped["product_snapshots"]
+    assert "product_snapshots" not in report.tables_changed
+
+
+def test_a_table_whose_key_is_unique_still_merges(live: Store, tmp_path: Path) -> None:
+    # The guard above must not block the normal case.
+    live.append_product_snapshots([_snapshot("DE000UNIQUE1")])
+    path = _recovered(tmp_path)
+    with Store(path) as source:
+        source.append_product_snapshots([_snapshot("DE000LOST001")])
+
+    report = merge_recovered_state(live, path)
+
+    assert "product_snapshots" in report.tables_changed
+    assert report.rows_inserted == 1
+    snapshots = next(t for t in report.tables if t.table == "product_snapshots")
+    assert snapshots.duplicate_groups_before == 0
+    assert snapshots.duplicates_introduced == 0

@@ -48,7 +48,7 @@ absent from the registry it reads.
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from time import perf_counter
 from typing import TYPE_CHECKING
@@ -64,7 +64,7 @@ from turboedge.research.controller import (
     ResearchAction,
     decide_next_action,
 )
-from turboedge.research.harness import resolve_harness
+from turboedge.research.harness import HarnessReadiness, measure_readiness, resolve_harness
 from turboedge.storage.schemas import (
     ResearchScreen,
     ResearchTrial,
@@ -159,6 +159,7 @@ def build_candidates(
     screened_hypothesis_ids: frozenset[str],
     supported_hypothesis_ids: frozenset[str] = frozenset(),
     unharnessed_hypothesis_ids: frozenset[str] = frozenset(),
+    harness_readiness: Mapping[str, HarnessReadiness] | None = None,
 ) -> list[Candidate]:
     """Project persisted opportunities onto the controller's flat view.
 
@@ -166,6 +167,17 @@ def build_candidates(
     is not MEASURED. That is the point: a DECLARED judgement about how much
     data exists is not a measurement, and the controller treats an unknown
     sample as a reason to wait rather than as a number to compare.
+
+    `harness_readiness` overrides both for a question whose harness counted
+    its own data (`research/harness.measure_readiness`). That is a
+    measurement too, and a better one: the catalogue's
+    `estimated_sample_size` is DECLARED by design and never becomes
+    MEASURED, and its `data_availability` is the reachability of a
+    *family's* primary source rather than of what a given screen reads.
+    Together those made every question permanently unready and
+    `START_EXPLORATORY` unreachable -- see `HarnessReadiness` for the run
+    that showed it. A question with no harness readiness keeps the
+    catalogue proxy unchanged.
     """
     out: list[Candidate] = []
     for item in stored:
@@ -182,6 +194,10 @@ def build_candidates(
             and availability.value is not None
             and availability.value >= 1.0
         )
+        measured = (harness_readiness or {}).get(opportunity.hypothesis_id)
+        if measured is not None:
+            data_ready = measured.ready
+            effective = measured.effective_sample
         out.append(
             Candidate(
                 hypothesis_id=opportunity.hypothesis_id,
@@ -607,6 +623,7 @@ def run_research_step(
                 screened_hypothesis_ids=screened_ids,
                 supported_hypothesis_ids=supported_ids,
                 unharnessed_hypothesis_ids=no_harness_ids,
+                harness_readiness=measure_readiness(store),
             ),
             blocked_families=blocked,
             failed_family_counts=family_counts,

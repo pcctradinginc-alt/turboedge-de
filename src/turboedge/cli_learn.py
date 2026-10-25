@@ -1796,10 +1796,25 @@ def research_data_audit_cmd(
         else:
             verdict = f"n={assoc.n} too small to read"
         console.print(
-            f"STALENESS vs CHEAPNESS ({label})  {report.groups} group(s), {verdict}",
+            f"STALENESS vs CHEAPNESS ({label})  {report.groups} group(s), pooled {verdict}",
             markup=False,
             highlight=False,
         )
+        wg = report.within_group
+        if wg.groups_used:
+            console.print(
+                f"    within-group mean {wg.mean:+.4f} "
+                f"[{wg.ci_low:+.4f},{wg.ci_high:+.4f}] over {wg.groups_used} group(s), "
+                f"{wg.members} member(s); excludes zero: {wg.excludes_zero}",
+                markup=False,
+                highlight=False,
+            )
+        else:
+            console.print(
+                "    within-group: no group had enough varying members to correlate",
+                markup=False,
+                highlight=False,
+            )
         for reason, count in sorted(report.dropped.items(), key=lambda kv: -kv[1])[:6]:
             console.print(f"    dropped {reason}: {count}", markup=False, highlight=False)
 
@@ -1841,6 +1856,14 @@ def research_data_audit_cmd(
                 "distinct_ages": report.association.distinct_ages,
                 "distinct_advantages": report.association.distinct_advantages,
                 "degenerate_side": report.association.degenerate_side,
+                "within_group": {
+                    "groups_used": report.within_group.groups_used,
+                    "members": report.within_group.members,
+                    "mean": report.within_group.mean,
+                    "ci_low": report.within_group.ci_low,
+                    "ci_high": report.within_group.ci_high,
+                    "excludes_zero": report.within_group.excludes_zero,
+                },
                 "dropped": dict(report.dropped),
             }
             for key, report in (("verified_ratio_only", strict), ("all_ratios", permissive))

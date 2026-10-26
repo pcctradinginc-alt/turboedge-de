@@ -84,6 +84,32 @@ PERMITTED_EXPLORATORY_FAMILIES: frozenset[str] = frozenset(
         "path_statistics",
         "microstructure",
         "event_risk",
+        # Added 2026-10-26 on a dated, explicit operator decision. The
+        # authorisation is narrow and its limits are the reason it could be
+        # given at all:
+        #
+        #   * existing, reviewed exploratory harnesses only -- the loop
+        #     still cannot build a procedure, and `research/harness.py`
+        #     remains the only way it gains one;
+        #   * DEVELOPMENT data only, which `research/partitions.py` defines
+        #     as never being evidence;
+        #   * existing research budgets, unchanged: the quarterly
+        #     exploratory cap below still bounds every screen;
+        #   * experiment parameters fixed in the harness spec, not chosen
+        #     per run;
+        #   * every result recorded permanently.
+        #
+        # It grants NO confirmatory trial, NO alpha promotion, NO ACTIONABLE
+        # signal and no trade. Those paths are untouched by this line:
+        # `AWAIT_CONFIRMATION_APPROVAL` still stops the loop dead, and
+        # `alpha/promotion.py` is still locked.
+        #
+        # The questions this admits are classified `COST_EDGE`
+        # (`meta/research_opportunity.ResearchKind`), which is the point: a
+        # cheaper product is not a profitable trade, and the notification
+        # path reads that classification so a positive screen here can
+        # never be announced as confirmed alpha.
+        "product_selection",
     }
 )
 

@@ -310,3 +310,62 @@ def test_w12_measured_outcomes_trial_ids_present_only_when_actually_measured() -
     assert W12_MEASURED_OUTCOMES["RO-CFTC-POSITIONING"].trial_id == "TR-2026Q3-31e266"
     assert W12_MEASURED_OUTCOMES["RO-EUREX-POSITIONING"].trial_id is None
     assert W12_MEASURED_OUTCOMES["RO-EUWAX-SENTIMENT"].trial_id is None
+
+
+#: What a positive result on each question would entitle anyone to
+#: conclude. Pinned rather than derived: the operator's decision of
+#: 2026-10-26 turns on A02 being COST_EDGE and not an alpha hypothesis, and
+#: a mapping that drifted silently would undo that decision without anyone
+#: editing it.
+_EXPECTED_KINDS: dict[str, str] = {
+    "RO-CBOE-VOL-STATE": "ALPHA_HYPOTHESIS",
+    "RO-EUREX-POSITIONING": "ALPHA_HYPOTHESIS",
+    "RO-EUWAX-SENTIMENT": "ALPHA_HYPOTHESIS",
+    "RO-CFTC-POSITIONING": "ALPHA_HYPOTHESIS",
+    "RO-RATES-CREDIT": "ALPHA_HYPOTHESIS",
+    "RO-MARKET-BREADTH": "ALPHA_HYPOTHESIS",
+    "RO-DISPERSION": "ALPHA_HYPOTHESIS",
+    "RO-EVENT-RISK": "ALPHA_HYPOTHESIS",
+    "RO-CROSS-ASSET-RESIDUAL-MOMENTUM": "ALPHA_HYPOTHESIS",
+    "RO-DAY-NIGHT-MOMENTUM": "ALPHA_HYPOTHESIS",
+    "RO-MAE-PREDICTION": "RISK_IMPROVEMENT",
+    "RO-MFE-PREDICTION": "RISK_IMPROVEMENT",
+    "RO-ISSUER-SPREAD-BEHAVIOUR": "COST_EDGE",
+    "RO-FINANCING-BEHAVIOUR": "COST_EDGE",
+    "RO-PRODUCT-SELECTION-EDGE": "COST_EDGE",
+    "RO-LOTTERY-PRICING": "COST_EDGE",
+}
+
+
+def test_every_entry_declares_what_a_positive_result_would_mean() -> None:
+    assert {o.hypothesis_id: str(o.research_kind) for o in CATALOG} == _EXPECTED_KINDS
+
+
+def test_a02_is_a_cost_edge_and_not_an_alpha_hypothesis() -> None:
+    """The operator's decision of 2026-10-26, as an assertion.
+
+    A cheaper product is not a profitable trade. If this ever reads
+    ALPHA_HYPOTHESIS, a positive A02 screen could be announced as
+    confirmed economic alpha, which is the one outcome the authorisation
+    for autonomous product-selection research was conditioned on
+    preventing.
+    """
+    from turboedge.meta.research_opportunity import ResearchKind
+
+    entry = catalog_by_id()["RO-LOTTERY-PRICING"]
+    assert entry.research_kind is ResearchKind.COST_EDGE
+    assert entry.research_kind is not ResearchKind.ALPHA_HYPOTHESIS
+
+
+def test_no_cost_edge_or_risk_question_claims_to_be_alpha() -> None:
+    """A guard against the easy mistake, stated positively.
+
+    Every question whose family is product_selection is about what a trade
+    costs, never about which way to trade, so none of them may be
+    classified as a directional hypothesis.
+    """
+    from turboedge.meta.research_opportunity import InformationFamily, ResearchKind
+
+    for opportunity in CATALOG:
+        if opportunity.information_family is InformationFamily.PRODUCT_SELECTION:
+            assert opportunity.research_kind is ResearchKind.COST_EDGE, opportunity.hypothesis_id

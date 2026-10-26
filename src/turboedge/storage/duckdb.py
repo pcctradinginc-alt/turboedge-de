@@ -44,6 +44,7 @@ from turboedge.external.triggers import ResearchTrigger, TriggerType
 from turboedge.meta.research_opportunity import (
     Estimate,
     InformationFamily,
+    ResearchKind,
     ResearchOpportunity,
     ResearchPriority,
     ResearchStatus,
@@ -287,6 +288,12 @@ _DDL_STATEMENTS: tuple[str, ...] = (
         priority_detail VARCHAR,
         scored_at TIMESTAMPTZ,
         schema_version VARCHAR NOT NULL,
+        -- Added 2026-10-26. Nullable so the automatic ALTER TABLE
+        -- migration can add it to existing databases; a row written
+        -- before it existed reads back as NULL and is logged rather than
+        -- silently reclassified. `research queue` re-seeds from the
+        -- catalogue on every research run, so a NULL self-corrects.
+        research_kind VARCHAR,
         PRIMARY KEY (hypothesis_id)
     )
     """,
@@ -4075,6 +4082,10 @@ _RESEARCH_OPPORTUNITY_COLUMNS: tuple[str, ...] = (
     "priority_detail",
     "scored_at",
     "schema_version",
+    # Appended, never inserted mid-list: `_row_to_stored_opportunity` reads
+    # this tuple positionally, so a new column in the middle would silently
+    # shift every field after it.
+    "research_kind",
 )
 
 #: The `Estimate`-valued fields of `ResearchOpportunity`, serialised together
@@ -4117,6 +4128,7 @@ def _research_opportunity_row(
         None if priority is None else priority.model_dump_json(),
         scored_at,
         o.schema_version,
+        str(o.research_kind),
     )
 
 
@@ -4128,7 +4140,23 @@ def _row_to_stored_opportunity(row: tuple[Any, ...]) -> StoredOpportunity:
             f"stored opportunity {row[0]!r} is missing ranking input(s) "
             f"{sorted(missing)}; refusing to reconstruct it with defaults"
         )
+    stored_kind = row[15] if len(row) > 15 else None
+    if stored_kind is None:
+        # Written before the column existed. Reported, not reclassified:
+        # a COST_EDGE question silently reading back as an alpha
+        # hypothesis is exactly what the operator's 2026-10-26 decision
+        # forbids. `research queue` re-seeds from the catalogue, so this
+        # clears on the next research run.
+        logger.warning(
+            "research_opportunity_kind_missing",
+            hypothesis_id=row[0],
+            note="row predates the research_kind column; re-seed the queue to classify it",
+        )
+        kind = ResearchKind.ALPHA_HYPOTHESIS
+    else:
+        kind = ResearchKind(stored_kind)
     opportunity = ResearchOpportunity(
+        research_kind=kind,
         hypothesis_id=row[0],
         description=row[1],
         information_family=InformationFamily(row[2]),

@@ -316,3 +316,97 @@ def test_a_question_without_a_harness_detail_records_none_rather_than_a_guess() 
 
     assert action.kind is ActionKind.AWAIT_DATA
     assert action.evidence["skipped_for_data"][0]["detail"] is None
+
+
+# ---------------------------------------------------------------------
+# The operator's decision of 2026-10-26: product_selection admitted to
+# autonomous exploration, under conditions. These tests are the
+# conditions.
+# ---------------------------------------------------------------------
+
+
+def test_product_selection_is_admissible_for_autonomous_exploration() -> None:
+    """The authorisation itself. Granted 2026-10-26."""
+    assert "product_selection" in PERMITTED_EXPLORATORY_FAMILIES
+
+
+def test_the_controller_can_now_select_a02_on_its_own() -> None:
+    """Before the authorisation this question was not admissible at all.
+
+    Run 40387338754 showed the consequence: RO-LOTTERY-PRICING appeared in
+    the queue ranking and never in the skip list, because the family was
+    excluded before ranking.
+    """
+    action = _decide(
+        candidates=[
+            _candidate(
+                hypothesis_id="RO-LOTTERY-PRICING",
+                family="product_selection",
+                priority=0.5,
+            )
+        ]
+    )
+
+    assert action.kind is ActionKind.START_EXPLORATORY
+    assert action.hypothesis_id == "RO-LOTTERY-PRICING"
+
+
+def test_a_screened_question_is_not_repeated_without_new_grounds() -> None:
+    """The second condition of the authorisation.
+
+    `exploratory_done` is set from the recorded screens, and a question
+    that has one is not re-run on the same data. Re-screening until
+    something looks significant is multiple testing under another name.
+    """
+    action = _decide(
+        candidates=[
+            _candidate(
+                hypothesis_id="RO-LOTTERY-PRICING",
+                family="product_selection",
+                exploratory_done=True,
+            )
+        ]
+    )
+
+    assert action.kind is ActionKind.NO_ACTION
+    assert "already been screened" in action.reason
+
+
+def test_a_supported_product_selection_screen_still_stops_at_the_human() -> None:
+    """The authorisation grants no confirmatory trial.
+
+    A positive COST_EDGE screen is exactly where a machine would be
+    tempted to continue, and exactly where the quarterly budget and the
+    p-values start to matter.
+    """
+    action = _decide(
+        candidates=[
+            _candidate(
+                hypothesis_id="RO-LOTTERY-PRICING",
+                family="product_selection",
+                has_exploratory_support=True,
+            )
+        ]
+    )
+
+    assert action.kind is ActionKind.AWAIT_CONFIRMATION_APPROVAL
+    assert "named human" in action.reason
+    assert "research approve" in action.reason
+
+
+def test_the_exploratory_cap_still_bounds_product_selection_screens() -> None:
+    """The authorisation did not widen the research budget."""
+    action = _decide(
+        candidates=[_candidate(family="product_selection")],
+        exploratory_screens_this_quarter=EXPLORATORY_SCREENS_PER_QUARTER,
+    )
+
+    assert action.kind is ActionKind.NO_ACTION
+    assert "multiple testing under another name" in action.reason
+
+
+def test_promotion_stays_locked_for_an_admitted_family() -> None:
+    action = _decide(
+        candidates=[_candidate(family="product_selection", has_exploratory_support=True)]
+    )
+    assert action.evidence["promotion_unlocked"] is False

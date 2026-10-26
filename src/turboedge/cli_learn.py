@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 from dataclasses import asdict
 from datetime import UTC, date, datetime, timedelta
@@ -1681,11 +1682,25 @@ def research_step_cmd(
 
     with Store(app_ctx.db_path) as store:
         store.init_schema()
+        # The notification path is wired here rather than left to a
+        # separate command: a screen that finds something has to reach the
+        # operator without anyone asking it to. Credentials absent means a
+        # dry-run send, which records nothing and stays eligible.
+        creds = GmailCredentials.from_env()
         action = run_research_step(
             store,
             failed_hypotheses_path=failed_hypotheses_default_path(app_ctx.state_dir),
             now=datetime.now(UTC),
             dry_run=dry_run,
+            notifier=None if dry_run else GmailNotifier(app_ctx.cfg.gmail, creds),
+            recipients=creds.recipients if creds else (),
+            run_id=os.environ.get("GITHUB_RUN_ID"),
+            run_url=(
+                f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}"
+                f"/actions/runs/{os.environ['GITHUB_RUN_ID']}"
+                if {"GITHUB_SERVER_URL", "GITHUB_REPOSITORY", "GITHUB_RUN_ID"} <= os.environ.keys()
+                else None
+            ),
         )
         # Read back rather than threaded through the return value: the step
         # may record several screens in one run (walking past questions it

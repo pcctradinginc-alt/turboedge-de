@@ -51,6 +51,7 @@ from enum import StrEnum
 import structlog
 from jinja2 import Environment
 
+from turboedge.meta.research_opportunity import ResearchKind
 from turboedge.notifications.dedup import NotificationDeduplicator, notification_hash
 from turboedge.notifications.gmail import EmailMessageSpec, GmailNotifier, SendResult
 
@@ -90,6 +91,12 @@ class AlphaAlert:
     """
 
     kind: AlphaAlertKind
+    #: What a positive result on this question would entitle anyone to
+    #: conclude. It decides the wording: a COST_EDGE must never be
+    #: announced as an alpha discovery, which is the condition the
+    #: operator's 2026-10-26 authorisation for autonomous
+    #: product-selection research was granted under.
+    research_kind: ResearchKind
     hypothesis_id: str
     #: One plain-language sentence a non-developer can read.
     signal_description: str
@@ -138,13 +145,49 @@ _TEST_BANNER = (
     "Diese Nachricht beschreibt kein echtes Ergebnis. ***"
 )
 
+#: What each kind of result is called in a subject line. The point is that
+#: a cost finding and a directional edge do not share a word: "Alpha" is
+#: reserved for `ALPHA_HYPOTHESIS`, and a COST_EDGE subject says
+#: "Kostenvorteil" and nothing else.
+_KIND_NOUN: dict[ResearchKind, str] = {
+    ResearchKind.ALPHA_HYPOTHESIS: "Alpha",
+    ResearchKind.COST_EDGE: "Kostenvorteil",
+    ResearchKind.RISK_IMPROVEMENT: "Risikomessung",
+    ResearchKind.RESEARCH_METHOD: "Forschungsmethode",
+    ResearchKind.DATA_QUALITY_METHOD: "Datenqualitätsmethode",
+}
+
 _SUBJECTS: dict[AlphaAlertKind, str] = {
-    AlphaAlertKind.CANDIDATE: "TurboEdge-DE: Neuer Alpha-Kandidat — {{ hypothesis_id }}",
+    AlphaAlertKind.CANDIDATE: "TurboEdge-DE: Neuer {{ noun }}-Kandidat — {{ hypothesis_id }}",
     AlphaAlertKind.CONFIRMED: (
-        "TurboEdge-DE: Alpha wissenschaftlich bestätigt — {{ hypothesis_id }}"
+        "TurboEdge-DE: {{ noun }} wissenschaftlich bestätigt — {{ hypothesis_id }}"
     ),
     AlphaAlertKind.DEGRADED: (
-        "TurboEdge-DE: Alpha verschlechtert oder nicht mehr bestätigt — {{ hypothesis_id }}"
+        "TurboEdge-DE: {{ noun }} verschlechtert oder nicht mehr bestätigt — {{ hypothesis_id }}"
+    ),
+}
+
+#: Prepended to the verdict block for anything that is not a directional
+#: hypothesis, so the reader cannot take it for one even if they read only
+#: the first lines.
+_NOT_ALPHA_BANNER: dict[ResearchKind, str] = {
+    ResearchKind.COST_EDGE: (
+        "DIES IST KEIN ALPHA. Es ist ein Kostenbefund: er sagt nichts über die\n"
+        "Richtung und kann keinen Trade profitabel machen. Er könnte höchstens\n"
+        "rechtfertigen, bei einer anderweitig getroffenen Entscheidung das\n"
+        "günstigere Produkt zu wählen."
+    ),
+    ResearchKind.RISK_IMPROVEMENT: (
+        "DIES IST KEIN ALPHA. Es ist eine bessere Risikomessung: sie verbessert\n"
+        "Positionsgröße und Ausstieg, erzeugt aber selbst keinen Ertrag."
+    ),
+    ResearchKind.RESEARCH_METHOD: (
+        "DIES IST KEIN ALPHA. Es ist eine Methode, um echte Ergebnisse von\n"
+        "Artefakten zu unterscheiden."
+    ),
+    ResearchKind.DATA_QUALITY_METHOD: (
+        "DIES IST KEIN ALPHA. Es ist eine Methode, um zu prüfen, ob die Daten\n"
+        "eine Frage überhaupt tragen."
     ),
 }
 
@@ -257,13 +300,20 @@ def render_alpha_alert(alert: AlphaAlert) -> tuple[str, str]:
     if not alert.underlyings:
         raise ValueError("an alpha alert must name at least one underlying")
 
-    subject = _env.from_string(_SUBJECTS[alert.kind]).render(hypothesis_id=alert.hypothesis_id)
+    noun = _KIND_NOUN[alert.research_kind]
+    subject = _env.from_string(_SUBJECTS[alert.kind]).render(
+        hypothesis_id=alert.hypothesis_id, noun=noun
+    )
     if alert.is_test:
         subject = f"[TEST] {subject}"
     body = _env.from_string(_BODY).render(
         is_test=alert.is_test,
         test_banner=_TEST_BANNER,
-        verdict=_VERDICT_LINES[alert.kind],
+        verdict=(
+            _NOT_ALPHA_BANNER[alert.research_kind] + "\n\n" + _VERDICT_LINES[alert.kind]
+            if alert.research_kind in _NOT_ALPHA_BANNER
+            else _VERDICT_LINES[alert.kind]
+        ),
         hypothesis_id=alert.hypothesis_id,
         screen_id=alert.screen_id,
         signal_description=alert.signal_description,
@@ -318,6 +368,7 @@ def alpha_alert_hash(alert: AlphaAlert) -> str:
         "ci_high": alert.ci_high,
         "effective_sample": alert.effective_sample,
         "status": alert.status,
+        "research_kind": str(alert.research_kind),
         "is_test": "yes" if alert.is_test else "no",
         **dict(alert.extra),
     }
@@ -468,6 +519,7 @@ def delivery_test_alerts() -> Sequence[AlphaAlert]:
     for the test mail to say what it is.
     """
     common = {
+        "research_kind": ResearchKind.ALPHA_HYPOTHESIS,
         "underlyings": ("DAX",),
         "horizon_days": 7,
         "regime": "mid_vol",
@@ -533,8 +585,90 @@ __all__ = [
     "AlphaAlert",
     "AlphaAlertKind",
     "AlphaDispatchResult",
+    "ResearchKind",
     "alpha_alert_hash",
     "delivery_test_alerts",
     "render_alpha_alert",
     "send_alpha_alert",
 ]
+
+
+def alert_for_screen(
+    *,
+    hypothesis_id: str,
+    research_kind: ResearchKind,
+    verdict: str,
+    supported: bool,
+    description: str,
+    mechanism: str,
+    underlyings: Sequence[str],
+    horizon_days: int | None,
+    metrics: Mapping[str, object],
+    screen_id: str,
+    run_url: str | None,
+    run_id: str | None,
+) -> AlphaAlert | None:
+    """Turn a completed exploratory screen into an alert, or into nothing.
+
+    `None` is the common and correct answer. A screen that found nothing is
+    not news, and the operator asked for no notification flood; only a
+    supported verdict produces a message. `supported` comes from the
+    harness and is already false for every verdict outside
+    `SUPPORTING_VERDICTS`, including `LOOKAHEAD_SUSPECT`, so a result that
+    only survived through a look-ahead artefact cannot be announced.
+
+    The alert is always `CANDIDATE`. A screen runs on DEVELOPMENT data,
+    which `research/partitions.py` defines as never being evidence, so no
+    screen can produce a confirmation however strong it looks. That is a
+    property of where it ran, not of how large the number was.
+
+    Numbers are taken from the harness's own metrics and left absent when
+    the harness did not report them: the alert renderer prints "n/a" rather
+    than letting a missing interval pass for a tight one.
+    """
+    if not supported:
+        return None
+
+    def _f(*names: str) -> float | None:
+        for name in names:
+            value = metrics.get(name)
+            if isinstance(value, int | float) and not isinstance(value, bool):
+                return float(value)
+        return None
+
+    effect = _f("median_economic_size_bps", "mean_economic_size_bps", "rule_mean")
+    unit = (
+        "bps Round-Trip-Kosten über die Barrierespanne"
+        if "median_economic_size_bps" in metrics
+        else "(Einheit vom Harness nicht benannt)"
+    )
+    return AlphaAlert(
+        kind=AlphaAlertKind.CANDIDATE,
+        research_kind=research_kind,
+        hypothesis_id=hypothesis_id,
+        signal_description=description,
+        mechanism=mechanism,
+        underlyings=tuple(underlyings),
+        horizon_days=horizon_days,
+        regime=None,
+        effect=effect,
+        effect_unit=unit,
+        ci_low=_f("spread_ci_low", "ci_low"),
+        ci_high=_f("spread_ci_high", "ci_high"),
+        effective_sample=_f("cells_used", "effective_sample", "n_oos"),
+        observations=int(obs) if (obs := _f("products_used", "n_oos")) is not None else None,
+        costs_included=(
+            ("Spread (Ask/Bid), aus tatsächlich gestellten Quotes",)
+            if "mean_spread_slope" in metrics
+            else ()
+        ),
+        null_comparison=f"Harness-Urteil: {verdict}",
+        status="EXPLORATORY_ONLY",
+        limitations=(
+            "Gemessen auf DEVELOPMENT-Daten, die ausdrücklich nicht als Nachweis gelten.",
+            "Keine unabhängige Bestätigung; dafür ist eine menschliche Freigabe nötig.",
+        ),
+        run_id=run_id,
+        run_url=run_url,
+        screen_id=screen_id,
+    )

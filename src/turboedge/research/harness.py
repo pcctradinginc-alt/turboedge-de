@@ -21,6 +21,10 @@ the finding, not a shortfall in this module:
   RO-MFE-PREDICTION. It is read-only, promotes nothing, changes no weight,
   gate or threshold, and is allowed to answer "not enough data to tell".
   That makes it exploratory in the sense `research/partitions.py` means.
+* `lottery_pricing` (`research/lottery_pricing.py`) answers
+  RO-LOTTERY-PRICING. Like `day_night` it needs no matured labels -- it
+  reads archived product quotes -- and it measures a *cost*, so a positive
+  result could never be mistaken for a directional edge.
 * `day_night` (`backtest/day_night_eval.py`) answers
   RO-DAY-NIGHT-MOMENTUM. It needs only underlying bars, so unlike every
   other question here it is testable before a single forward label has
@@ -51,13 +55,15 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from turboedge.backtest.day_night_eval import MIN_OOS_OBSERVATIONS, evaluate_family
 from turboedge.backtest.excursion_eval import build_excursion_dataset, evaluate_excursion
 from turboedge.backtest.purged_cv import PurgedWalkForwardSplit
 from turboedge.models.excursion import ExcursionTarget
+from turboedge.research.lottery_pricing import MIN_CELLS
+from turboedge.research.lottery_pricing import evaluate as evaluate_lottery_pricing
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle guard
     from turboedge.storage.duckdb import Store
@@ -265,6 +271,98 @@ def _run_excursion(store: Store, hypothesis_id: str, now: datetime) -> HarnessOu
 #: Every harness the loop may execute. A frozen tuple of direct function
 #: references -- extending it is a reviewed source change, which is the
 #: only way this loop gains a capability.
+#: Window of archived quotes the lottery-pricing screen reads, and the
+#: parameters of its estimator. Pinned here rather than taken from the
+#: caller: a loop that could widen the window until a slope appeared would
+#: be tuning, not screening.
+_LOTTERY_SPEC: Mapping[str, Any] = {
+    "lookback_days": 30,
+    "reps": 4000,
+    "alpha": 0.05,
+    "seed": 20261026,
+    "partition": "DEVELOPMENT",
+}
+
+
+def _lottery_snapshots(store: Store, *, as_of: datetime) -> list[Any]:
+    since = as_of - timedelta(days=int(_LOTTERY_SPEC["lookback_days"]))
+    return store.list_product_snapshots(since=since, until=as_of)
+
+
+def _lottery_readiness(store: Store) -> HarnessReadiness:
+    """Count comparison cells, not snapshots.
+
+    The snapshot count is the wrong number and a flattering one: one
+    well-covered minute can hold hundreds of products. What the estimator
+    spends is (issuer, underlying, direction, minute) cells, so that is
+    what readiness counts -- which means running the estimator. It is
+    read-only and costs seconds.
+    """
+    now = datetime.now(UTC)
+    snapshots = _lottery_snapshots(store, as_of=now)
+    if not snapshots:
+        return HarnessReadiness(
+            ready=False, effective_sample=0.0, detail="no archived product snapshots in window"
+        )
+    result = evaluate_lottery_pricing(snapshots, reps=100, seed=int(_LOTTERY_SPEC["seed"]))
+    return HarnessReadiness(
+        ready=result.cells_used >= MIN_CELLS,
+        effective_sample=float(result.cells_used),
+        detail=(
+            f"{len(snapshots)} snapshot(s) -> {result.cells_used} usable cell(s) "
+            f"covering {result.products_used} product quote(s); needs {MIN_CELLS}"
+        ),
+    )
+
+
+def _run_lottery_pricing(store: Store, hypothesis_id: str, now: datetime) -> HarnessOutcome:
+    """Screen whether lottery-like turbos carry worse executable costs.
+
+    Raises `ValueError` when the archive holds no usable quote in the
+    window, so "we had no data" cannot be recorded as NO_IMPROVEMENT.
+    """
+    snapshots = _lottery_snapshots(store, as_of=now)
+    if not snapshots:
+        raise ValueError(
+            f"no archived product snapshots in the last "
+            f"{_LOTTERY_SPEC['lookback_days']} day(s); the screen cannot run"
+        )
+    result = evaluate_lottery_pricing(
+        snapshots,
+        reps=int(_LOTTERY_SPEC["reps"]),
+        alpha=float(_LOTTERY_SPEC["alpha"]),
+        seed=int(_LOTTERY_SPEC["seed"]),
+    )
+    metrics: dict[str, Any] = {
+        "cells_used": result.cells_used,
+        "products_used": result.products_used,
+        "snapshots_read": len(snapshots),
+        "mean_spread_slope": result.mean_spread_slope,
+        "spread_ci_low": result.spread_ci_low,
+        "spread_ci_high": result.spread_ci_high,
+        "interval_excludes_zero": result.interval_excludes_zero,
+        "mean_premium_slope": result.mean_premium_slope,
+        "premium_ci_low": result.premium_ci_low,
+        "premium_ci_high": result.premium_ci_high,
+        "mean_economic_size_bps": result.mean_economic_size_bps,
+        "dropped": dict(result.dropped),
+        "issuers": sorted({c.issuer for c in result.cells}),
+    }
+    return HarnessOutcome(
+        verdict=result.verdict,
+        metrics=metrics,
+        data_version=_data_version(
+            "lottery_pricing",
+            len(snapshots),
+            result.cells_used,
+            result.products_used,
+            sorted(result.dropped.items()),
+        ),
+        supported=result.verdict in SUPPORTING_VERDICTS,
+        spec={**_LOTTERY_SPEC, "as_of": now.isoformat()},
+    )
+
+
 def _excursion_readiness(store: Store) -> HarnessReadiness:
     """Count matured, labelled ledger entries the excursion screen can use.
 
@@ -425,6 +523,23 @@ APPROVED_HARNESSES: tuple[ApprovedHarness, ...] = (
         spec=_DAY_NIGHT_SPEC,
         run=_run_day_night,
         readiness=_day_night_readiness,
+    ),
+    ApprovedHarness(
+        name="lottery_pricing",
+        version="1",
+        hypothesis_ids=frozenset({"RO-LOTTERY-PRICING"}),
+        description=(
+            "Do more lottery-like turbos -- those whose knock-out barrier sits "
+            "closer to the spot -- carry systematically worse executable "
+            "round-trip costs? Estimated within (issuer, underlying, direction, "
+            "minute) cells, so issuer pricing style and the market moment are "
+            "differenced out, and regressed on barrier distance rather than on "
+            "an ask-derived leverage. Read-only; measures a cost, not a "
+            "direction, and promotes nothing."
+        ),
+        spec=_LOTTERY_SPEC,
+        run=_run_lottery_pricing,
+        readiness=_lottery_readiness,
     ),
 )
 

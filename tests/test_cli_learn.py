@@ -293,6 +293,121 @@ def test_label_and_learn_no_due_entries_write_summary(
     payload2 = json.loads((tmp_path / "reports" / "summary.json").read_text())
     assert payload2["mode"] == "learn"
     assert payload2["counts"]["posteriors_updated"] == 0
+    # Zero reweighted with zero unattributable means there was nothing to
+    # learn from. The opposite situation -- thousands of labelled entries
+    # that could not be attributed to a registered model -- must not render
+    # identically, which is what run 40377514500 did before this count
+    # existed.
+    assert payload2["counts"]["labeled_entries_unattributable"] == 0
+
+
+def test_unattributable_labels_are_counted_not_reported_as_nothing_to_learn(
+    tmp_config_dir: Path, tmp_state_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A labelled entry whose model_hash matches no registered model.
+
+    This is the production situation, not a hypothetical: `pipeline/scan.py`
+    writes the *ensemble* hash onto the ledger entry while the registry
+    holds per-model hashes, and a model's hash covers its fitted
+    coefficients so it changes on every refit. `models_reweighted` is
+    therefore structurally 0, and the point of the new count is that the
+    zero can be told apart from an empty ledger.
+    """
+    from datetime import UTC, date, datetime
+
+    from turboedge.storage.duckdb import Store
+    from turboedge.storage.schemas import (
+        Category,
+        Direction,
+        ExitReason,
+        LedgerEntry,
+        LedgerEntryStatus,
+        LedgerLabel,
+    )
+
+    monkeypatch.chdir(tmp_path)
+    now = datetime(2026, 10, 26, 18, 0, tzinfo=UTC)
+    entry = LedgerEntry(
+        run_id="run-1",
+        candidate_id="cand-1",
+        signal_id="tsmom_horizon_norm_v1",
+        signal_version_hash="sig-hash-1",
+        trial_id="TR-2026Q4-aaa111",
+        prediction_time=now,
+        underlying="DAX",
+        direction=Direction.LONG,
+        horizon_days=7,
+        regime_bucket=None,
+        cluster_id=None,
+        feature_hash="feat-1",
+        # An ensemble hash, exactly as the scan writes it -- nothing in the
+        # model registry carries it.
+        model_hash="ensemble-hash-no-registry-entry",
+        config_hash="cfg-1",
+        git_commit=None,
+        category=Category.WATCH,
+        selected_wkn="ABC123",
+        selected_isin="DE000ABC1234",
+        issuer="TestBank",
+        entry_bid=4.80,
+        entry_ask=4.86,
+        entry_spread=(4.86 - 4.80) / 4.86,
+        entry_quote_timestamp=now,
+        entry_underlying_timestamp=now,
+        financing_level_entry=18000.0,
+        barrier_entry=18000.0,
+        ratio=0.01,
+        fx=1.0,
+        predicted_return=0.01,
+        p_profit=0.55,
+        p_ko=0.05,
+        expected_shortfall=-0.1,
+        lcb_ev=0.001,
+        uncertainty=0.02,
+        shrinkage_intensity=0.5,
+        is_shadow=False,
+        shadow_stratum=None,
+        suggested_position_fraction=None,
+        exit_due=date(2026, 10, 20),
+        alternatives=[],
+        feature_snapshot={},
+        status=LedgerEntryStatus.LABELED,
+    )
+    with Store(tmp_state_dir / "turboedge.duckdb") as store:
+        store.init_schema()
+        store.append_ledger_entries([entry])
+        store.attach_ledger_label(
+            LedgerLabel(
+                entry_id=entry.entry_id,
+                labeled_at=now,
+                exit_bid=5.10,
+                exit_quote_timestamp=now,
+                financing_level_exit=18020.0,
+                exit_reason=ExitReason.HORIZON,
+                realized_selected_pnl=5.10 / 4.86 - 1,
+                underlying_pnl=0.01,
+                median_turbo_pnl=None,
+                best_turbo_pnl=None,
+                ideal_turbo_pnl=None,
+                mfe=0.06,
+                mae=-0.01,
+                ko_hit=False,
+                time_to_ko_days=None,
+                ambiguous_path=False,
+            )
+        )
+
+    result = runner.invoke(app, [*_base_args(tmp_config_dir, tmp_state_dir), "learn"])
+    assert result.exit_code == 0, result.stdout
+    counts = json.loads((tmp_path / "reports" / "summary.json").read_text())["counts"]
+
+    assert counts["labeled_entries_considered"] == 1
+    assert counts["models_reweighted"] == 0
+    assert counts["labeled_entries_unattributable"] == 1
+    # The posterior path keys on the signal family, not the model hash, so
+    # it still learns. That asymmetry is the finding: family-level learning
+    # works, model-level weighting does not.
+    assert counts["posteriors_updated"] == 1
 
 
 def test_report_monthly_without_trades_is_status_only(
@@ -411,7 +526,7 @@ def test_research_queue_seeds_the_catalog_and_prints_a_ranking(
     assert "RESEARCH QUEUE" in result.stdout
     payload = json.loads((tmp_path / "reports" / "summary.json").read_text())
     assert payload["mode"] == "research_queue"
-    assert payload["counts"]["seeded"] == 15
+    assert payload["counts"]["seeded"] == 16
 
 
 def test_research_queue_output_keeps_the_human_approval_notice(

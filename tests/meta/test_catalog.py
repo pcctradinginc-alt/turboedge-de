@@ -369,3 +369,27 @@ def test_no_cost_edge_or_risk_question_claims_to_be_alpha() -> None:
     for opportunity in CATALOG:
         if opportunity.information_family is InformationFamily.PRODUCT_SELECTION:
             assert opportunity.research_kind is ResearchKind.COST_EDGE, opportunity.hypothesis_id
+
+
+def test_the_catalogue_is_authoritative_for_the_classification() -> None:
+    """Run 40397622319, as a regression.
+
+    The loop screened RO-LOTTERY-PRICING, a COST_EDGE question. The stored
+    queue row -- written before the `research_kind` column existed --
+    reported ALPHA_HYPOTHESIS, and the notification went out worded as an
+    alpha candidate. Anything that decides wording must ask the catalogue,
+    which cannot be stale because it is source code.
+    """
+    from turboedge.meta.catalog import research_kind_for
+    from turboedge.meta.research_opportunity import ResearchKind
+
+    assert research_kind_for("RO-LOTTERY-PRICING") is ResearchKind.COST_EDGE
+    for opportunity in CATALOG:
+        assert research_kind_for(opportunity.hypothesis_id) is opportunity.research_kind
+
+
+def test_an_unknown_id_cannot_be_classified_by_default() -> None:
+    """`None` must not be read as ALPHA_HYPOTHESIS by a caller."""
+    from turboedge.meta.catalog import research_kind_for
+
+    assert research_kind_for("RO-DOES-NOT-EXIST") is None

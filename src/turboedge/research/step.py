@@ -56,6 +56,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from turboedge.learning import failed_hypotheses
+from turboedge.meta.catalog import research_kind_for
 from turboedge.meta.research_memory import family_for_feature
 from turboedge.meta.research_opportunity import Estimate, EstimateBasis, StoredOpportunity
 from turboedge.notifications.alpha import AlphaDispatchResult, alert_for_screen, send_alpha_alert
@@ -585,9 +586,21 @@ def _notify_screen(
         return None
 
     opportunity = entry.opportunity
+    # From the catalogue, never from the stored row: see
+    # `catalog.research_kind_for` for the run where the stored value was
+    # stale and a COST_EDGE went out worded as alpha.
+    kind = research_kind_for(opportunity.hypothesis_id)
+    if kind is None:
+        log.warning(
+            "research_screen_unclassified",
+            screen_id=screen.screen_id,
+            hypothesis_id=screen.hypothesis_id,
+            note="not in the catalogue, so the notification wording cannot be chosen",
+        )
+        return None
     alert = alert_for_screen(
         hypothesis_id=opportunity.hypothesis_id,
-        research_kind=opportunity.research_kind,
+        research_kind=kind,
         verdict=screen.verdict or "",
         supported=bool(screen.metrics.get("supported")),
         description=opportunity.description,
@@ -613,7 +626,7 @@ def _notify_screen(
         "research_screen_notified",
         screen_id=screen.screen_id,
         hypothesis_id=screen.hypothesis_id,
-        research_kind=str(opportunity.research_kind),
+        research_kind=str(kind),
         sent=result.sent,
         suppressed=result.suppressed_as_duplicate,
         error=result.error,

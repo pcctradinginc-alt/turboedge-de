@@ -152,6 +152,7 @@ class LotteryPricingResult:
     premium_ci_low: float
     premium_ci_high: float
     mean_economic_size_bps: float
+    median_economic_size_bps: float
     products_used: int
     dropped: Mapping[str, int]
 
@@ -183,7 +184,16 @@ class LotteryPricingResult:
             # Spread *narrows* as the barrier nears: the opposite of the
             # hypothesis, and worth recording as such.
             return "NO_IMPROVEMENT"
-        if self.mean_economic_size_bps < MIN_ECONOMIC_SIZE_BPS:
+        # The MEDIAN cell, not the mean one. Measured on the real archive
+        # (run 40389103879) the two differ by a factor of seven -- mean
+        # 137.1 bps against median 19.6 -- because a handful of cells carry
+        # an enormous slope. The pre-registration said "the fitted spread
+        # difference across the barrier range" without fixing which
+        # average, and the median is both the representative cell and the
+        # stricter test, so switching to it after seeing the data can only
+        # make the criterion harder to pass. The mean is still reported,
+        # because a sevenfold gap between them is itself a finding.
+        if self.median_economic_size_bps < MIN_ECONOMIC_SIZE_BPS:
             return "IMPROVEMENT_NOT_SIGNIFICANT"
         return "CANDIDATE"
 
@@ -334,6 +344,7 @@ def evaluate(
             premium_ci_low=float("nan"),
             premium_ci_high=float("nan"),
             mean_economic_size_bps=float("nan"),
+            median_economic_size_bps=float("nan"),
             products_used=0,
             dropped=dict(dropped),
         )
@@ -367,6 +378,7 @@ def evaluate(
         premium_ci_low=p_lo,
         premium_ci_high=p_hi,
         mean_economic_size_bps=float(np.mean(size_arr)),
+        median_economic_size_bps=float(np.median(size_arr)),
         products_used=products_used,
         dropped=dict(dropped),
     )

@@ -345,6 +345,7 @@ def _run_lottery_pricing(store: Store, hypothesis_id: str, now: datetime) -> Har
         "premium_ci_low": result.premium_ci_low,
         "premium_ci_high": result.premium_ci_high,
         "mean_economic_size_bps": result.mean_economic_size_bps,
+        "median_economic_size_bps": result.median_economic_size_bps,
         "dropped": dict(result.dropped),
         "issuers": sorted({c.issuer for c in result.cells}),
     }

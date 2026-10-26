@@ -1972,7 +1972,8 @@ def research_lottery_pricing_cmd(
         highlight=False,
     )
     console.print(
-        f"  economic size {result.mean_economic_size_bps:+.2f} bps across the barrier range",
+        f"  economic size: median {result.median_economic_size_bps:+.2f} bps, "
+        f"mean {result.mean_economic_size_bps:+.2f} bps across the barrier range",
         markup=False,
         highlight=False,
     )
@@ -1997,6 +1998,7 @@ def research_lottery_pricing_cmd(
         "premium_ci_low": result.premium_ci_low,
         "premium_ci_high": result.premium_ci_high,
         "mean_economic_size_bps": result.mean_economic_size_bps,
+        "median_economic_size_bps": result.median_economic_size_bps,
         "issuers": sorted({c.issuer for c in result.cells}),
         "dropped": dict(result.dropped),
         "cells": [

@@ -445,7 +445,15 @@ class QuoteAgeStats:
 
 
 def quote_age_seconds(entry: LedgerEntry) -> float | None:
-    """Age of the quote the decision was made on, in seconds.
+    """``prediction_time - entry_quote_timestamp``, in seconds.
+
+    NOT the quote's age at the moment of the decision, and the difference
+    matters. ``prediction_time`` is taken on the first line of
+    ``run_scan``, before any product is fetched, so the issuer's quote
+    timestamps normally land *after* it and this quantity is normally
+    negative. See :class:`TimestampOrdering` for why that is a permissible
+    ordering rather than a leak, and why quote age at the decision is not
+    recoverable from the ledger at all.
 
     ``None`` when the entry carries no quote timestamp, which is itself a
     finding and must not be read as age zero.
@@ -589,20 +597,25 @@ def _ranks(values: np.ndarray) -> np.ndarray:
 
 
 __all__ = [
+    "PLAUSIBLE_SCAN_SECONDS",
     "TRUSTWORTHY_STATES",
     "CovariateContrast",
     "ExitValueBounds",
     "LedgerCensus",
     "LedgerRow",
     "ObservationState",
+    "PointInTimeAudit",
     "QuoteAgeStats",
     "SnapshotStalenessReport",
     "StalenessAssociation",
+    "TimestampOrdering",
     "WithinGroupAssociation",
     "classify",
+    "classify_ordering",
     "exit_value_bounds",
     "ledger_census",
     "pnl_bounds",
+    "point_in_time_audit",
     "quote_age_seconds",
     "quote_freshness",
     "snapshot_staleness_advantage",
@@ -910,4 +923,145 @@ def within_group_staleness_association(
         mean=mean,
         ci_low=float(np.quantile(means, alpha / 2.0)),
         ci_high=float(np.quantile(means, 1.0 - alpha / 2.0)),
+    )
+
+
+class TimestampOrdering(StrEnum):
+    """Where a decision's quote sits relative to the decision's own stamp.
+
+    THE DISTINCTION THIS EXISTS TO MAKE. ``LedgerEntry.prediction_time`` is
+    taken at the very first line of ``pipeline/scan.run_scan``
+    (``prediction_time = clock()``), *before* any product is fetched. The
+    issuer's quote timestamps therefore land after it as a matter of
+    course, and a negative "quote age" is the normal case rather than a
+    defect.
+
+    That is a permissible ordering, not a leak. A leak would mean using
+    information from the future *of the decision*; here the quote is the
+    price the decision was actually made on and transacted at. The feature
+    check ``available_at <= prediction_time`` is if anything conservative,
+    because it holds features to a moment earlier than the one the
+    selection really happened at.
+
+    What it does mean is that **quote age at the decision is not
+    measurable from the ledger**: the ledger records the scan's start, not
+    the instant the candidate was chosen. The archive-side measure,
+    ``retrieved_at - quote_timestamp`` in
+    :func:`snapshot_staleness_advantage`, is the one that answers the
+    freshness question, and A02 uses that.
+
+    A quote stamped *far* beyond any plausible scan duration is a different
+    matter and is separated out, because that cannot be explained by
+    ordering alone.
+    """
+
+    #: Quote predates the recorded decision stamp. Unambiguous.
+    QUOTE_BEFORE_DECISION = "quote_before_decision"
+    #: Quote follows it, but within one plausible scan. Expected.
+    QUOTE_WITHIN_SCAN_WINDOW = "quote_within_scan_window"
+    #: Quote follows it by more than any scan could take. Needs a cause.
+    QUOTE_BEYOND_SCAN_WINDOW = "quote_beyond_scan_window"
+    #: No quote timestamp at all -- a finding, never read as age zero.
+    NO_QUOTE_TIMESTAMP = "no_quote_timestamp"
+
+
+#: How long one scan may plausibly take, in seconds. Measured against real
+#: pipeline runs, a `scan` job completes in about 10 minutes including
+#: every underlying, so 15 minutes is a generous ceiling for the gap
+#: between one `run_scan` call's first line and the quotes it then fetches.
+#: Anything past it is reported separately rather than absorbed.
+PLAUSIBLE_SCAN_SECONDS = 900.0
+
+
+@dataclass(frozen=True, slots=True)
+class PointInTimeAudit:
+    """The full ordering picture for a set of decisions."""
+
+    n: int
+    by_ordering: Mapping[str, int]
+    by_issuer: Mapping[str, Mapping[str, int]]
+    #: Quantiles of ``prediction_time - entry_quote_timestamp`` in seconds.
+    #: Negative means the quote is stamped after the decision's stamp.
+    age_quantiles: Mapping[str, float]
+    min_age_seconds: float
+    max_age_seconds: float
+
+    @property
+    def beyond_window(self) -> int:
+        return self.by_ordering.get(TimestampOrdering.QUOTE_BEYOND_SCAN_WINDOW.value, 0)
+
+    @property
+    def leak_suspected(self) -> bool:
+        """Whether any case cannot be explained by scan ordering.
+
+        Deliberately conservative: it is True when a single decision's
+        quote is stamped beyond a plausible scan duration. Such a case may
+        still turn out to be a provider clock, but it cannot be waved
+        through as ordering.
+        """
+        return self.beyond_window > 0
+
+    def summary(self) -> str:
+        if self.n == 0:
+            return "no decision carried a quote timestamp"
+        before = self.by_ordering.get(TimestampOrdering.QUOTE_BEFORE_DECISION.value, 0)
+        within = self.by_ordering.get(TimestampOrdering.QUOTE_WITHIN_SCAN_WINDOW.value, 0)
+        return (
+            f"{self.n} decision(s): {before} quote-first, {within} within the "
+            f"{PLAUSIBLE_SCAN_SECONDS:.0f}s scan window, {self.beyond_window} beyond it"
+        )
+
+
+def classify_ordering(
+    entry: LedgerEntry, *, scan_seconds: float = PLAUSIBLE_SCAN_SECONDS
+) -> TimestampOrdering:
+    """Classify one decision's quote ordering.
+
+    Raises:
+        ValueError: if ``scan_seconds`` is negative.
+    """
+    if scan_seconds < 0:
+        raise ValueError(f"scan_seconds must be >= 0, got {scan_seconds!r}")
+    age = quote_age_seconds(entry)
+    if age is None:
+        return TimestampOrdering.NO_QUOTE_TIMESTAMP
+    if age >= 0:
+        return TimestampOrdering.QUOTE_BEFORE_DECISION
+    if -age <= scan_seconds:
+        return TimestampOrdering.QUOTE_WITHIN_SCAN_WINDOW
+    return TimestampOrdering.QUOTE_BEYOND_SCAN_WINDOW
+
+
+def point_in_time_audit(
+    entries: Sequence[LedgerEntry], *, scan_seconds: float = PLAUSIBLE_SCAN_SECONDS
+) -> PointInTimeAudit:
+    """Audit the quote/decision ordering across every decision.
+
+    Reports the distribution rather than a single statistic: a median of
+    -20 seconds and a maximum of -5,587 are two different situations, and
+    only the second one needs explaining.
+    """
+    orderings = [classify_ordering(e, scan_seconds=scan_seconds) for e in entries]
+    by_issuer: dict[str, Counter[str]] = {}
+    for entry, ordering in zip(entries, orderings, strict=True):
+        by_issuer.setdefault(entry.issuer, Counter())[ordering.value] += 1
+
+    ages = [a for e in entries if (a := quote_age_seconds(e)) is not None]
+    if ages:
+        arr = np.asarray(ages, dtype=np.float64)
+        quantiles = {
+            f"p{int(q * 100)}": float(np.quantile(arr, q))
+            for q in (0.0, 0.01, 0.05, 0.25, 0.5, 0.75, 0.95, 0.99, 1.0)
+        }
+        lo, hi = float(arr.min()), float(arr.max())
+    else:
+        quantiles, lo, hi = {}, float("nan"), float("nan")
+
+    return PointInTimeAudit(
+        n=len(ages),
+        by_ordering=dict(Counter(o.value for o in orderings)),
+        by_issuer={k: dict(v) for k, v in by_issuer.items()},
+        age_quantiles=quantiles,
+        min_age_seconds=lo,
+        max_age_seconds=hi,
     )

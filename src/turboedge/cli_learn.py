@@ -76,7 +76,9 @@ from turboedge.reporting.monthly import build_monthly_report
 from turboedge.reporting.redaction import redact_console_enabled
 from turboedge.reporting.weekly import run_research_tournament
 from turboedge.research.data_audit import (
+    PLAUSIBLE_SCAN_SECONDS,
     ledger_census,
+    point_in_time_audit,
     quote_freshness,
     snapshot_staleness_advantage,
 )
@@ -1820,6 +1822,23 @@ def research_data_audit_cmd(
         )
 
     console.print(f"QUOTE AGE AT DECISION  {freshness.summary()}", markup=False, highlight=False)
+    pit = point_in_time_audit([entry for entry, _ in rows])
+    console.print(f"POINT-IN-TIME ORDERING  {pit.summary()}", markup=False, highlight=False)
+    console.print(
+        f"    leak suspected: {pit.leak_suspected}  "
+        f"(a case beyond the scan window cannot be explained by ordering)",
+        markup=False,
+        highlight=False,
+    )
+    if pit.age_quantiles:
+        console.print(
+            "    prediction_time - quote_timestamp, seconds: "
+            + "  ".join(f"{k}={v:+.1f}" for k, v in pit.age_quantiles.items()),
+            markup=False,
+            highlight=False,
+        )
+    for issuer, counts in sorted(pit.by_issuer.items()):
+        console.print(f"    {issuer}: {counts}", markup=False, highlight=False)
     for label, report in (("verified-ratio only", strict), ("all ratios", permissive)):
         assoc = report.association
         if assoc.interpretable:
@@ -1877,6 +1896,17 @@ def research_data_audit_cmd(
                 }
                 for c in census.contrasts
             ],
+        },
+        "point_in_time_ordering": {
+            "n": pit.n,
+            "by_ordering": dict(pit.by_ordering),
+            "by_issuer": {k: dict(v) for k, v in pit.by_issuer.items()},
+            "age_quantiles": dict(pit.age_quantiles),
+            "min_age_seconds": pit.min_age_seconds,
+            "max_age_seconds": pit.max_age_seconds,
+            "beyond_window": pit.beyond_window,
+            "leak_suspected": pit.leak_suspected,
+            "plausible_scan_seconds": PLAUSIBLE_SCAN_SECONDS,
         },
         "quote_age_at_decision": {
             "n": freshness.n,

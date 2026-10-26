@@ -44,6 +44,7 @@ from turboedge.backtest.synthetic_turbo_ev import (
 )
 from turboedge.backtest.walkforward import walk_forward_evaluate
 from turboedge.config import config_hash
+from turboedge.learning.attribution import attribution_report, resolve_attribution
 from turboedge.learning.drift import PageHinkley, PageHinkleyConfig, record_drift_event
 from turboedge.learning.failed_hypotheses import default_path as failed_hypotheses_default_path
 from turboedge.learning.labeler import label_due_entries
@@ -90,6 +91,7 @@ from turboedge.research.step import run_research_step
 from turboedge.simulation.ko_calibration import build_ko_calibration_dataset
 from turboedge.storage.duckdb import Store
 from turboedge.storage.schemas import (
+    ForecastRecord,
     KoCalibrationPromotionRecord,
     KoCalibrationResultRecord,
     LedgerEntryStatus,
@@ -1891,8 +1893,79 @@ def research_data_audit_cmd(
         for reason, count in sorted(report.dropped.items(), key=lambda kv: -kv[1])[:6]:
             console.print(f"    dropped {reason}: {count}", markup=False, highlight=False)
 
+    # Model attribution for the labelled entries. Resolved per run so a
+    # scan's handful of forecast rows is fetched once rather than once per
+    # entry, which matters when a run carries thousands of entries.
+    labelled_rows = [(e, lab) for e, lab in rows if lab is not None]
+    attribution_rows = []
+    with Store(app_ctx.db_path) as store:
+        store.init_schema()
+        forecasts_by_run: dict[str, list[ForecastRecord]] = {}
+        for entry, entry_label in labelled_rows:
+            if entry.run_id not in forecasts_by_run:
+                forecasts_by_run[entry.run_id] = list(store.list_forecasts(run_id=entry.run_id))
+            attribution_rows.append(
+                (
+                    entry,
+                    entry_label,
+                    resolve_attribution(entry, forecasts_by_run[entry.run_id]),
+                )
+            )
+    attribution = attribution_report(attribution_rows)
+
+    console.print(f"MODEL ATTRIBUTION  {attribution.summary()}", markup=False, highlight=False)
+    for score in attribution.model_scores:
+        weight = "n/a" if score.mean_weight is None else f"{score.mean_weight:.4f}"
+        console.print(
+            f"    {score.model_id}: n={score.n} mse={score.mse:.6g} "
+            f"dir_acc={score.directional_accuracy:.3f} weight={weight} "
+            f"interpretable={score.interpretable}",
+            markup=False,
+            highlight=False,
+        )
+    if attribution.ensemble_score is not None:
+        es = attribution.ensemble_score
+        console.print(
+            f"    ensemble: n={es.n} mse={es.mse:.6g} dir_acc={es.directional_accuracy:.3f}",
+            markup=False,
+            highlight=False,
+        )
+    if attribution.missing_models:
+        console.print(
+            f"    weighted models with no forecast row: {dict(attribution.missing_models)}",
+            markup=False,
+            highlight=False,
+        )
+
     payload = {
         "generated_at": now.isoformat(),
+        "model_attribution": {
+            "entries_considered": attribution.entries_considered,
+            "entries_attributable": attribution.entries_attributable,
+            "entries_incomplete": attribution.entries_incomplete,
+            "attributable_share": attribution.attributable_share,
+            "missing_models": dict(attribution.missing_models),
+            "model_scores": [
+                {
+                    "model_id": s.model_id,
+                    "n": s.n,
+                    "mse": s.mse,
+                    "directional_accuracy": s.directional_accuracy,
+                    "mean_weight": s.mean_weight,
+                    "interpretable": s.interpretable,
+                }
+                for s in attribution.model_scores
+            ],
+            "ensemble_score": (
+                None
+                if attribution.ensemble_score is None
+                else {
+                    "n": attribution.ensemble_score.n,
+                    "mse": attribution.ensemble_score.mse,
+                    "directional_accuracy": attribution.ensemble_score.directional_accuracy,
+                }
+            ),
+        },
         "forward_population": {
             "total": census.total,
             "by_state": dict(census.by_state),

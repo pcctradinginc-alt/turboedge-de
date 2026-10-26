@@ -58,6 +58,9 @@ import structlog
 from turboedge.learning import failed_hypotheses
 from turboedge.meta.research_memory import family_for_feature
 from turboedge.meta.research_opportunity import Estimate, EstimateBasis, StoredOpportunity
+from turboedge.notifications.alpha import AlphaDispatchResult, alert_for_screen, send_alpha_alert
+from turboedge.notifications.dedup import NotificationDeduplicator
+from turboedge.notifications.gmail import GmailNotifier
 from turboedge.research.controller import (
     ActionKind,
     Candidate,
@@ -540,6 +543,84 @@ def _shelve(store: Store, action: ResearchAction, *, now: datetime) -> None:
     log.info("research_family_shelved", family=action.family, reason=action.reason)
 
 
+def _notify_screen(
+    store: Store,
+    screen: ResearchScreen,
+    *,
+    stored: Sequence[StoredOpportunity],
+    notifier: GmailNotifier | None,
+    recipients: Sequence[str],
+    now: datetime,
+    run_url: str | None,
+    run_id: str | None,
+) -> AlphaDispatchResult | None:
+    """Turn a completed screen into a notification, automatically.
+
+    This is the link the operator asked for: a module and a manual test
+    command are not an automatic path. A screen that finishes here decides
+    its own notification type, checks the scientific status, builds the
+    message, attempts delivery, records success, and leaves a failure
+    eligible for the next run.
+
+    `None` means no message was warranted -- a screen that found nothing
+    is not news, and `alert_for_screen` returns `None` for every
+    unsupported verdict, `LOOKAHEAD_SUSPECT` among them.
+
+    The wording follows the question's `research_kind`, so a COST_EDGE
+    result is announced as a Kostenvorteil-Kandidat with an explicit "this
+    is not alpha" banner. That is the condition the 2026-10-26
+    authorisation for autonomous product-selection research was granted
+    under.
+    """
+    entry = next((o for o in stored if o.opportunity.hypothesis_id == screen.hypothesis_id), None)
+    if entry is None:
+        # A screen for a question not in the queue should not happen; it is
+        # reported rather than notified about, because the wording depends
+        # on a classification that is not available.
+        log.warning(
+            "research_screen_not_in_queue",
+            screen_id=screen.screen_id,
+            hypothesis_id=screen.hypothesis_id,
+        )
+        return None
+
+    opportunity = entry.opportunity
+    alert = alert_for_screen(
+        hypothesis_id=opportunity.hypothesis_id,
+        research_kind=opportunity.research_kind,
+        verdict=screen.verdict or "",
+        supported=bool(screen.metrics.get("supported")),
+        description=opportunity.description,
+        mechanism=opportunity.expected_information_gain.note or "nicht benannt",
+        underlyings=opportunity.affected_underlyings,
+        horizon_days=None,
+        metrics=screen.metrics,
+        screen_id=screen.screen_id,
+        run_url=run_url,
+        run_id=run_id,
+    )
+    if alert is None:
+        return None
+
+    result = send_alpha_alert(
+        notifier,
+        NotificationDeduplicator(store),
+        alert,
+        recipients=list(recipients) or ["unconfigured@example.invalid"],
+        now=now,
+    )
+    log.info(
+        "research_screen_notified",
+        screen_id=screen.screen_id,
+        hypothesis_id=screen.hypothesis_id,
+        research_kind=str(opportunity.research_kind),
+        sent=result.sent,
+        suppressed=result.suppressed_as_duplicate,
+        error=result.error,
+    )
+    return result
+
+
 def run_research_step(
     store: Store,
     *,
@@ -547,6 +628,10 @@ def run_research_step(
     now: datetime,
     confirmatory_budget: int = 6,
     dry_run: bool = False,
+    notifier: GmailNotifier | None = None,
+    recipients: Sequence[str] = (),
+    run_url: str | None = None,
+    run_id: str | None = None,
 ) -> ResearchAction:
     """Decide, execute and record one research step. Idempotent within a quarter.
 
@@ -676,6 +761,16 @@ def run_research_step(
         executions += 1
         if _feed_result_into_priority(store, screen, stored=stored, now=now):
             stored = store.list_research_opportunities()
+        _notify_screen(
+            store,
+            screen,
+            stored=stored,
+            notifier=notifier,
+            recipients=recipients,
+            now=now,
+            run_url=run_url,
+            run_id=run_id,
+        )
         break
 
     assert action is not None  # MAX_DECISIONS_PER_RUN >= 1

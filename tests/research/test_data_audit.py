@@ -24,10 +24,13 @@ import pytest
 
 from turboedge.research.data_audit import (
     ObservationState,
+    TimestampOrdering,
     classify,
+    classify_ordering,
     exit_value_bounds,
     ledger_census,
     pnl_bounds,
+    point_in_time_audit,
     quote_age_seconds,
     quote_freshness,
     snapshot_staleness_advantage,
@@ -514,6 +517,125 @@ class TestStalenessAdvantage:
         )
         assert neither.degenerate_side is None
         assert neither.interpretable
+
+
+class TestPointInTimeOrdering:
+    """Priority 2: is a quote stamped after the decision a leak?
+
+    No -- and the reason is in `pipeline/scan.py`: `prediction_time =
+    clock()` is the first line of `run_scan`, taken before any product is
+    fetched, so the issuer's quote timestamps land after it as a matter of
+    course. The decision really was made on those quotes. What it does
+    mean is that quote age *at the decision* is not recoverable from the
+    ledger, and a metric that treats `prediction_time` as the decision
+    instant measures the wrong thing.
+
+    A quote stamped beyond any plausible scan duration is separated out,
+    because ordering alone cannot explain it.
+    """
+
+    def test_a_quote_before_the_decision_is_unambiguous(
+        self, make_entry: Callable[..., LedgerEntry]
+    ) -> None:
+        entry = make_entry(
+            entry_quote_timestamp=datetime(2026, 8, 1, 7, 59, tzinfo=UTC),
+            prediction_time=datetime(2026, 8, 1, 8, 0, tzinfo=UTC),
+        )
+        assert classify_ordering(entry) is TimestampOrdering.QUOTE_BEFORE_DECISION
+
+    def test_a_quote_inside_the_scan_window_is_expected_not_a_defect(
+        self, make_entry: Callable[..., LedgerEntry]
+    ) -> None:
+        """The production median. 20 seconds after the scan's first line."""
+        entry = make_entry(
+            entry_quote_timestamp=datetime(2026, 8, 1, 8, 0, 20, tzinfo=UTC),
+            prediction_time=datetime(2026, 8, 1, 8, 0, tzinfo=UTC),
+        )
+        assert classify_ordering(entry) is TimestampOrdering.QUOTE_WITHIN_SCAN_WINDOW
+
+    def test_a_quote_beyond_any_plausible_scan_is_flagged(
+        self, make_entry: Callable[..., LedgerEntry]
+    ) -> None:
+        """5,587 seconds was the measured maximum. No scan takes 93 minutes."""
+        entry = make_entry(
+            entry_quote_timestamp=datetime(2026, 8, 1, 9, 33, tzinfo=UTC),
+            prediction_time=datetime(2026, 8, 1, 8, 0, tzinfo=UTC),
+        )
+        assert classify_ordering(entry) is TimestampOrdering.QUOTE_BEYOND_SCAN_WINDOW
+        audit = point_in_time_audit([entry])
+        assert audit.leak_suspected
+        assert audit.beyond_window == 1
+
+    def test_ordering_within_the_window_does_not_suspect_a_leak(
+        self, make_entry: Callable[..., LedgerEntry]
+    ) -> None:
+        """The whole point: thousands of negative ages are not thousands of
+        leaks, and the audit must not cry wolf about them."""
+        entries = [
+            make_entry(
+                entry_quote_timestamp=datetime(2026, 8, 1, 8, 0, s, tzinfo=UTC),
+                prediction_time=datetime(2026, 8, 1, 8, 0, tzinfo=UTC),
+            )
+            for s in range(1, 60)
+        ]
+        audit = point_in_time_audit(entries)
+        assert not audit.leak_suspected
+        assert audit.by_ordering[TimestampOrdering.QUOTE_WITHIN_SCAN_WINDOW.value] == 59
+
+    def test_the_schema_forbids_a_decision_without_a_quote_timestamp(self) -> None:
+        """Stronger than testing the NO_QUOTE_TIMESTAMP branch: it cannot occur.
+
+        `LedgerEntry.entry_quote_timestamp` is a required, non-optional
+        datetime, so a validated entry always carries one and the class is
+        unreachable through this path. It stays in the enum because
+        `quote_age_seconds` is typed to accept the absence, and a silent
+        `0` there would be the worst possible default.
+        """
+        import pydantic
+
+        assert LedgerEntry.model_fields["entry_quote_timestamp"].is_required()
+        with pytest.raises(pydantic.ValidationError):
+            LedgerEntry.model_validate({"entry_quote_timestamp": None})
+
+    def test_the_distribution_is_reported_not_just_a_median(
+        self, make_entry: Callable[..., LedgerEntry]
+    ) -> None:
+        """A median of -20s and a max of -5,587s are different situations."""
+        entries = [
+            make_entry(
+                entry_quote_timestamp=datetime(2026, 8, 1, 8, 0, tzinfo=UTC) + timedelta(seconds=s),
+                prediction_time=datetime(2026, 8, 1, 8, 0, tzinfo=UTC),
+            )
+            for s in [20] * 99 + [5587]
+        ]
+        audit = point_in_time_audit(entries)
+        assert audit.age_quantiles["p50"] == pytest.approx(-20.0)
+        assert audit.min_age_seconds == pytest.approx(-5587.0)
+        assert audit.beyond_window == 1
+
+    def test_the_breakdown_is_per_issuer(self, make_entry: Callable[..., LedgerEntry]) -> None:
+        """A provider clock would show up in one issuer, not all of them."""
+        entries = [
+            make_entry(
+                issuer="A",
+                entry_quote_timestamp=datetime(2026, 8, 1, 8, 0, 20, tzinfo=UTC),
+                prediction_time=datetime(2026, 8, 1, 8, 0, tzinfo=UTC),
+            ),
+            make_entry(
+                issuer="B",
+                entry_quote_timestamp=datetime(2026, 8, 1, 9, 33, tzinfo=UTC),
+                prediction_time=datetime(2026, 8, 1, 8, 0, tzinfo=UTC),
+            ),
+        ]
+        audit = point_in_time_audit(entries)
+        assert audit.by_issuer["A"] == {TimestampOrdering.QUOTE_WITHIN_SCAN_WINDOW.value: 1}
+        assert audit.by_issuer["B"] == {TimestampOrdering.QUOTE_BEYOND_SCAN_WINDOW.value: 1}
+
+    def test_a_negative_scan_window_is_refused(
+        self, make_entry: Callable[..., LedgerEntry]
+    ) -> None:
+        with pytest.raises(ValueError, match="scan_seconds must be >= 0"):
+            classify_ordering(make_entry(), scan_seconds=-1.0)
 
 
 class TestSnapshotStalenessAdvantage:

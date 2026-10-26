@@ -585,7 +585,17 @@ jobs:
       # inflate the research ledger -- which is the denominator the
       # multiple-testing correction depends on.
       - name: Decide the next research step
+        # The Gmail secrets belong here and were missing until 2026-10-26:
+        # scan, eod, weekly and monthly all pass them, `research` did not.
+        # Without them `GmailCredentials.from_env()` returns None and every
+        # notification a screen produces is a dry run -- so the automatic
+        # path existed in code and could never deliver. GITHUB_* are
+        # injected by Actions and give the alert its run reference.
         run: uv run turboedge --log-format json research step
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          TURBOEDGE_EMAIL_TO: ${{ secrets.TURBOEDGE_EMAIL_TO }}
 
       - name: Job summary
         if: always()

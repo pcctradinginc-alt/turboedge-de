@@ -52,6 +52,7 @@ from pydantic import BaseModel, ConfigDict
 from turboedge.meta.research_opportunity import (
     Estimate,
     InformationFamily,
+    ResearchKind,
     ResearchOpportunity,
     ResearchStatus,
 )
@@ -100,6 +101,7 @@ def _opportunity(
     affected_underlyings: tuple[str, ...],
     affected_horizons: tuple[str, ...],
     *,
+    research_kind: ResearchKind,
     expected_information_gain: Estimate,
     expected_economic_value: Estimate,
     probability_of_resolving_uncertainty: Estimate,
@@ -113,6 +115,7 @@ def _opportunity(
         hypothesis_id=hypothesis_id,
         description=description,
         information_family=information_family,
+        research_kind=research_kind,
         affected_underlyings=list(affected_underlyings),
         affected_horizons=list(affected_horizons),
         expected_information_gain=expected_information_gain,
@@ -137,6 +140,7 @@ _CBOE_VOL_STATE = _opportunity(
     InformationFamily.VOLATILITY_SURFACE,
     _ALL_UNDERLYINGS,
     _ALL_HORIZONS,
+    research_kind=ResearchKind.ALPHA_HYPOTHESIS,
     expected_information_gain=Estimate.declared(
         0.05,
         "W12-A (TR-2026Q3-abd750, 2026-09-25) already measured the linear/ridge construction "
@@ -197,6 +201,7 @@ _EUREX_POSITIONING = _opportunity(
     InformationFamily.POSITIONING,
     ("DAX",),
     _ALL_HORIZONS,
+    research_kind=ResearchKind.ALPHA_HYPOTHESIS,
     expected_information_gain=Estimate.declared(
         0.35,
         "Eurex's own DAX/Bund positioning is the closest analogue to the CFTC financial-futures "
@@ -256,6 +261,7 @@ _EUWAX_SENTIMENT = _opportunity(
     InformationFamily.SENTIMENT,
     ("DAX",),
     ("3d", "5d", "7d"),
+    research_kind=ResearchKind.ALPHA_HYPOTHESIS,
     expected_information_gain=Estimate.declared(
         0.25,
         "Euwax sentiment would be a genuinely novel information source -- retail flow, distinct "
@@ -313,6 +319,7 @@ _CFTC_POSITIONING = _opportunity(
     InformationFamily.POSITIONING,
     _ALL_UNDERLYINGS,
     _ALL_HORIZONS,
+    research_kind=ResearchKind.ALPHA_HYPOTHESIS,
     expected_information_gain=Estimate.declared(
         0.03,
         "W12-D (TR-2026Q3-31e266, 2026-09-25) measured this exact construction (18 "
@@ -373,6 +380,7 @@ _RATES_CREDIT = _opportunity(
     InformationFamily.RATES_CREDIT,
     _ALL_UNDERLYINGS,
     _ALL_HORIZONS,
+    research_kind=ResearchKind.ALPHA_HYPOTHESIS,
     expected_information_gain=Estimate.declared(
         0.4,
         "Rates/credit conditions are a structurally different information channel from vol-state "
@@ -428,6 +436,7 @@ _MARKET_BREADTH = _opportunity(
     InformationFamily.BREADTH_DISPERSION,
     ("DAX", "NDX"),
     ("5d", "7d", "10d", "14d"),
+    research_kind=ResearchKind.ALPHA_HYPOTHESIS,
     expected_information_gain=Estimate.declared(
         0.3,
         "Breadth divergence (index rising while few constituents participate) is a "
@@ -482,6 +491,7 @@ _DISPERSION = _opportunity(
     InformationFamily.BREADTH_DISPERSION,
     ("DAX", "NDX"),
     _ALL_HORIZONS,
+    research_kind=ResearchKind.ALPHA_HYPOTHESIS,
     expected_information_gain=Estimate.declared(
         0.3,
         "Dispersion is mechanically linked to index realised volatility (index vol is a "
@@ -535,6 +545,7 @@ _EVENT_RISK = _opportunity(
     InformationFamily.EVENT_RISK,
     _ALL_UNDERLYINGS,
     ("3d", "5d", "7d"),
+    research_kind=ResearchKind.ALPHA_HYPOTHESIS,
     expected_information_gain=Estimate.declared(
         0.35,
         "The gap-premium model already estimates unconditional overnight/weekend gap "
@@ -592,6 +603,7 @@ _MAE_PREDICTION = _opportunity(
     InformationFamily.PATH_STATISTICS,
     _ALL_UNDERLYINGS,
     _ALL_HORIZONS,
+    research_kind=ResearchKind.RISK_IMPROVEMENT,
     expected_information_gain=Estimate.declared(
         0.35,
         "The labeler already computes realised MAE per matured ledger entry (an unconditional "
@@ -652,6 +664,7 @@ _MFE_PREDICTION = _opportunity(
     InformationFamily.PATH_STATISTICS,
     _ALL_UNDERLYINGS,
     _ALL_HORIZONS,
+    research_kind=ResearchKind.RISK_IMPROVEMENT,
     expected_information_gain=Estimate.declared(
         0.3,
         "Symmetric hypothesis to MAE prediction, using the same labeled MFE distribution; scored "
@@ -702,6 +715,7 @@ _CROSS_ASSET_RESIDUAL_MOMENTUM = _opportunity(
     InformationFamily.CROSS_ASSET,
     _ALL_UNDERLYINGS,
     ("3d", "5d", "7d"),
+    research_kind=ResearchKind.ALPHA_HYPOTHESIS,
     expected_information_gain=Estimate.declared(
         0.2,
         "SIGNAL_REGISTRY.md records cross_asset_leadlag (W9-2026Q3-005) as already tested and "
@@ -759,6 +773,7 @@ _ISSUER_SPREAD_BEHAVIOUR = _opportunity(
     InformationFamily.MICROSTRUCTURE,
     _ALL_UNDERLYINGS,
     _ALL_HORIZONS,
+    research_kind=ResearchKind.COST_EDGE,
     expected_information_gain=Estimate.declared(
         0.3,
         "The scan pipeline's cost ranking already uses a static, current spread; nothing here "
@@ -818,6 +833,7 @@ _FINANCING_BEHAVIOUR = _opportunity(
     InformationFamily.MICROSTRUCTURE,
     _ALL_UNDERLYINGS,
     _ALL_HORIZONS,
+    research_kind=ResearchKind.COST_EDGE,
     expected_information_gain=Estimate.declared(
         0.25,
         "The pricing engine already infers a static, per-scan financing spread; this hypothesis "
@@ -874,6 +890,7 @@ _PRODUCT_SELECTION_EDGE = _opportunity(
     InformationFamily.PRODUCT_SELECTION,
     _ALL_UNDERLYINGS,
     _ALL_HORIZONS,
+    research_kind=ResearchKind.COST_EDGE,
     expected_information_gain=Estimate.declared(
         0.3,
         "The system already stores a median-product counterfactual per decision specifically to "
@@ -942,6 +959,7 @@ _DAY_NIGHT_MOMENTUM = _opportunity(
     # adding a horizon to the production pipeline first -- a structural
     # barrier that exists regardless of whether the statistics work.
     ("3d",),
+    research_kind=ResearchKind.ALPHA_HYPOTHESIS,
     expected_information_gain=Estimate.declared(
         0.3,
         "Published as an effect in the equity literature (Barardehi, Bogousslavsky and Muravyev "
@@ -1004,6 +1022,7 @@ _LOTTERY_PRICING = _opportunity(
     InformationFamily.PRODUCT_SELECTION,
     _ALL_UNDERLYINGS,
     _ALL_HORIZONS,
+    research_kind=ResearchKind.COST_EDGE,
     expected_information_gain=Estimate.declared(
         0.4,
         "The archive holds the quotes this needs and nothing has asked the question of it. "

@@ -88,6 +88,36 @@ class Estimate(BaseModel):
         return cls(value=None, basis=EstimateBasis.UNKNOWN, note=note)
 
 
+class ResearchKind(StrEnum):
+    """What *kind* of thing a question could establish, if it held.
+
+    WHY THIS IS A SEPARATE AXIS FROM `InformationFamily`. The family says
+    where the information comes from; this says what a positive result
+    would entitle anyone to conclude. They are routinely conflated, and
+    the conflation is expensive: a better risk calibration is not a
+    trading edge, and a cheaper product is not a profitable trade.
+
+    The operator's decision of 2026-10-26 requires A02
+    (`RO-LOTTERY-PRICING`) to carry `COST_EDGE` explicitly, so that a
+    positive screen can never be reported as confirmed economic alpha.
+    `notifications/alpha.py` reads this to pick a notification's wording.
+    """
+
+    #: A directional claim about future returns. The only kind that could
+    #: ever become tradeable alpha on its own.
+    ALPHA_HYPOTHESIS = "ALPHA_HYPOTHESIS"
+    #: A cheaper way to express a decision already taken on other grounds.
+    #: Cannot create a trade and cannot substitute for a missing edge.
+    COST_EDGE = "COST_EDGE"
+    #: Better risk measurement or calibration. Improves sizing and exits;
+    #: produces no expected return by itself.
+    RISK_IMPROVEMENT = "RISK_IMPROVEMENT"
+    #: A method for telling real results from artefacts.
+    RESEARCH_METHOD = "RESEARCH_METHOD"
+    #: A method for establishing whether the data can bear a question.
+    DATA_QUALITY_METHOD = "DATA_QUALITY_METHOD"
+
+
 class InformationFamily(StrEnum):
     """Coarse grouping used for redundancy detection (§7, §9).
 
@@ -151,6 +181,12 @@ class ResearchOpportunity(BaseModel):
     hypothesis_id: str
     description: str
     information_family: InformationFamily
+    #: What a positive result would entitle anyone to conclude. Defaults to
+    #: ALPHA_HYPOTHESIS only so that rows persisted before this field
+    #: existed still deserialize; every catalogue entry sets it explicitly
+    #: and `tests/meta/test_catalog.py` pins the whole mapping, so no entry
+    #: can silently inherit the default.
+    research_kind: ResearchKind = ResearchKind.ALPHA_HYPOTHESIS
     affected_underlyings: list[str] = Field(default_factory=list)
     affected_horizons: list[str] = Field(default_factory=list)
 
@@ -277,6 +313,7 @@ __all__ = [
     "EstimateBasis",
     "InformationFamily",
     "PriorityFactor",
+    "ResearchKind",
     "ResearchOpportunity",
     "ResearchPriority",
     "ResearchStatus",

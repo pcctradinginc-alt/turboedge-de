@@ -16,12 +16,15 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, date, datetime
+from typing import ClassVar
 
 import pytest
 
+from turboedge.meta.research_opportunity import ResearchKind
 from turboedge.notifications.alpha import (
     AlphaAlert,
     AlphaAlertKind,
+    alert_for_screen,
     alpha_alert_hash,
     delivery_test_alerts,
     render_alpha_alert,
@@ -34,6 +37,7 @@ NOW = datetime(2026, 10, 26, 20, 0, tzinfo=UTC)
 def _confirmed(**over: object) -> AlphaAlert:
     base = AlphaAlert(
         kind=AlphaAlertKind.CONFIRMED,
+        research_kind=ResearchKind.ALPHA_HYPOTHESIS,
         hypothesis_id="RO-EXAMPLE",
         signal_description="Beispiel.",
         mechanism="Beispielmechanismus.",
@@ -322,3 +326,124 @@ class TestDispatch:
         base: dict[str, object] = {"recipients": ["a@b.c"], "now": NOW}
         with pytest.raises(ValueError, match=match):
             send_alpha_alert(_Notifier(), _Dedup(), _confirmed(), **{**base, **kwargs})  # type: ignore[arg-type]
+
+
+class TestKindAwareWording:
+    """The condition the 2026-10-26 authorisation was granted under.
+
+    A cost finding must never reach the operator worded as an alpha
+    discovery. The subject uses a different noun and the body opens with
+    an explicit denial, so neither a skim of the inbox nor a skim of the
+    first lines can mislead.
+    """
+
+    def test_a_cost_edge_subject_says_kostenvorteil_not_alpha_kandidat(self) -> None:
+        subject, _body = render_alpha_alert(
+            _confirmed(kind=AlphaAlertKind.CANDIDATE, research_kind=ResearchKind.COST_EDGE)
+        )
+
+        assert "Kostenvorteil-Kandidat" in subject
+        assert "Alpha-Kandidat" not in subject
+
+    def test_a_cost_edge_body_opens_by_denying_it_is_alpha(self) -> None:
+        _subject, body = render_alpha_alert(
+            _confirmed(kind=AlphaAlertKind.CANDIDATE, research_kind=ResearchKind.COST_EDGE)
+        )
+
+        assert body.index("DIES IST KEIN ALPHA") < body.index("Status:")
+        assert "sagt nichts über die" in body
+        assert "kann keinen Trade profitabel machen" in body
+
+    def test_a_risk_improvement_is_also_denied_alpha_status(self) -> None:
+        _subject, body = render_alpha_alert(
+            _confirmed(kind=AlphaAlertKind.CANDIDATE, research_kind=ResearchKind.RISK_IMPROVEMENT)
+        )
+        assert "DIES IST KEIN ALPHA" in body
+        assert "erzeugt aber selbst keinen Ertrag" in body
+
+    def test_an_alpha_hypothesis_carries_no_denial_banner(self) -> None:
+        _subject, body = render_alpha_alert(
+            _confirmed(kind=AlphaAlertKind.CANDIDATE, research_kind=ResearchKind.ALPHA_HYPOTHESIS)
+        )
+        assert "DIES IST KEIN ALPHA" not in body
+
+    def test_the_kind_is_part_of_the_dedup_hash(self) -> None:
+        """Reclassifying a question is news, so it must not be suppressed."""
+        assert alpha_alert_hash(
+            _confirmed(research_kind=ResearchKind.COST_EDGE)
+        ) != alpha_alert_hash(_confirmed(research_kind=ResearchKind.ALPHA_HYPOTHESIS))
+
+
+class TestAlertForScreen:
+    """The automatic path: a completed screen becomes a message, or nothing."""
+
+    _METRICS: ClassVar[dict[str, object]] = {
+        "supported": True,
+        "cells_used": 107.0,
+        "products_used": 179248.0,
+        "mean_spread_slope": -0.4125,
+        "spread_ci_low": -0.6519,
+        "spread_ci_high": -0.2113,
+        "median_economic_size_bps": 19.6,
+    }
+
+    def _call(self, **over: object) -> AlphaAlert | None:
+        kwargs: dict[str, object] = dict(
+            hypothesis_id="RO-LOTTERY-PRICING",
+            research_kind=ResearchKind.COST_EDGE,
+            verdict="CANDIDATE",
+            supported=True,
+            description="Beispielbeschreibung.",
+            mechanism="Beispielmechanismus.",
+            underlyings=("DAX", "NDX"),
+            horizon_days=None,
+            metrics=self._METRICS,
+            screen_id="2026Q4_SCREEN_x",
+            run_url="https://example.invalid/run/1",
+            run_id="1",
+        )
+        kwargs.update(over)
+        return alert_for_screen(**kwargs)  # type: ignore[arg-type]
+
+    def test_an_unsupported_screen_produces_no_message(self) -> None:
+        """A screen that found nothing is not news."""
+        assert self._call(supported=False, verdict="NO_IMPROVEMENT") is None
+
+    def test_a_lookahead_suspect_cannot_be_announced(self) -> None:
+        """`supported` is already false for it, and that is the guard."""
+        assert self._call(supported=False, verdict="LOOKAHEAD_SUSPECT") is None
+
+    def test_a_supported_screen_is_always_only_a_candidate(self) -> None:
+        """A screen runs on DEVELOPMENT data, which is never evidence.
+
+        No number, however large, can turn a screen into a confirmation --
+        that is a property of where it ran.
+        """
+        alert = self._call()
+        assert alert is not None
+        assert alert.kind is AlphaAlertKind.CANDIDATE
+        assert alert.status == "EXPLORATORY_ONLY"
+        assert any("DEVELOPMENT" in limitation for limitation in alert.limitations)
+
+    def test_the_harness_numbers_are_carried_through(self) -> None:
+        alert = self._call()
+        assert alert is not None
+        assert alert.effect == pytest.approx(19.6)
+        assert alert.ci_low == pytest.approx(-0.6519)
+        assert alert.effective_sample == pytest.approx(107.0)
+        assert alert.observations == 179248
+        assert alert.screen_id == "2026Q4_SCREEN_x"
+
+    def test_a_missing_interval_is_absent_rather_than_invented(self) -> None:
+        alert = self._call(metrics={"supported": True, "cells_used": 50.0})
+        assert alert is not None
+        assert alert.ci_low is None and alert.ci_high is None
+        _subject, body = render_alpha_alert(alert)
+        assert "nicht bestimmbar" in body
+
+    def test_a_cost_edge_screen_renders_without_claiming_alpha(self) -> None:
+        alert = self._call()
+        assert alert is not None
+        subject, body = render_alpha_alert(alert)
+        assert "Kostenvorteil-Kandidat" in subject
+        assert "DIES IST KEIN ALPHA" in body

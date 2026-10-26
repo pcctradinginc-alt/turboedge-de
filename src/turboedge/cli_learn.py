@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 from dataclasses import asdict
 from datetime import UTC, date, datetime, timedelta
@@ -76,7 +77,9 @@ from turboedge.reporting.monthly import build_monthly_report
 from turboedge.reporting.redaction import redact_console_enabled
 from turboedge.reporting.weekly import run_research_tournament
 from turboedge.research.data_audit import (
+    PLAUSIBLE_SCAN_SECONDS,
     ledger_census,
+    point_in_time_audit,
     quote_freshness,
     snapshot_staleness_advantage,
 )
@@ -1679,11 +1682,25 @@ def research_step_cmd(
 
     with Store(app_ctx.db_path) as store:
         store.init_schema()
+        # The notification path is wired here rather than left to a
+        # separate command: a screen that finds something has to reach the
+        # operator without anyone asking it to. Credentials absent means a
+        # dry-run send, which records nothing and stays eligible.
+        creds = GmailCredentials.from_env()
         action = run_research_step(
             store,
             failed_hypotheses_path=failed_hypotheses_default_path(app_ctx.state_dir),
             now=datetime.now(UTC),
             dry_run=dry_run,
+            notifier=None if dry_run else GmailNotifier(app_ctx.cfg.gmail, creds),
+            recipients=creds.recipients if creds else (),
+            run_id=os.environ.get("GITHUB_RUN_ID"),
+            run_url=(
+                f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}"
+                f"/actions/runs/{os.environ['GITHUB_RUN_ID']}"
+                if {"GITHUB_SERVER_URL", "GITHUB_REPOSITORY", "GITHUB_RUN_ID"} <= os.environ.keys()
+                else None
+            ),
         )
         # Read back rather than threaded through the return value: the step
         # may record several screens in one run (walking past questions it
@@ -1820,6 +1837,23 @@ def research_data_audit_cmd(
         )
 
     console.print(f"QUOTE AGE AT DECISION  {freshness.summary()}", markup=False, highlight=False)
+    pit = point_in_time_audit([entry for entry, _ in rows])
+    console.print(f"POINT-IN-TIME ORDERING  {pit.summary()}", markup=False, highlight=False)
+    console.print(
+        f"    leak suspected: {pit.leak_suspected}  "
+        f"(a case beyond the scan window cannot be explained by ordering)",
+        markup=False,
+        highlight=False,
+    )
+    if pit.age_quantiles:
+        console.print(
+            "    prediction_time - quote_timestamp, seconds: "
+            + "  ".join(f"{k}={v:+.1f}" for k, v in pit.age_quantiles.items()),
+            markup=False,
+            highlight=False,
+        )
+    for issuer, counts in sorted(pit.by_issuer.items()):
+        console.print(f"    {issuer}: {counts}", markup=False, highlight=False)
     for label, report in (("verified-ratio only", strict), ("all ratios", permissive)):
         assoc = report.association
         if assoc.interpretable:
@@ -1877,6 +1911,17 @@ def research_data_audit_cmd(
                 }
                 for c in census.contrasts
             ],
+        },
+        "point_in_time_ordering": {
+            "n": pit.n,
+            "by_ordering": dict(pit.by_ordering),
+            "by_issuer": {k: dict(v) for k, v in pit.by_issuer.items()},
+            "age_quantiles": dict(pit.age_quantiles),
+            "min_age_seconds": pit.min_age_seconds,
+            "max_age_seconds": pit.max_age_seconds,
+            "beyond_window": pit.beyond_window,
+            "leak_suspected": pit.leak_suspected,
+            "plausible_scan_seconds": PLAUSIBLE_SCAN_SECONDS,
         },
         "quote_age_at_decision": {
             "n": freshness.n,

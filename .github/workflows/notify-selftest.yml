@@ -1,0 +1,89 @@
+# ---------------------------------------------------------------------
+# notify-selftest -- prove the alpha mails actually deliver, without
+# faking a discovery.
+#
+# WHY THIS EXISTS
+# `research step` sends a notification when a screen finds something, and
+# run 40397622319 showed that path delivering for real (`sent: true`).
+# What it also showed is the path getting the *wording* wrong: a COST_EDGE
+# question went out titled "Neuer Alpha-Kandidat". So delivery was proven
+# and correctness was not, and a marked test is the only way to prove the
+# second without waiting for another genuine finding.
+#
+# WHAT IT SENDS
+# Four messages, one per notification class plus a COST_EDGE candidate --
+# the class that was actually got wrong. Every one carries `[TEST]` in the
+# subject, a hypothesis id prefixed `RO-DELIVERY-TEST`, and a first body
+# line stating that no result is being described.
+#
+# WHY IT DOES NOT RESTORE STATE
+# Deliberate. `notify alpha-test` opens a store for the deduplication
+# table, and a fresh, empty one is exactly right here: the test sends on
+# its first pass and must be suppressed on its second, which is the
+# behaviour under test. Restoring the real state would instead let a
+# previous test suppress this one, and would write test rows into the
+# live dedup table.
+#
+# WHY IT CANNOT DAMAGE ANYTHING
+#   * `workflow_dispatch` only.
+#   * No state restore, no state pack, no artifact.
+#   * Nothing is written to the alpha registry or the research queue.
+#   * It sends mail, which is the point, and only to the configured
+#     recipients.
+# ---------------------------------------------------------------------
+name: Notification Self-Test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install Python 3.12
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Send the marked delivery test
+        # Exits non-zero if any send failed, so a broken credential or a
+        # blocked SMTP port fails the run rather than being reported as a
+        # successful test.
+        run: |
+          set -uo pipefail
+          mkdir -p state
+          uv run turboedge --state-dir ./state --log-format console notify alpha-test \
+            | tee reports.txt
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          TURBOEDGE_EMAIL_TO: ${{ secrets.TURBOEDGE_EMAIL_TO }}
+
+      - name: Job summary
+        if: always()
+        run: |
+          set -uo pipefail
+          {
+            echo "## Notification self-test"
+            echo
+            if [[ -f reports.txt ]]; then
+              echo '```'
+              cat reports.txt
+              echo '```'
+            else
+              echo "No output; see the step log."
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"

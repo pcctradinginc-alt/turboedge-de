@@ -39,6 +39,7 @@ _EXPECTED_IDS = {
     "RO-FINANCING-BEHAVIOUR",
     "RO-PRODUCT-SELECTION-EDGE",
     "RO-DAY-NIGHT-MOMENTUM",
+    "RO-LOTTERY-PRICING",
 }
 
 # The three inputs another agent enriches from real repository state.
@@ -73,10 +74,11 @@ def test_every_entry_is_valid_and_has_every_declared_idea() -> None:
     """Every catalog entry already validated at import time (pydantic); this
     just asserts the exact set is present, no more, no fewer.
 
-    Fifteen since 2026-10-25: RO-DAY-NIGHT-MOMENTUM was added as the first
-    catalogue question answerable without a matured forward ledger.
+    Sixteen: RO-DAY-NIGHT-MOMENTUM (2026-10-25) and RO-LOTTERY-PRICING
+    (2026-10-26) were added as the catalogue questions answerable without a
+    matured forward ledger.
     """
-    assert len(CATALOG) == 15
+    assert len(CATALOG) == 16
     assert {o.hypothesis_id for o in CATALOG} == _EXPECTED_IDS
 
 

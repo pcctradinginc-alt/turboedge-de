@@ -2,7 +2,7 @@
 
 In version 1 the controller must never invent a research question. It may
 only prioritise among a fixed, human-authored list. This module *is* that
-list: fifteen static entries, each a falsifiable hypothesis with the ten
+list: sixteen static entries, each a falsifiable hypothesis with the ten
 ranking inputs required by `research_opportunity.ResearchOpportunity`,
 supplied here as `Estimate`s.
 
@@ -21,7 +21,7 @@ against. A later stage enriches these three from real repository state.
 The other seven inputs are `DECLARED`, each with a `note` that is meant to
 be argued with -- particularly `estimated_sample_size`, which is stated as
 an honest count of *independent* observations, not raw rows. Two of the
-fifteen entries (Cboe volatility state, CFTC positioning) were already
+sixteen entries (Cboe volatility state, CFTC positioning) were already
 measured in Research Wave 2 (September 2026) and found not to clear the
 promotion ladder; their `DECLARED` inputs here reflect that prior result
 (low remaining information gain, low remaining economic value) rather than
@@ -993,6 +993,66 @@ _DAY_NIGHT_MOMENTUM = _opportunity(
 )
 
 
+_LOTTERY_PRICING = _opportunity(
+    "RO-LOTTERY-PRICING",
+    "Driessen, Ebert and Koeter's Pi-CAPM (RFS 38(12), 2025) derives a positive price effect for "
+    "skewness, amplified by volatility: investors overweight small probabilities of large gains. "
+    "A turbo is more lottery-like the closer its knock-out barrier sits to the spot. The "
+    "hypothesis is that issuers price into that preference, so executable round-trip cost worsens "
+    "as the barrier nears -- measured within (issuer, underlying, direction, minute) cells so "
+    "pricing style and market moment are differenced out.",
+    InformationFamily.PRODUCT_SELECTION,
+    _ALL_UNDERLYINGS,
+    _ALL_HORIZONS,
+    expected_information_gain=Estimate.declared(
+        0.4,
+        "The archive holds the quotes this needs and nothing has asked the question of it. "
+        "`measured_results.md` §4 records one issuer dominating the universe, so the honest "
+        "expectation is that within-issuer variation carries the answer and cross-issuer "
+        "comparison stays thin.",
+    ),
+    expected_economic_value=Estimate.declared(
+        0.2,
+        "A cost finding, not alpha, and the catalogue should not pretend otherwise: it could only "
+        "ever justify preferring a cheaper product for a trade already decided. The repository's "
+        "North Star is explicit that a cost edge does not substitute for a missing directional "
+        "edge, and no directional edge is confirmed.",
+    ),
+    probability_of_resolving_uncertainty=Estimate.declared(
+        0.75,
+        "High because the data requirement is already met -- archived bid/ask with barrier, ratio "
+        "and a quote timestamp -- and because the endpoint is a sign and a magnitude in basis "
+        "points rather than a model comparison. It does not wait on the forward ledger.",
+    ),
+    implementation_cost=Estimate.declared(
+        1.5,
+        "No new data source. A within-cell slope, a bootstrap over cells, and the filters that "
+        "decide which quotes count as standing.",
+    ),
+    implementation_complexity=Estimate.declared(
+        0.25,
+        "Low. The estimator is ordinary least squares inside a group; the care goes into what is "
+        "NOT used -- see the leakage note.",
+    ),
+    estimated_sample_size=Estimate.declared(
+        300.0,
+        "Cells, not snapshots. One well-covered minute can hold hundreds of products but is one "
+        "issuer at one moment, so it is one observation. The snapshot count is the flattering "
+        "number and the wrong one.",
+    ),
+    leakage_risk=Estimate.declared(
+        0.35,
+        "The dominant hazard is endogeneity rather than look-ahead: `pricing/intrinsic.leverage` "
+        "is computed from the ask, so regressing a cost on it would put the price on both sides "
+        "of the equation. Barrier distance is used instead, which depends only on the product's "
+        "terms and the underlying. Measured 2026-10-25, bucketing on an ask-derived leverage "
+        "collapsed a planted rank correlation from about 0.9 to 0.14. Quotes older than 300 "
+        "seconds are also excluded, because cheapness and quote age were measured to move "
+        "together (+0.129 [+0.086, +0.174]).",
+    ),
+)
+
+
 CATALOG: tuple[ResearchOpportunity, ...] = (
     _CBOE_VOL_STATE,
     _EUREX_POSITIONING,
@@ -1009,6 +1069,7 @@ CATALOG: tuple[ResearchOpportunity, ...] = (
     _FINANCING_BEHAVIOUR,
     _PRODUCT_SELECTION_EDGE,
     _DAY_NIGHT_MOMENTUM,
+    _LOTTERY_PRICING,
 )
 
 

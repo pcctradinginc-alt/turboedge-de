@@ -262,7 +262,7 @@ def test_a_failed_screen_is_not_support(
 def test_it_records_no_approved_harness_and_moves_on(
     store: Store, failed_path: Path, stub: _StubHarness
 ) -> None:
-    # Twelve of the fifteen catalogue questions have no harness. The loop
+    # Twelve of the sixteen catalogue questions have no harness. The loop
     # must say so and continue, not invent a procedure and not stop.
     _seed(store, "RO-UNANSWERABLE", priority=0.9)
 
@@ -750,7 +750,7 @@ def test_only_reviewed_exploratory_harnesses_are_registered() -> None:
     # `day_night` was added 2026-10-25: read-only, promotes nothing, and
     # allowed to answer that the sample is too small. The protective part
     # of this test is the two exclusions below, not the count.
-    assert names == {"excursion", "day_night"}
+    assert names == {"excursion", "day_night", "lottery_pricing"}
     assert "synthetic_ev" not in names and "synthetic-ev" not in names
     assert "ko_calibration" not in names and "ko-calibration" not in names
 
@@ -760,11 +760,12 @@ def test_the_registry_answers_exactly_the_reviewed_catalogue_questions() -> None
         "RO-MAE-PREDICTION",
         "RO-MFE-PREDICTION",
         "RO-DAY-NIGHT-MOMENTUM",
+        "RO-LOTTERY-PRICING",
     }
 
 
 def test_every_catalogue_question_either_resolves_or_is_honestly_unanswered() -> None:
-    # The honest state of the system: three of fifteen are answerable, and
+    # The honest state of the system: four of sixteen are answerable, and
     # the other twelve say so rather than being quietly skipped. The
     # day/night question is the only one of the three that does not wait
     # on the forward ledger, which is why it is the one that could run.
@@ -772,8 +773,8 @@ def test_every_catalogue_question_either_resolves_or_is_honestly_unanswered() ->
 
     resolved = {o.hypothesis_id: resolve_harness(o.hypothesis_id) is not None for o in CATALOG}
 
-    assert sum(resolved.values()) == 3
-    assert len(resolved) >= 15
+    assert sum(resolved.values()) == 4
+    assert len(resolved) >= 16
 
 
 def test_a_supporting_verdict_comes_from_the_harness_vocabulary() -> None:

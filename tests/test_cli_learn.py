@@ -526,7 +526,7 @@ def test_research_queue_seeds_the_catalog_and_prints_a_ranking(
     assert "RESEARCH QUEUE" in result.stdout
     payload = json.loads((tmp_path / "reports" / "summary.json").read_text())
     assert payload["mode"] == "research_queue"
-    assert payload["counts"]["seeded"] == 15
+    assert payload["counts"]["seeded"] == 16
 
 
 def test_research_queue_output_keeps_the_human_approval_notice(

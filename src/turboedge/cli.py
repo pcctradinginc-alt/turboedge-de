@@ -728,6 +728,82 @@ def notify_test(ctx: typer.Context) -> None:
     raise typer.Exit(code=0)
 
 
+@notify_app.command("alpha-test")
+def notify_alpha_test(ctx: typer.Context) -> None:
+    """Prove the three alpha mails deliver, without faking a discovery.
+
+    Sends one isolated delivery check per notification class. Every field
+    is visibly synthetic, the hypothesis ids are prefixed
+    ``RO-DELIVERY-TEST``, the subject carries ``[TEST]`` and the body opens
+    with a banner stating that no result is being described. Nothing is
+    written to the alpha registry and no research state changes.
+
+    Deduplication is exercised too: with credentials configured, the second
+    pass over the same three alerts must be suppressed, which is the
+    behaviour that stops a steady status from mailing daily. Without
+    credentials nothing is delivered, so nothing is recorded as sent and
+    the second pass correctly runs again -- a dry run has to stay eligible
+    for a later real attempt.
+    """
+    app_ctx = _load_app_context(ctx)
+
+    from turboedge.notifications.alpha import delivery_test_alerts, send_alpha_alert
+    from turboedge.notifications.dedup import NotificationDeduplicator
+    from turboedge.notifications.gmail import GmailNotifier
+    from turboedge.storage.duckdb import Store
+
+    creds = GmailCredentials.from_env()
+    notifier = GmailNotifier(app_ctx.cfg.gmail, creds)
+    recipients = creds.recipients if creds else ["test@example.com"]
+    now = datetime.now(UTC)
+
+    sent = 0
+    suppressed = 0
+    failed = 0
+    with Store(app_ctx.db_path) as store:
+        store.init_schema()
+        dedup = NotificationDeduplicator(store)
+        alerts = list(delivery_test_alerts())
+        # Twice on purpose: the first pass delivers, the second must be
+        # recognised as a duplicate.
+        for pass_number in (1, 2):
+            for alert in alerts:
+                result = send_alpha_alert(
+                    notifier if creds else None,
+                    dedup,
+                    alert,
+                    recipients=recipients,
+                    now=now,
+                )
+                label = str(alert.kind)
+                if result.suppressed_as_duplicate:
+                    suppressed += 1
+                    console.print(f"  pass {pass_number} {label}: suppressed as duplicate")
+                elif result.sent:
+                    sent += 1
+                    console.print(
+                        f"  pass {pass_number} {label}: sent in {result.attempts} attempt(s)"
+                    )
+                elif result.error:
+                    failed += 1
+                    err_console.print(f"  pass {pass_number} {label}: FAILED — {result.error}")
+                else:
+                    console.print(f"  pass {pass_number} {label}: dry run, nothing delivered")
+
+    console.print(
+        f"[blue]alpha-test: {sent} sent, {suppressed} suppressed, {failed} failed[/blue]",
+        markup=True,
+    )
+    if not creds:
+        console.print(
+            "[yellow]No Gmail credentials in the environment: dry run. Nothing was "
+            "delivered, so nothing was recorded as sent and the second pass was "
+            "correctly NOT suppressed -- a dry run must stay eligible for a later "
+            "real attempt. Suppression itself is covered by the unit tests.[/yellow]"
+        )
+    raise typer.Exit(code=1 if failed else 0)
+
+
 # --- position subcommand ---
 
 

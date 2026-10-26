@@ -41,6 +41,7 @@ def _snap(
     barrier_distance: float,
     relative_spread: float,
     minute_offset: int = 0,
+    day_offset: int = 0,
     quote_age: float = 1.0,
     ratio: float = 0.01,
     premium_fraction: float = 0.002,
@@ -49,7 +50,7 @@ def _snap(
     **over: object,
 ) -> ProductSnapshot:
     """One quote with an exactly prescribed barrier distance and spread."""
-    retrieved = BASE + timedelta(minutes=minute_offset)
+    retrieved = BASE + timedelta(days=day_offset, minutes=minute_offset)
     absolute = SPOT * barrier_distance
     barrier = SPOT - absolute if direction is Direction.LONG else SPOT + absolute
     # ask per unit = intrinsic + premium*spot, so premium is controllable
@@ -128,7 +129,10 @@ def _cells(
                     issuer=issuer(cell),
                     barrier_distance=distance,
                     relative_spread=max(spread, 1e-6),
-                    minute_offset=cell,
+                    # One cell per DAY: `distinct_days` is a verdict
+                    # criterion since 2026-10-26, and a fixture that put
+                    # every cell in one morning would exercise none of it.
+                    day_offset=cell,
                 )
             )
     return out
@@ -193,7 +197,7 @@ class TestPlantedSlope:
                 isin=f"DE000HUGE{p:03d}",
                 barrier_distance=0.02 + 0.01 * p,
                 relative_spread=max(0.01 - 5.0 * (0.02 + 0.01 * p - 0.045), 1e-6),
-                minute_offset=500,
+                day_offset=500,
             )
             for p in range(6)
         ]
@@ -303,6 +307,34 @@ class TestFilters:
         result = evaluate(_cells(5, slope=-0.2, products=MIN_PRODUCTS_PER_CELL - 1), reps=100)
         assert result.cells_used == 0
         assert result.dropped["cell_too_small"] == 5
+
+    def test_too_few_independent_days_is_insufficient_however_clean(self) -> None:
+        """The correction of 2026-10-26, as a criterion.
+
+        The first real run produced 107 cells spanning three days and a
+        tight interval. The interval was an artefact of treating cells from
+        the same minute as independent, so the day count is now checked
+        before it.
+        """
+        same_day = [
+            _snap(
+                isin=f"DE000ONED{i:03d}{p:02d}"[:12],
+                barrier_distance=0.02 + 0.01 * p,
+                relative_spread=max(0.01 - 0.2 * (0.02 + 0.01 * p - 0.045), 1e-6),
+                minute_offset=i,
+            )
+            for i in range(40)
+            for p in range(6)
+        ]
+        result = evaluate(same_day, reps=300)
+        assert result.cells_used >= MIN_CELLS
+        assert result.distinct_days == 1
+        assert result.verdict == "INSUFFICIENT_SAMPLE"
+
+    def test_the_day_and_minute_spread_are_reported(self) -> None:
+        result = evaluate(_cells(40, slope=-0.2, noise=0.0005), reps=300)
+        assert result.distinct_days == 40
+        assert result.clusters_used == 40
 
     def test_a_cell_with_one_barrier_distance_cannot_yield_a_slope(self) -> None:
         snaps = [

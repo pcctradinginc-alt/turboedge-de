@@ -83,6 +83,7 @@ from turboedge.research.data_audit import (
     quote_freshness,
     snapshot_staleness_advantage,
 )
+from turboedge.research.lottery_pricing import MIN_INDEPENDENT_DAYS
 from turboedge.research.lottery_pricing import evaluate as evaluate_lottery_pricing
 from turboedge.research.product_pairs import ComparabilityCriteria, census
 from turboedge.research.step import run_research_step
@@ -2004,6 +2005,13 @@ def research_lottery_pricing_cmd(
         highlight=False,
     )
     console.print(
+        f"  independence: {result.distinct_days} day(s), {result.distinct_minutes} minute(s), "
+        f"{result.clusters_used} (day, issuer) cluster(s); needs "
+        f"{MIN_INDEPENDENT_DAYS} day(s)",
+        markup=False,
+        highlight=False,
+    )
+    console.print(
         f"  spread slope {result.mean_spread_slope:+.6f} "
         f"[{result.spread_ci_low:+.6f}, {result.spread_ci_high:+.6f}]  "
         f"excludes zero: {result.interval_excludes_zero}",
@@ -2034,6 +2042,9 @@ def research_lottery_pricing_cmd(
         "verdict": result.verdict,
         "snapshots_read": len(snapshots),
         "cells_used": result.cells_used,
+        "distinct_days": result.distinct_days,
+        "distinct_minutes": result.distinct_minutes,
+        "clusters_used": result.clusters_used,
         "products_used": result.products_used,
         "mean_spread_slope": result.mean_spread_slope,
         "spread_ci_low": result.spread_ci_low,

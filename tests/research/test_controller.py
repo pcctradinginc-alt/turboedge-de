@@ -284,3 +284,35 @@ def test_when_nothing_can_run_the_wait_names_the_best_question_and_the_rest() ->
     assert action.hypothesis_id == "RO-BEST"
     assert "The other 1 screenable candidate(s) are blocked too." in action.reason
     assert len(action.evidence["skipped_for_data"]) == 2
+
+
+def test_a_skipped_question_explains_itself_in_the_harness_words() -> None:
+    """Run 40385586039 reported thirteen blocked candidates and no reason.
+
+    A blocked question whose cause is invisible cannot be acted on: the
+    operator cannot tell a young archive from a filter that drops
+    everything. The harness counted its own data, so its sentence is the
+    one that belongs in the record.
+    """
+    action = _decide(
+        candidates=[
+            _candidate(
+                hypothesis_id="RO-BLOCKED",
+                priority=0.9,
+                data_ready=False,
+                readiness_detail="12 usable cell(s) covering 300 quote(s); needs 30",
+            ),
+            _candidate(hypothesis_id="RO-RUNNABLE", priority=0.2),
+        ]
+    )
+
+    assert action.kind is ActionKind.START_EXPLORATORY
+    skipped = action.evidence["skipped_for_data"]
+    assert skipped[0]["detail"] == "12 usable cell(s) covering 300 quote(s); needs 30"
+
+
+def test_a_question_without_a_harness_detail_records_none_rather_than_a_guess() -> None:
+    action = _decide(candidates=[_candidate(data_ready=False)])
+
+    assert action.kind is ActionKind.AWAIT_DATA
+    assert action.evidence["skipped_for_data"][0]["detail"] is None

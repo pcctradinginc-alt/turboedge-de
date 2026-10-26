@@ -195,9 +195,11 @@ def build_candidates(
             and availability.value >= 1.0
         )
         measured = (harness_readiness or {}).get(opportunity.hypothesis_id)
+        readiness_detail: str | None = None
         if measured is not None:
             data_ready = measured.ready
             effective = measured.effective_sample
+            readiness_detail = measured.detail
         out.append(
             Candidate(
                 hypothesis_id=opportunity.hypothesis_id,
@@ -206,6 +208,7 @@ def build_candidates(
                 effective_sample=effective,
                 required_sample=REQUIRED_SCREEN_SAMPLE,
                 data_ready=data_ready,
+                readiness_detail=readiness_detail,
                 exploratory_done=opportunity.hypothesis_id in screened_hypothesis_ids,
                 has_exploratory_support=opportunity.hypothesis_id in supported_hypothesis_ids,
                 screenable=opportunity.hypothesis_id not in unharnessed_hypothesis_ids,

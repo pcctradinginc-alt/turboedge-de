@@ -390,6 +390,38 @@ def learn_cmd(ctx: typer.Context) -> None:
                 utilities, eta=app_ctx.cfg.learning.eta, w_min=app_ctx.cfg.learning.w_min
             )
             models_reweighted = len(utilities)
+        elif usable:
+            # Measured 2026-10-26, run 40377514500: 2,785 labelled entries
+            # produced `models_reweighted=0`, which read as "nothing needed
+            # reweighting" and is in fact "nothing could be attributed".
+            #
+            # `by_model` is keyed by `LedgerEntry.model_hash`, which
+            # `pipeline/scan.py` fills with `ensemble.model_hash` -- a hash
+            # of the *combination*. `model_id_by_hash` is keyed by the
+            # hashes of individual models as the scan registered them. Two
+            # different namespaces, so the intersection is empty by
+            # construction, not by accident. On top of that a model's hash
+            # covers `training_end` and its fitted coefficients, so it
+            # changes on every refit while the registry keeps only the
+            # newest -- a matured entry's hash could not match even within
+            # one namespace.
+            #
+            # Attributing an ensemble's realised P&L back to its members
+            # needs the per-model weights as they stood at prediction time,
+            # and the ledger does not record them. So this is reported
+            # rather than guessed: an invented attribution would move real
+            # model weights on made-up evidence.
+            logger.warning(
+                "learn_weights_unattributable",
+                labeled_entries=len(usable),
+                distinct_ledger_model_hashes=len(by_model),
+                registered_model_hashes=len(model_id_by_hash),
+                reason=(
+                    "no labelled entry's model_hash matches a registered model; the "
+                    "ledger records the ensemble hash while the registry records "
+                    "per-model hashes, and a model's hash changes on every refit"
+                ),
+            )
 
         drift_events = 0
         for family, chrono in by_family_chrono.items():
@@ -412,6 +444,11 @@ def learn_cmd(ctx: typer.Context) -> None:
         "models_reweighted": models_reweighted,
         "drift_events": drift_events,
         "labeled_entries_considered": len(usable),
+        # Reported alongside the count so that a zero can be read. A
+        # `models_reweighted=0` with zero unattributable entries means
+        # there was nothing to learn from; with thousands it means the
+        # attribution failed, and those are opposite situations.
+        "labeled_entries_unattributable": len(usable) if not models_reweighted else 0,
     }
     _print_counts("learn", counts)
     _write_summary("learn", counts)

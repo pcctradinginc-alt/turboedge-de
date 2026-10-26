@@ -335,6 +335,9 @@ def _run_lottery_pricing(store: Store, hypothesis_id: str, now: datetime) -> Har
     )
     metrics: dict[str, Any] = {
         "cells_used": result.cells_used,
+        "distinct_days": result.distinct_days,
+        "distinct_minutes": result.distinct_minutes,
+        "clusters_used": result.clusters_used,
         "products_used": result.products_used,
         "snapshots_read": len(snapshots),
         "mean_spread_slope": result.mean_spread_slope,

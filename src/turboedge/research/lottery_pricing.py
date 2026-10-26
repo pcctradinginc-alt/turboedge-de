@@ -55,13 +55,32 @@ differences out the issuer's pricing style *and* the market moment
 together, which is what makes a slope attributable to barrier distance
 rather than to who quoted it or when.
 
-**Unit of independence.** One cell is one issuer at one moment, so one
-cell is **one** observation, not one per product. The interval resamples
-cells. Pooling products as independent would overstate the sample by
-roughly the products per cell.
+**Unit of independence, corrected 2026-10-26.** A cell is one issuer at
+one moment, so a cell is not one product -- that much was right. It is
+also not independent of the other cells from the same minute or the same
+day, and the first run showed how badly that matters: 107 cells spanned
+**3 distinct days and 16 distinct minutes** (27 cells on 22 October, 16
+on the 23rd, 64 on the 26th). A bootstrap over cells therefore reported
+an interval far narrower than the sample supports.
+
+The interval now resamples **(day, issuer)** clusters, and the verdict
+requires at least ``MIN_INDEPENDENT_DAYS`` distinct days. Both are
+stricter than what came before; neither can flatter a result.
+
+There is a structural reason the day count is small, and it caps this
+experiment rather than this run: ``state/retention.py`` thins
+``product_snapshots`` older than five days to one row per ISIN per day,
+and a single row per day cannot form a same-minute comparison group. So a
+thirty-day lookback contributes roughly five days of usable within-minute
+structure however often the screen runs. Accumulating independent days
+means combining results across runs, or keeping full depth for a sampled
+subset of products.
 
 **Falsification, declared in advance.** The hypothesis FAILS if any of:
 
+0. fewer than ``MIN_INDEPENDENT_DAYS`` distinct days (added 2026-10-26
+   after the first run measured three, and checked before the interval
+   because an interval from three clusters is not evidence);
 1. fewer than ``MIN_CELLS`` usable cells;
 2. the bootstrap interval for the mean within-cell slope includes zero;
 3. the economic size -- the fitted spread difference between the 10th and
@@ -99,6 +118,12 @@ MIN_CELLS = 30
 #: Minimum products in a cell. A slope needs spread in the regressor, and
 #: two points always fit a line exactly.
 MIN_PRODUCTS_PER_CELL = 4
+
+#: Minimum distinct calendar days before the result is reportable. A
+#: cluster bootstrap over fewer than about ten clusters is badly biased,
+#: and ten is already the lenient end of the usual guidance. Measured on
+#: the first real run this is the binding constraint: three days.
+MIN_INDEPENDENT_DAYS = 10
 
 #: Smallest spread difference across the barrier-distance range that counts
 #: as economically relevant, in basis points of the ask. One basis point of
@@ -153,6 +178,11 @@ class LotteryPricingResult:
     premium_ci_high: float
     mean_economic_size_bps: float
     median_economic_size_bps: float
+    #: Distinct calendar days and minutes the cells span -- the honest
+    #: sample size in time, as against the cell count.
+    distinct_days: int
+    distinct_minutes: int
+    clusters_used: int
     products_used: int
     dropped: Mapping[str, int]
 
@@ -177,6 +207,10 @@ class LotteryPricingResult:
         refutation, not a candidate.
         """
         if self.cells_used < MIN_CELLS:
+            return "INSUFFICIENT_SAMPLE"
+        # Before the interval, because an interval from three clusters is
+        # not evidence whatever it looks like.
+        if self.distinct_days < MIN_INDEPENDENT_DAYS:
             return "INSUFFICIENT_SAMPLE"
         if not self.interval_excludes_zero:
             return "NO_IMPROVEMENT"
@@ -345,6 +379,9 @@ def evaluate(
             premium_ci_high=float("nan"),
             mean_economic_size_bps=float("nan"),
             median_economic_size_bps=float("nan"),
+            distinct_days=0,
+            distinct_minutes=0,
+            clusters_used=0,
             products_used=0,
             dropped=dict(dropped),
         )
@@ -353,11 +390,28 @@ def evaluate(
     premium_arr = np.asarray([c.premium_slope for c in slopes], dtype=np.float64)
     size_arr = np.asarray([c.economic_size_bps for c in slopes], dtype=np.float64)
 
+    # Cluster by (day, issuer) and resample CLUSTERS, not cells. Two cells
+    # from the same issuer in the same minute share a quote batch and a
+    # market state; treating them as independent is what produced the
+    # first run's over-narrow interval.
+    clusters: dict[tuple[object, str], list[int]] = {}
+    for i, cell in enumerate(slopes):
+        clusters.setdefault((cell.minute.date(), cell.issuer), []).append(i)
+    cluster_members = list(clusters.values())
+    distinct_days = len({c.minute.date() for c in slopes})
+    distinct_minutes = len({c.minute for c in slopes})
+    cluster_spread = np.asarray(
+        [float(np.mean(spread_arr[idx])) for idx in cluster_members], dtype=np.float64
+    )
+    cluster_premium = np.asarray(
+        [float(np.nanmean(premium_arr[idx])) for idx in cluster_members], dtype=np.float64
+    )
+
     rng = np.random.default_rng(seed)
-    if spread_arr.size >= 3:
-        draws = rng.integers(0, spread_arr.size, size=(reps, spread_arr.size))
-        spread_means = spread_arr[draws].mean(axis=1)
-        premium_means = np.nan_to_num(premium_arr, nan=0.0)[draws].mean(axis=1)
+    if cluster_spread.size >= 3:
+        draws = rng.integers(0, cluster_spread.size, size=(reps, cluster_spread.size))
+        spread_means = cluster_spread[draws].mean(axis=1)
+        premium_means = np.nan_to_num(cluster_premium, nan=0.0)[draws].mean(axis=1)
         lo, hi = (
             float(np.quantile(spread_means, alpha / 2)),
             float(np.quantile(spread_means, 1 - alpha / 2)),
@@ -379,6 +433,9 @@ def evaluate(
         premium_ci_high=p_hi,
         mean_economic_size_bps=float(np.mean(size_arr)),
         median_economic_size_bps=float(np.median(size_arr)),
+        distinct_days=distinct_days,
+        distinct_minutes=distinct_minutes,
+        clusters_used=len(cluster_members),
         products_used=products_used,
         dropped=dict(dropped),
     )
@@ -388,6 +445,7 @@ __all__ = [
     "MAX_QUOTE_AGE_SECONDS",
     "MIN_CELLS",
     "MIN_ECONOMIC_SIZE_BPS",
+    "MIN_INDEPENDENT_DAYS",
     "MIN_PRODUCTS_PER_CELL",
     "CellSlope",
     "LotteryPricingResult",

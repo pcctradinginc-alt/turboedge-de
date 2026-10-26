@@ -560,6 +560,22 @@ def delivery_test_alerts() -> Sequence[AlphaAlert]:
             **common,  # type: ignore[arg-type]
         ),
         AlphaAlert(
+            kind=AlphaAlertKind.CANDIDATE,
+            research_kind=ResearchKind.COST_EDGE,
+            hypothesis_id="RO-DELIVERY-TEST-COST-EDGE",
+            signal_description="Synthetisches Beispiel ohne Bezug zu Marktdaten.",
+            mechanism="Keiner. Dies ist ein Zustelltest.",
+            effect=0.0,
+            effect_unit="(Testwert, keine Einheit)",
+            ci_low=-1.0,
+            ci_high=1.0,
+            effective_sample=0.0,
+            observations=0,
+            null_comparison="Kein Vergleich durchgeführt.",
+            limitations=("Dies ist ein Zustelltest und kein Messergebnis.",),
+            **{k: v for k, v in common.items() if k != "research_kind"},  # type: ignore[arg-type]
+        ),
+        AlphaAlert(
             kind=AlphaAlertKind.DEGRADED,
             hypothesis_id="RO-DELIVERY-TEST-DEGRADED",
             signal_description="Synthetisches Beispielsignal ohne Bezug zu Marktdaten.",

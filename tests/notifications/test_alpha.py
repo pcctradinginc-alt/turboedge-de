@@ -185,6 +185,20 @@ class TestRenderContent:
         _subject, body = render_alpha_alert(_confirmed(limitations=()))
         assert "Keine benannt. Das ist selbst eine Einschränkung." in body
 
+    def test_the_delivery_test_covers_the_class_that_was_got_wrong(self) -> None:
+        """Run 40397622319 mis-titled a COST_EDGE as alpha.
+
+        A delivery test that only covered the alpha path would have passed
+        while the one path production actually got wrong stayed untested.
+        """
+        alerts = delivery_test_alerts()
+        assert ResearchKind.COST_EDGE in {a.research_kind for a in alerts}
+        cost = next(a for a in alerts if a.research_kind is ResearchKind.COST_EDGE)
+        subject, body = render_alpha_alert(cost)
+        assert "Kostenvorteil-Kandidat" in subject
+        assert "Alpha-Kandidat" not in subject
+        assert "DIES IST KEIN ALPHA" in body
+
     def test_every_test_alert_announces_itself(self) -> None:
         for alert in delivery_test_alerts():
             subject, body = render_alpha_alert(alert)

@@ -407,7 +407,11 @@ def test_nothing_in_the_decision_path_imports_this_module() -> None:
         "forecast",
         "meta",
     )
-    pattern = re.compile(r"\blottery_pricing\b")
+    # An *import*, not a mention. The first version of this grepped for the
+    # module name anywhere and tripped on a docstring in
+    # `learning/attribution.py` that referred to this module in prose --
+    # which is a cross-reference, not a dependency.
+    pattern = re.compile(r"^\s*(?:from|import)\s+\S*\blottery_pricing\b", re.MULTILINE)
     offenders = [
         path.relative_to(root).as_posix()
         for path in root.rglob("*.py")

@@ -1895,16 +1895,20 @@ def research_data_audit_cmd(
     # Model attribution for the labelled entries. Resolved per run so a
     # scan's handful of forecast rows is fetched once rather than once per
     # entry, which matters when a run carries thousands of entries.
-    labelled = [(e, label) for e, label in rows if label is not None]
+    labelled_rows = [(e, lab) for e, lab in rows if lab is not None]
     attribution_rows = []
     with Store(app_ctx.db_path) as store:
         store.init_schema()
         forecasts_by_run: dict[str, list[object]] = {}
-        for entry, label in labelled:
+        for entry, entry_label in labelled_rows:
             if entry.run_id not in forecasts_by_run:
                 forecasts_by_run[entry.run_id] = list(store.list_forecasts(run_id=entry.run_id))
             attribution_rows.append(
-                (entry, label, resolve_attribution(entry, forecasts_by_run[entry.run_id]))  # type: ignore[arg-type]
+                (
+                    entry,
+                    entry_label,
+                    resolve_attribution(entry, forecasts_by_run[entry.run_id]),
+                )
             )
     attribution = attribution_report(attribution_rows)  # type: ignore[arg-type]
 

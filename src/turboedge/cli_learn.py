@@ -91,6 +91,7 @@ from turboedge.research.step import run_research_step
 from turboedge.simulation.ko_calibration import build_ko_calibration_dataset
 from turboedge.storage.duckdb import Store
 from turboedge.storage.schemas import (
+    ForecastRecord,
     KoCalibrationPromotionRecord,
     KoCalibrationResultRecord,
     LedgerEntryStatus,
@@ -1899,7 +1900,7 @@ def research_data_audit_cmd(
     attribution_rows = []
     with Store(app_ctx.db_path) as store:
         store.init_schema()
-        forecasts_by_run: dict[str, list[object]] = {}
+        forecasts_by_run: dict[str, list[ForecastRecord]] = {}
         for entry, entry_label in labelled_rows:
             if entry.run_id not in forecasts_by_run:
                 forecasts_by_run[entry.run_id] = list(store.list_forecasts(run_id=entry.run_id))
@@ -1910,7 +1911,7 @@ def research_data_audit_cmd(
                     resolve_attribution(entry, forecasts_by_run[entry.run_id]),
                 )
             )
-    attribution = attribution_report(attribution_rows)  # type: ignore[arg-type]
+    attribution = attribution_report(attribution_rows)
 
     console.print(f"MODEL ATTRIBUTION  {attribution.summary()}", markup=False, highlight=False)
     for score in attribution.model_scores:

@@ -43,6 +43,7 @@ import json
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, date
 
 import numpy as np
 
@@ -51,6 +52,17 @@ from turboedge.storage.schemas import ForecastRecord, LedgerEntry, LedgerLabel
 #: The ``model_id`` under which ``pipeline/scan.py`` writes the combined
 #: forecast. Everything else in a run's rows is a component.
 ENSEMBLE_MODEL_ID = "ensemble"
+
+#: Distinct maturity dates a model score needs before it may be read.
+#:
+#: Not a row count, and the difference is the whole point. Measured on the
+#: first real run (40406641630), every component model scored over 2,785
+#: labelled entries -- and all 2,785 matured on the *same day*. Three
+#: models reported a directional accuracy of exactly 0.000, which is not a
+#: measurement of anything except that they all pointed the wrong way on
+#: one day. Rows from one maturity date are one observation repeated
+#: (CLAUDE.md rule 8), so dates are what is counted.
+MIN_MATURITY_DATES = 20
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,16 +184,21 @@ class ModelScore:
     #: ``nan`` when no entry carried a ``p_up``.
     directional_accuracy: float
     mean_weight: float | None
+    #: Distinct calendar dates on which the scored entries matured. The
+    #: honest sample size; ``n`` is the row count and flatters it.
+    distinct_maturity_dates: int = 0
 
     @property
     def interpretable(self) -> bool:
-        """Whether this score rests on enough entries to read.
+        """Whether this score rests on enough *independent* outcomes to read.
 
-        Twenty is a convention and a lenient one. Below it the mean
-        squared error of a handful of forecasts says more about which days
-        happened to mature than about the model.
+        Gated on maturity dates, not rows. A thousand entries that all
+        matured on one afternoon tell you about that afternoon; on the
+        first real run that produced a directional accuracy of exactly
+        0.000 across 2,785 rows, which would have read as a devastating
+        verdict on three models and was one day's coin flip.
         """
-        return self.n >= 20
+        return self.distinct_maturity_dates >= MIN_MATURITY_DATES
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,17 +230,20 @@ class AttributionReport:
 
 def _score(
     model_id: str,
-    predictions: Sequence[tuple[float, float | None, float | None]],
+    predictions: Sequence[tuple[float, float | None, float | None, date | None]],
 ) -> ModelScore:
-    """Score one model from (predicted mean, p_up, realised return) triples."""
+    """Score one model from (predicted mean, p_up, realised, maturity) rows."""
     errors = [
-        (mean - realised) ** 2 for mean, _p_up, realised in predictions if realised is not None
+        (mean - realised) ** 2
+        for mean, _p_up, realised, _day in predictions
+        if realised is not None
     ]
     hits = [
         (p_up > 0.5) == (realised > 0.0)
-        for _mean, p_up, realised in predictions
+        for _mean, p_up, realised, _day in predictions
         if p_up is not None and realised is not None
     ]
+    dates = {day for *_rest, day in predictions if day is not None}
     # `mean_weight` is left None here and filled by the caller, which is
     # the only place that has seen the weights. Scoring and weighting are
     # kept apart on purpose: a score must not depend on how heavily the
@@ -234,6 +254,7 @@ def _score(
         mse=float(np.mean(errors)) if errors else float("nan"),
         directional_accuracy=float(np.mean(hits)) if hits else float("nan"),
         mean_weight=None,
+        distinct_maturity_dates=len(dates),
     )
 
 
@@ -252,15 +273,18 @@ def attribution_report(
     to nothing else, so a report cannot look complete by excluding what it
     could not resolve.
     """
-    by_model: dict[str, list[tuple[float, float | None, float | None]]] = {}
+    by_model: dict[str, list[tuple[float, float | None, float | None, date | None]]] = {}
     weights_seen: dict[str, list[float]] = {}
-    ensemble_preds: list[tuple[float, float | None, float | None]] = []
+    ensemble_preds: list[tuple[float, float | None, float | None, date | None]] = []
     missing: dict[str, int] = {}
     attributable = 0
     incomplete = 0
 
     for entry, label, attribution in rows:
         realised = label.underlying_pnl
+        # The maturity date, not the prediction date: two entries predicted
+        # on different days but maturing on the same one share an outcome.
+        matured_on = label.labeled_at.astimezone(UTC).date()
         if not attribution.components or not attribution.weights:
             for model_id in attribution.missing_models:
                 missing[model_id] = missing.get(model_id, 0) + 1
@@ -272,14 +296,14 @@ def attribution_report(
                 missing[model_id] = missing.get(model_id, 0) + 1
         for component in attribution.components:
             by_model.setdefault(component.model_id, []).append(
-                (component.mean, component.p_up, realised)
+                (component.mean, component.p_up, realised, matured_on)
             )
             if component.weight_at_prediction is not None:
                 weights_seen.setdefault(component.model_id, []).append(
                     component.weight_at_prediction
                 )
         if attribution.ensemble_mean is not None:
-            ensemble_preds.append((attribution.ensemble_mean, entry.p_profit, realised))
+            ensemble_preds.append((attribution.ensemble_mean, entry.p_profit, realised, matured_on))
 
     scores: list[ModelScore] = []
     for model_id, predictions in sorted(by_model.items()):
@@ -292,6 +316,7 @@ def attribution_report(
                 mse=base.mse,
                 directional_accuracy=base.directional_accuracy,
                 mean_weight=float(np.mean(seen)) if seen else None,
+                distinct_maturity_dates=base.distinct_maturity_dates,
             )
         )
 
@@ -319,6 +344,7 @@ def beats_null(score: ModelScore, *, null_mse: float) -> bool | None:
 
 __all__ = [
     "ENSEMBLE_MODEL_ID",
+    "MIN_MATURITY_DATES",
     "AttributionReport",
     "ComponentForecast",
     "EnsembleAttribution",

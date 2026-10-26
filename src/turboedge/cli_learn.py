@@ -1917,9 +1917,10 @@ def research_data_audit_cmd(
     for score in attribution.model_scores:
         weight = "n/a" if score.mean_weight is None else f"{score.mean_weight:.4f}"
         console.print(
-            f"    {score.model_id}: n={score.n} mse={score.mse:.6g} "
-            f"dir_acc={score.directional_accuracy:.3f} weight={weight} "
-            f"interpretable={score.interpretable}",
+            f"    {score.model_id}: n={score.n} over "
+            f"{score.distinct_maturity_dates} maturity date(s) "
+            f"mse={score.mse:.6g} dir_acc={score.directional_accuracy:.3f} "
+            f"weight={weight} interpretable={score.interpretable}",
             markup=False,
             highlight=False,
         )
@@ -1952,6 +1953,7 @@ def research_data_audit_cmd(
                     "mse": s.mse,
                     "directional_accuracy": s.directional_accuracy,
                     "mean_weight": s.mean_weight,
+                    "distinct_maturity_dates": s.distinct_maturity_dates,
                     "interpretable": s.interpretable,
                 }
                 for s in attribution.model_scores
@@ -1963,6 +1965,8 @@ def research_data_audit_cmd(
                     "n": attribution.ensemble_score.n,
                     "mse": attribution.ensemble_score.mse,
                     "directional_accuracy": attribution.ensemble_score.directional_accuracy,
+                    "distinct_maturity_dates": (attribution.ensemble_score.distinct_maturity_dates),
+                    "interpretable": attribution.ensemble_score.interpretable,
                 }
             ),
         },

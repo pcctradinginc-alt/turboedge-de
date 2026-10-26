@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
@@ -257,7 +257,13 @@ class TestAttributionReport:
         out = []
         for i in range(n):
             entry = make_entry()
-            label = make_label(entry_id=entry.entry_id, underlying_pnl=0.01 + 0.001 * (i % 5))
+            # One maturity date per entry: `interpretable` counts dates, not
+            # rows, since run 40406641630 scored 2,785 rows from one day.
+            label = make_label(
+                entry_id=entry.entry_id,
+                underlying_pnl=0.01 + 0.001 * (i % 5),
+                labeled_at=NOW + timedelta(days=i),
+            )
             rows = _full_run() if forecasts is None else forecasts
             out.append((entry, label, resolve_attribution(entry, rows)))
         return out
@@ -333,6 +339,48 @@ class TestAttributionReport:
         report = attribution_report(self._rows(make_entry, make_label, n=5))  # type: ignore[arg-type]
         assert all(not s.interpretable for s in report.model_scores)
 
+    def test_many_rows_from_one_maturity_date_are_not_interpretable(
+        self, make_entry: Callable[..., LedgerEntry], make_label: Callable[..., LedgerLabel]
+    ) -> None:
+        """Run 40406641630, as a regression.
+
+        2,785 labelled entries, every one matured on the same day, and
+        three models each reported a directional accuracy of exactly
+        0.000. Read as a row count that is a devastating verdict; read as
+        one maturity date it is a coin flip. The score must refuse to be
+        interpreted.
+        """
+        rows = []
+        for _i in range(200):
+            entry = make_entry()
+            label = make_label(
+                entry_id=entry.entry_id,
+                underlying_pnl=-0.01,
+                labeled_at=NOW,  # all on one day
+            )
+            rows.append((entry, label, resolve_attribution(entry, _full_run())))
+        report = attribution_report(rows)  # type: ignore[arg-type]
+
+        assert report.entries_attributable == 200
+        for score in report.model_scores:
+            assert score.n == 200
+            assert score.distinct_maturity_dates == 1
+            assert not score.interpretable
+
+    def test_the_maturity_date_comes_from_the_label_not_the_prediction(
+        self, make_entry: Callable[..., LedgerEntry], make_label: Callable[..., LedgerLabel]
+    ) -> None:
+        """Two entries predicted on different days but maturing together
+        share one outcome, so they are one observation."""
+        rows = []
+        for i in range(30):
+            entry = make_entry(prediction_time=NOW + timedelta(days=i))
+            label = make_label(entry_id=entry.entry_id, labeled_at=NOW + timedelta(days=90))
+            rows.append((entry, label, resolve_attribution(entry, _full_run())))
+        report = attribution_report(rows)  # type: ignore[arg-type]
+
+        assert all(s.distinct_maturity_dates == 1 for s in report.model_scores)
+
 
 class TestBeatsNull:
     def test_an_uninterpretable_score_yields_unknown_not_false(
@@ -341,20 +389,41 @@ class TestBeatsNull:
         """`False` would claim a comparison was made. `None` says it was not."""
         from turboedge.learning.attribution import ModelScore
 
-        thin = ModelScore(model_id="m", n=3, mse=0.001, directional_accuracy=0.6, mean_weight=0.5)
+        thin = ModelScore(
+            model_id="m",
+            n=3,
+            mse=0.001,
+            directional_accuracy=0.6,
+            mean_weight=0.5,
+            distinct_maturity_dates=1,
+        )
         assert beats_null(thin, null_mse=0.002) is None
 
     def test_a_real_comparison_answers(self) -> None:
         from turboedge.learning.attribution import ModelScore
 
-        score = ModelScore(model_id="m", n=50, mse=0.001, directional_accuracy=0.6, mean_weight=0.5)
+        score = ModelScore(
+            model_id="m",
+            n=50,
+            mse=0.001,
+            directional_accuracy=0.6,
+            mean_weight=0.5,
+            distinct_maturity_dates=50,
+        )
         assert beats_null(score, null_mse=0.002) is True
         assert beats_null(score, null_mse=0.0005) is False
 
     def test_a_missing_null_yields_unknown(self) -> None:
         from turboedge.learning.attribution import ModelScore
 
-        score = ModelScore(model_id="m", n=50, mse=0.001, directional_accuracy=0.6, mean_weight=0.5)
+        score = ModelScore(
+            model_id="m",
+            n=50,
+            mse=0.001,
+            directional_accuracy=0.6,
+            mean_weight=0.5,
+            distinct_maturity_dates=50,
+        )
         assert beats_null(score, null_mse=float("nan")) is None
 
 

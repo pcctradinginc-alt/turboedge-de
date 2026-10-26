@@ -257,10 +257,35 @@ class ResearchQueue:
         Returns the ids it newly inserted.
         """
         del now  # unused -- see docstring
-        existing_ids = {
-            s.opportunity.hypothesis_id for s in self._store.list_research_opportunities()
+        existing = {
+            s.opportunity.hypothesis_id: s for s in self._store.list_research_opportunities()
         }
+        existing_ids = set(existing)
         inserted: list[str] = []
+
+        # One narrow exception to "an id already present is skipped
+        # entirely": `research_kind` is refreshed from the catalogue.
+        #
+        # It is the only field here that is a statement about what the
+        # question *is* rather than a judgement someone works on, so
+        # refreshing it resets nobody's work -- and leaving it stale has a
+        # measured cost. Run 40397622319 screened a COST_EDGE question
+        # whose stored row still read ALPHA_HYPOTHESIS, because it was
+        # written before the column existed, and the notification went out
+        # worded as an alpha candidate.
+        for hypothesis_id, stored in existing.items():
+            catalog_entry = catalog.catalog_by_id().get(hypothesis_id)
+            if catalog_entry is None:
+                continue
+            if stored.opportunity.research_kind is catalog_entry.research_kind:
+                continue
+            self._store.upsert_research_opportunity(
+                stored.opportunity.model_copy(
+                    update={"research_kind": catalog_entry.research_kind}
+                ),
+                priority=stored.priority,
+                scored_at=stored.scored_at,
+            )
         for opportunity in catalog.CATALOG:
             if opportunity.status not in SYSTEM_ASSIGNABLE_STATES:
                 raise ValueError(

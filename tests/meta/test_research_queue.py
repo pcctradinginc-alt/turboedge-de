@@ -358,3 +358,69 @@ def test_no_method_produces_non_system_assignable_status_without_approver(
     base.update(status=ResearchStatus.APPROVED, approved_by=None)
     with pytest.raises(ValidationError):
         ResearchOpportunity.model_validate(base)
+
+
+def test_reseeding_refreshes_a_stale_research_kind(tmp_path: Path) -> None:
+    """The one field re-seeding is allowed to overwrite, and why.
+
+    `seed_from_catalog` skips an id it already holds so that re-seeding
+    never resets human work. `research_kind` is the exception: it states
+    what the question *is*, not a judgement anyone works on, and leaving
+    it stale had a measured cost -- run 40397622319 notified about a
+    COST_EDGE question using a row that still said ALPHA_HYPOTHESIS.
+    """
+    from turboedge.meta.catalog import catalog_by_id
+    from turboedge.meta.research_opportunity import ResearchKind
+    from turboedge.meta.research_queue import ResearchQueue
+    from turboedge.storage.duckdb import Store
+
+    target = catalog_by_id()["RO-LOTTERY-PRICING"]
+    assert target.research_kind is ResearchKind.COST_EDGE
+
+    with Store(tmp_path / "t.duckdb") as store:
+        store.init_schema()
+        # Simulate the pre-migration row: correct in every way except the
+        # classification.
+        store.upsert_research_opportunity(
+            target.model_copy(update={"research_kind": ResearchKind.ALPHA_HYPOTHESIS}),
+            priority=None,
+            scored_at=None,
+        )
+        queue = ResearchQueue(store, failed_hypotheses_path=tmp_path / "failed.json")
+
+        inserted = queue.seed_from_catalog()
+
+        assert "RO-LOTTERY-PRICING" not in inserted  # not re-inserted
+        stored = store.get_research_opportunity("RO-LOTTERY-PRICING")
+        assert stored is not None
+        assert stored.opportunity.research_kind is ResearchKind.COST_EDGE
+
+
+def test_reseeding_still_does_not_reset_human_work(tmp_path: Path) -> None:
+    """The refresh must stay narrow: status, approval and note are untouched."""
+    from turboedge.meta.catalog import catalog_by_id
+    from turboedge.meta.research_opportunity import ResearchKind, ResearchStatus
+    from turboedge.meta.research_queue import ResearchQueue
+    from turboedge.storage.duckdb import Store
+
+    target = catalog_by_id()["RO-LOTTERY-PRICING"]
+    worked_on = target.model_copy(
+        update={
+            "research_kind": ResearchKind.ALPHA_HYPOTHESIS,
+            "status": ResearchStatus.APPROVED,
+            "approved_by": "operator",
+            "approved_at": datetime(2026, 10, 26, tzinfo=UTC),
+            "status_note": "freigegeben am 2026-10-26",
+        }
+    )
+    with Store(tmp_path / "t.duckdb") as store:
+        store.init_schema()
+        store.upsert_research_opportunity(worked_on, priority=None, scored_at=None)
+        ResearchQueue(store, failed_hypotheses_path=tmp_path / "failed.json").seed_from_catalog()
+
+        stored = store.get_research_opportunity("RO-LOTTERY-PRICING")
+        assert stored is not None
+        assert stored.opportunity.research_kind is ResearchKind.COST_EDGE  # refreshed
+        assert stored.opportunity.status is ResearchStatus.APPROVED  # kept
+        assert stored.opportunity.approved_by == "operator"  # kept
+        assert stored.opportunity.status_note == "freigegeben am 2026-10-26"  # kept

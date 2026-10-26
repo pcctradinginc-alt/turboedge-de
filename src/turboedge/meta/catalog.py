@@ -1199,6 +1199,29 @@ W12_MEASURED_OUTCOMES: Mapping[str, MeasuredOutcome] = {
 }
 
 
+def research_kind_for(hypothesis_id: str) -> ResearchKind | None:
+    """What a positive result on this question would mean, from the catalogue.
+
+    THE CATALOGUE IS AUTHORITATIVE FOR THIS FIELD, and the stored queue row
+    is not. `research_queue.seed_from_catalog` deliberately skips an id it
+    already holds, so that re-seeding never resets work a human has done on
+    an entry -- which means a row written before `research_kind` existed
+    keeps reading back as the model default for as long as it lives.
+
+    That is not academic. On 2026-10-26 run 40397622319 the loop screened
+    `RO-LOTTERY-PRICING`, a COST_EDGE question, and the stored row reported
+    ALPHA_HYPOTHESIS, so the notification went out worded as an alpha
+    candidate -- exactly what the authorisation for autonomous
+    product-selection research was conditioned on preventing. Anything that
+    decides wording asks here instead.
+
+    `None` for an id the catalogue does not know, which a caller must treat
+    as "cannot classify" rather than as a default.
+    """
+    entry = catalog_by_id().get(hypothesis_id)
+    return None if entry is None else entry.research_kind
+
+
 def catalog_by_id() -> dict[str, ResearchOpportunity]:
     """The catalog indexed by `hypothesis_id`, for O(1) lookup by callers."""
     return {opportunity.hypothesis_id: opportunity for opportunity in CATALOG}
@@ -1215,4 +1238,5 @@ __all__ = [
     "MeasuredOutcome",
     "catalog_by_id",
     "catalog_for_family",
+    "research_kind_for",
 ]

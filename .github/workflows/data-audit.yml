@@ -97,6 +97,18 @@ jobs:
           SINCE: ${{ inputs.since }}
           WINDOW_SECONDS: ${{ inputs.window_seconds }}
 
+      # A02 (Pi-CAPM). Runs here rather than in the autonomous loop because
+      # its family, `product_selection`, is deliberately absent from
+      # `controller.PERMITTED_EXPLORATORY_FAMILIES` -- widening that set is
+      # a governance decision, not a research one. Read-only like
+      # everything else in this workflow.
+      - name: Screen A02 -- do lottery-like turbos cost more?
+        run: |
+          set -uo pipefail
+          uv run turboedge --state-dir ./state --log-format console \
+            research lottery-pricing --json-out reports/lottery_pricing.json \
+            | tee reports/lottery_pricing.txt
+
       - name: Job summary
         if: always()
         run: |
@@ -110,6 +122,16 @@ jobs:
               echo '```'
             else
               echo "The audit produced no report; see the step log above."
+            fi
+            echo
+            echo "## A02 lottery pricing"
+            echo
+            if [[ -f reports/lottery_pricing.txt ]]; then
+              echo '```'
+              cat reports/lottery_pricing.txt
+              echo '```'
+            else
+              echo "The screen produced no report; see the step log above."
             fi
           } >> "${GITHUB_STEP_SUMMARY}"
 

@@ -17,7 +17,7 @@ import json
 import math
 import re
 from dataclasses import asdict
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -80,6 +80,7 @@ from turboedge.research.data_audit import (
     quote_freshness,
     snapshot_staleness_advantage,
 )
+from turboedge.research.lottery_pricing import evaluate as evaluate_lottery_pricing
 from turboedge.research.product_pairs import ComparabilityCriteria, census
 from turboedge.research.step import run_research_step
 from turboedge.simulation.ko_calibration import build_ko_calibration_dataset
@@ -1914,6 +1915,111 @@ def research_data_audit_cmd(
         console.print(f"  wrote {json_path}", markup=False, highlight=False)
 
 
+def research_lottery_pricing_cmd(
+    ctx: typer.Context,
+    lookback_days: int = typer.Option(
+        30, "--lookback-days", help="Window of archived quotes to read"
+    ),
+    json_out: str = typer.Option(None, "--json-out", help="Write the full result to PATH"),
+) -> None:
+    """Run the A02 lottery-pricing screen (Pi-CAPM) on the archived quotes.
+
+    Do more lottery-like turbos -- those whose knock-out barrier sits
+    closer to the spot -- carry systematically worse executable round-trip
+    costs? Estimated within (issuer, underlying, direction, minute) cells,
+    so issuer pricing style and the market moment are differenced out, and
+    regressed on barrier distance rather than on an ask-derived leverage.
+
+    WHY THIS IS A COMMAND AND NOT A LOOP STEP. The question's family is
+    `product_selection`, which is deliberately absent from
+    `controller.PERMITTED_EXPLORATORY_FAMILIES`. The autonomous loop may
+    therefore not start it, and widening that set is a governance decision
+    rather than a research one. The harness stays registered for the day
+    the operator permits the family; until then the screen runs here, when
+    a person asks for it.
+
+    Read-only: computes no EV, opens no trial, promotes nothing and writes
+    nothing to the store.
+    """
+    app_ctx = ctx.obj
+    now = datetime.now(UTC)
+    since = now - timedelta(days=lookback_days)
+
+    with Store(app_ctx.db_path) as store:
+        store.init_schema()
+        snapshots = store.list_product_snapshots(since=since, until=now)
+
+    result = evaluate_lottery_pricing(snapshots)
+
+    console.print(f"A02 LOTTERY PRICING  verdict {result.verdict}", markup=False, highlight=False)
+    console.print(
+        f"  {len(snapshots)} snapshot(s) -> {result.cells_used} cell(s), "
+        f"{result.products_used} quote(s) used",
+        markup=False,
+        highlight=False,
+    )
+    console.print(
+        f"  spread slope {result.mean_spread_slope:+.6f} "
+        f"[{result.spread_ci_low:+.6f}, {result.spread_ci_high:+.6f}]  "
+        f"excludes zero: {result.interval_excludes_zero}",
+        markup=False,
+        highlight=False,
+    )
+    console.print(
+        f"  premium slope {result.mean_premium_slope:+.6f} "
+        f"[{result.premium_ci_low:+.6f}, {result.premium_ci_high:+.6f}]",
+        markup=False,
+        highlight=False,
+    )
+    console.print(
+        f"  economic size {result.mean_economic_size_bps:+.2f} bps across the barrier range",
+        markup=False,
+        highlight=False,
+    )
+    console.print(
+        f"  issuers: {sorted({c.issuer for c in result.cells})}", markup=False, highlight=False
+    )
+    for reason, count in sorted(result.dropped.items(), key=lambda kv: -kv[1])[:8]:
+        console.print(f"    dropped {reason}: {count}", markup=False, highlight=False)
+
+    payload = {
+        "generated_at": now.isoformat(),
+        "lookback_days": lookback_days,
+        "verdict": result.verdict,
+        "snapshots_read": len(snapshots),
+        "cells_used": result.cells_used,
+        "products_used": result.products_used,
+        "mean_spread_slope": result.mean_spread_slope,
+        "spread_ci_low": result.spread_ci_low,
+        "spread_ci_high": result.spread_ci_high,
+        "interval_excludes_zero": result.interval_excludes_zero,
+        "mean_premium_slope": result.mean_premium_slope,
+        "premium_ci_low": result.premium_ci_low,
+        "premium_ci_high": result.premium_ci_high,
+        "mean_economic_size_bps": result.mean_economic_size_bps,
+        "issuers": sorted({c.issuer for c in result.cells}),
+        "dropped": dict(result.dropped),
+        "cells": [
+            {
+                "issuer": c.issuer,
+                "underlying": c.underlying_id,
+                "direction": str(c.direction),
+                "minute": c.minute.isoformat(),
+                "n_products": c.n_products,
+                "spread_slope": c.spread_slope,
+                "premium_slope": c.premium_slope,
+                "economic_size_bps": c.economic_size_bps,
+            }
+            for c in result.cells[:200]
+        ],
+    }
+    if json_out:
+        json_path = Path(json_out)
+        json_path.parent.mkdir(parents=True, exist_ok=True)
+        json_path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+        console.print(f"  wrote {json_path}", markup=False, highlight=False)
+
+
 def register_learn_commands(app: typer.Typer, position_app: typer.Typer) -> None:
     """Wire every Contract v3 integration-wave command into the main CLI.
     Called once from ``cli.py``::
@@ -1943,6 +2049,7 @@ def register_learn_commands(app: typer.Typer, position_app: typer.Typer) -> None
     research_app.command("step")(research_step_cmd)
     research_app.command("product-pairs")(research_product_pairs_cmd)
     research_app.command("data-audit")(research_data_audit_cmd)
+    research_app.command("lottery-pricing")(research_lottery_pricing_cmd)
     app.add_typer(research_app, name="research")
 
     archive_app = typer.Typer(help="Deep, slow, once-daily research-only product archive")

@@ -145,6 +145,7 @@ class TestPlantedSlope:
         assert result.spread_ci_high < 0.0
         assert result.verdict == "CANDIDATE"
         assert result.mean_economic_size_bps > 0.0
+        assert result.median_economic_size_bps > 0.0
 
     def test_no_slope_gives_an_interval_through_zero(self) -> None:
         result = evaluate(_cells(40, slope=0.0, noise=0.0005), reps=500)
@@ -173,7 +174,32 @@ class TestPlantedSlope:
 
         assert result.interval_excludes_zero
         assert result.mean_spread_slope < 0.0
-        assert result.mean_economic_size_bps < 5.0
+        assert result.median_economic_size_bps < 5.0
+        assert result.verdict == "IMPROVEMENT_NOT_SIGNIFICANT"
+
+    def test_the_verdict_uses_the_median_cell_not_the_mean(self) -> None:
+        """On the real archive the two differ by a factor of seven.
+
+        A handful of cells carry an enormous slope, so a mean-based size
+        would pass the economic criterion on the strength of outliers while
+        the representative cell sat below it. The median is the stricter
+        test, which is why switching to it after seeing the data cannot
+        flatter the result.
+        """
+        # 39 tiny-slope cells plus one enormous one: the mean clears 5 bps,
+        # the median does not.
+        snaps = _cells(39, slope=-0.0005, noise=1e-7) + [
+            _snap(
+                isin=f"DE000HUGE{p:03d}",
+                barrier_distance=0.02 + 0.01 * p,
+                relative_spread=max(0.01 - 5.0 * (0.02 + 0.01 * p - 0.045), 1e-6),
+                minute_offset=500,
+            )
+            for p in range(6)
+        ]
+        result = evaluate(snaps, reps=500)
+        assert result.mean_economic_size_bps > result.median_economic_size_bps
+        assert result.median_economic_size_bps < 5.0
         assert result.verdict == "IMPROVEMENT_NOT_SIGNIFICANT"
 
 

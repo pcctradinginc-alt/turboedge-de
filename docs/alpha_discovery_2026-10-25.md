@@ -8,6 +8,13 @@ geändert. `PROMOTION_LOCKED` steht. Kein Signal aktiviert.
 
 ## Vorbemerkung: was ich geprüft habe und was nicht
 
+> **Überholt am 2026-10-26.** Alle 17 DOIs sind inzwischen aufgelöst und
+> jede Arbeit ist publiziert oder Advance Article; die Spalte
+> „Verifiziert" unten ist für elf Einträge zu pessimistisch. Die
+> Barardehi-Angabe war außerdem falsch. Beides ist in
+> `docs/autonomy_completion_2026-10-26.md` §1 richtiggestellt, das für die
+> Literatur maßgeblich ist.
+
 Mein Wissensstand endet im Mai 2026. Von den 17 Arbeiten habe ich **sechs**
 gegen Originalquellen geprüft und berichte unten, wo die Angaben des
 Auftrags von dem abweichen, was ich gefunden habe. Die übrigen elf habe ich
@@ -23,10 +30,10 @@ genau die Arbeiten, auf denen Experiment 1 beruhen sollte:
   enthält weder die eine noch die andere. Gemessen 2026-10-25: 30-Minuten-
   Historie reicht **60 Tage**, Stundenhistorie 730. Die Hypothese ist damit
   nicht testbar — `AWAIT_DATA` aus gemessenem Grund, nicht aus Desinteresse.
-- **A12/P12 (Barardehi, Bogousslavsky, Muravyev)** ist **nicht** als
-  RFS-2026-Artikel bestätigt. Ich finde ein Working Paper von März 2022
-  (Stichprobe 1926–2019) und einen Autoren-CV-Eintrag „RFS, Revise and
-  Resubmit". Wichtiger als das Datum ist der Inhalt: die Arbeit bildet
+- **A12/P12 (Barardehi, Bogousslavsky, Muravyev)** — *diese Einschätzung
+  war falsch und wurde am 2026-10-26 korrigiert: die Arbeit ist in RFS
+  publiziert (Advance Article, DOI 10.1093/rfs/hhag036).* Wichtiger als
+  das Datum ist der Inhalt, und daran ändert sich nichts: die Arbeit bildet
   **querschnittliche Portfolios** aus US-Einzelaktien, sortiert nach
   Intraday- bzw. Overnight-Renditen. Intraday-Portfolios zeigen
   kurzfristige Umkehr und mittelfristiges Momentum, Overnight-Portfolios nur
@@ -55,7 +62,7 @@ im Ergebnis unten ausdrücklich so ausgewiesen.
 | A09/P09 Crypto-Momentum, realistisch | **nein** | Methodik: Pfadabhängigkeit tötet Scheinalpha | **hoch als Methode** | n/a | bereits umgesetzt (KO-Pfad, Kosten) |
 | A10/P10 Duarte et al., Look-Ahead | **nein** | Look-Ahead-Bias in Optionsforschung | **hoch als Methode** | n/a | **umgesetzt** — siehe D |
 | A11/P11 Lee & Wang, FOMC-FX | **nein** | Reversal nach FOMC in EUR/USD | braucht Intraday-FX zu Ankündigungszeiten | **nein** | `AWAIT_DATA` |
-| A12/P12 Barardehi et al. | **ja, mit Korrektur** | Querschnitt: Intraday- vs. Overnight-Signale | **nein** — kein Querschnitt bei 4 Basiswerten | Bars vorhanden | Zeitreihen-Analogon getestet → `FAIL` |
+| A12/P12 Barardehi et al. | **ja** (korrigiert 2026-10-26: publiziert, RFS Advance Article, DOI 10.1093/rfs/hhag036 — hier zunächst falsch als Working Paper geführt) | Querschnitt: Intraday- vs. Overnight-Signale | **nein** — kein Querschnitt bei 4 Basiswerten | Bars vorhanden | Zeitreihen-Analogon getestet → `FAIL` |
 | A13/P13 Guo, Earnings Extrapolation | **nein** | Prognosekraft variiert im Berichtsquartal | braucht Berichtskalender | **nein** | `AWAIT_DATA` |
 | A14/P14 Papagelis & Dotsis | **nein** | VRP getrennt nach Handels-/Nichthandelszeit | braucht Optionsdaten | **nein** | `AWAIT_DATA` |
 | A15/P15 Bali et al., Options-ML | **nein** | Optionsmerkmale als Prädiktoren | braucht Optionspaneldaten | **nein** | `AWAIT_DATA` |

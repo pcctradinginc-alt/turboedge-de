@@ -126,6 +126,11 @@ class Candidate:
     data_ready: bool
     exploratory_done: bool
     has_exploratory_support: bool
+    #: What the harness said when it counted its own data, verbatim. A
+    #: question that is skipped for want of data has to be able to say why
+    #: in its own terms: without this, run 40385586039 reported thirteen
+    #: blocked candidates and no reason any of them could be acted on.
+    readiness_detail: str | None = None
     #: Whether an approved harness exists for this question. Twelve of the
     #: fourteen catalogue entries have none (`research/harness.py`), and
     #: that is distinct from "already screened": the loop has learned
@@ -323,6 +328,7 @@ def decide_next_action(
                     "data_ready": candidate.data_ready,
                     "effective_sample": candidate.effective_sample,
                     "required_sample": candidate.required_sample,
+                    "detail": candidate.readiness_detail,
                 }
             )
             continue
@@ -334,6 +340,7 @@ def decide_next_action(
                     "data_ready": candidate.data_ready,
                     "effective_sample": candidate.effective_sample,
                     "required_sample": candidate.required_sample,
+                    "detail": candidate.readiness_detail,
                 }
             )
             continue

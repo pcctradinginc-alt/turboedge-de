@@ -468,12 +468,17 @@ def markdown_summary(verdict: HealthVerdict) -> str:
     if verdict.stall.stalled:
         lines.append(f"- **The pipeline has stopped running.** {verdict.reason}")
     if verdict.state_chain.stale:
+        # New and total are both stated. The alarm fires for the new ones;
+        # recovery needs the total. Reporting only the total made a second
+        # notification look like a second, larger incident.
+        new_count = len(verdict.state_chain.newly_unreachable_runs)
+        total_count = len(verdict.state_chain.unreachable_runs)
+        extra = f" {total_count} in total are still unreachable." if total_count > new_count else ""
         lines.append(
             "- **Successful data work is unreachable.** The state restore selects "
             f"only successful runs; the last one was "
-            f"`{verdict.state_chain.last_success_at}`, and "
-            f"{len(verdict.state_chain.unreachable_runs)} newer red run(s) packed "
-            "state that cannot be read again."
+            f"`{verdict.state_chain.last_success_at}`, and {new_count} newly seen "
+            f"red run(s) packed state that cannot be read again.{extra}"
         )
     if verdict.skipped_in_progress:
         lines.append(

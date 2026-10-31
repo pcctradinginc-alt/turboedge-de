@@ -933,3 +933,31 @@ def test_the_later_of_the_two_alarm_sources_wins() -> None:
     # The alarming run itself stays in the window on purpose -- its
     # watchdog ran alongside its data jobs and never judged them.
     assert [i.job for i in verdict.incidents] == ["eod", "scan"]
+
+
+def test_the_summary_separates_newly_seen_from_the_standing_inventory() -> None:
+    """Reporting only the total made a repeat look like a bigger incident.
+
+    One run was already reported; a second has appeared. The alarm is
+    about the second, and the operator still needs to know that two hold
+    unreachable state.
+    """
+    runs = [
+        _run(1, hours_ago=5.0, jobs=[_job("scan", "success")], conclusion="failure"),
+        _run(2, hours_ago=1.0, jobs=[_job("eod", "success")], conclusion="failure"),
+    ]
+
+    verdict = evaluate(runs, now=NOW, last_alarm_at=NOW - timedelta(hours=4.0))
+    summary = markdown_summary(verdict)
+
+    assert "1 newly seen" in summary
+    assert "2 in total are still unreachable" in summary
+
+
+def test_the_summary_omits_the_total_when_it_adds_nothing() -> None:
+    runs = [_run(1, hours_ago=1.0, jobs=[_job("scan", "success")], conclusion="failure")]
+
+    summary = markdown_summary(evaluate(runs, now=NOW))
+
+    assert "1 newly seen" in summary
+    assert "in total are still unreachable" not in summary

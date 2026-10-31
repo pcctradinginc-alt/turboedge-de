@@ -122,15 +122,36 @@ jobs:
             fi
           done
 
+          # When THIS watchdog last alarmed, from its own workflow history.
+          # It has to come from here: the watchdog used to be a job inside
+          # pipeline.yml and the evaluator looked for it there, so after the
+          # move on 2026-10-24 it found nothing, the de-duplication bound
+          # was always absent, and every incident was re-reported on every
+          # invocation -- six-plus times a day, since `workflow_run` fires
+          # after each pipeline run. A failure to read it is a warning and
+          # an absent bound, never a guessed one.
+          last_alarm=""
+          if own=$(gh run list --workflow health-watch.yml --limit 30 \
+              --json createdAt,conclusion,status); then
+            last_alarm=$(printf '%s' "$own" | jq -r \
+              '[.[] | select(.status == "completed" and .conclusion == "failure")]
+               | sort_by(.createdAt) | last | .createdAt // empty')
+            echo "Last own alarm: ${last_alarm:-none}"
+          else
+            echo "::warning::could not read this workflow's own history; de-duplication bound absent for this run"
+          fi
+
           # `history` is every run the listing returned, window or not. It is
           # how the evaluator tells "this repository has never run" from
           # "this pipeline has stopped running", which is the one incident a
           # watchdog triggered only by pipeline runs could never see.
           jq -n \
             --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg last_alarm "${last_alarm}" \
             --slurpfile runs jobs.ndjson \
             --argjson history "$(printf '%s' "$runs" | jq '[.[] | {databaseId, createdAt, status, conclusion}]')" \
-            '{now: $now, runs: $runs, history: $history}' > health.json
+            '{now: $now, runs: $runs, history: $history}
+             + (if $last_alarm == "" then {} else {last_alarm_at: $last_alarm} end)' > health.json
           echo "Collected $(jq '.runs | length' health.json) run(s) in the window."
 
       - name: Evaluate pipeline health

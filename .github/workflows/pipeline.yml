@@ -682,9 +682,24 @@ jobs:
       - name: Measure MAE/MFE excursion prediction
         run: |
           set -uo pipefail
+          # `|| status=$?`, not a bare call followed by `status=$?`.
+          #
+          # Actions runs every `run:` block as `bash --noprofile --norc -e
+          # -o pipefail {0}`, so errexit is on from the INVOCATION and
+          # `set -uo pipefail` cannot turn it off -- it only adds nounset
+          # and pipefail. The bare call therefore killed the script the
+          # instant the command exited non-zero, and `status=$?` was never
+          # reached: run 41197107832 died on exit 3 with the
+          # INSUFFICIENT_DATA branch sitting unexecuted two lines below,
+          # taking the research tournament, the queue re-score, the
+          # KO-calibration AND the state upload down with it.
+          #
+          # A command on the left of `||` is part of a compound list, which
+          # errexit exempts. That keeps the exemption local: a genuine
+          # failure later in this script still fails the step.
+          status=0
           uv run turboedge --log-format json research excursion \
-            --json-out reports/weekly/excursion.json
-          status=$?
+            --json-out reports/weekly/excursion.json || status=$?
           if [ "${status}" -eq 0 ]; then
             echo "excursion: a valid evaluation ran"
           elif [ "${status}" -eq 3 ]; then

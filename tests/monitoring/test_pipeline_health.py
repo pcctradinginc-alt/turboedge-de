@@ -681,11 +681,25 @@ def test_the_observed_cascade_would_have_been_caught_as_a_hidden_state_chain() -
     assert verdict.state_chain.stale
     assert verdict.state_chain.last_success_at == datetime(2026, 10, 23, 12, 49, 40, tzinfo=UTC)
     assert verdict.alarm
-    # Every red run after the last success did successful data work.
+    # Every red run after the last success that did successful data work.
+    #
+    # SEVEN, not eight. Run 39978874688 is absent and must be: its only
+    # successful job was `resolve-mode`, which echoes the mode and packs
+    # nothing, while its `external` job was cancelled before the pack
+    # step. It left no artifact to be unreachable.
+    # `.github/workflows/state-recovery.yml` says the same thing
+    # independently -- its default run list holds seven ids and excludes
+    # this one "on purpose: its external job was cancelled before the pack
+    # step, so it has no artifact".
+    #
+    # Until 2026-10-31 this test expected eight, because the evaluator
+    # tested `MONITORED_JOBS` for a success and `resolve-mode` is in it.
+    # That is the same defect that made run 41197107832 announce
+    # "successful data work is unreachable to the state restore" when its
+    # weekly job had failed before packing anything at all.
     assert set(verdict.state_chain.unreachable_runs) == {
         39968420761,
         39973892098,
-        39978874688,
         39999355264,
         40012410917,
         40025944915,
@@ -760,3 +774,162 @@ def test_the_summary_names_the_hidden_state_chain() -> None:
     summary = markdown_summary(evaluate(runs, now=NOW))
 
     assert "Successful data work is unreachable" in summary
+
+
+# ---------------------------------------------------------------------
+# Regressions from runs 41197107832 (weekly) and 41200379798 (watchdog),
+# 2026-10-31.
+# ---------------------------------------------------------------------
+
+
+def test_a_successful_resolve_mode_alone_is_not_unreachable_data_work() -> None:
+    """Run 41197107832, as a regression.
+
+    The `weekly` job failed at the MAE/MFE step, so "Pack and upload
+    state" was SKIPPED and the run uploaded nothing. `resolve-mode`
+    succeeded, because all it does is echo which mode to run. The watchdog
+    concluded "successful data work is unreachable to the state restore",
+    which claimed an artifact that never existed.
+    """
+    runs = [
+        _run(
+            41197107832,
+            hours_ago=1.0,
+            jobs=[_job("resolve-mode", "success"), _job("weekly", "failure")],
+        )
+    ]
+
+    verdict = evaluate(runs, now=NOW)
+
+    assert verdict.state_chain.unreachable_runs == ()
+    assert not verdict.state_chain.stale
+    # The failing weekly job is still a real incident and still alarms --
+    # the fix must not silence the thing that actually went wrong.
+    assert verdict.alarm
+    assert [i.job for i in verdict.incidents] == ["weekly"]
+
+
+def test_a_failing_resolve_mode_is_still_an_incident() -> None:
+    """Excluding it from the state-chain test must not unmonitor it."""
+    runs = [_run(1, hours_ago=1.0, jobs=[_job("resolve-mode", "failure")])]
+
+    verdict = evaluate(runs, now=NOW)
+
+    assert verdict.alarm
+    assert [i.job for i in verdict.incidents] == ["resolve-mode"]
+
+
+def test_a_prior_alarm_suppresses_the_repeat() -> None:
+    """The de-duplication that had been dead since 2026-10-24.
+
+    `_is_watchdog_alarm` looks for a `health-watch` job inside a pipeline
+    run, and the watchdog moved to its own workflow, so nothing was ever
+    found and every incident was re-reported on every invocation.
+    """
+    runs = [_run(1, hours_ago=5.0, jobs=[_job("eod", "failure")])]
+
+    fresh = evaluate(runs, now=NOW)
+    assert [i.job for i in fresh.incidents] == ["eod"]
+
+    # The watchdog alarmed about it an hour after it happened.
+    repeat = evaluate(runs, now=NOW, last_alarm_at=NOW - timedelta(hours=4.0))
+
+    assert repeat.incidents == ()
+    assert not repeat.alarm
+    assert [i.job for i in repeat.already_reported] == ["eod"]
+
+
+def test_a_newer_incident_still_alarms_after_a_prior_alarm() -> None:
+    """De-duplication must not become suppression.
+
+    The same bound that silences a repeat has to leave anything newer
+    audible, or the watchdog goes quiet exactly when a second thing breaks.
+    """
+    runs = [
+        _run(1, hours_ago=5.0, jobs=[_job("eod", "failure")]),
+        _run(2, hours_ago=1.0, jobs=[_job("scan", "failure")]),
+    ]
+
+    verdict = evaluate(runs, now=NOW, last_alarm_at=NOW - timedelta(hours=4.0))
+
+    assert verdict.alarm
+    assert [i.job for i in verdict.incidents] == ["scan"]
+    assert [i.job for i in verdict.already_reported] == ["eod"]
+
+
+def test_a_prior_alarm_suppresses_a_repeated_state_chain_alarm() -> None:
+    """The state-chain alarm had no de-duplication at all.
+
+    Unlike the incident list it was recomputed from scratch every time, so
+    one unreachable run alarmed on every invocation for as long as it
+    stayed in the 36-hour window.
+    """
+    runs = [
+        _run(
+            1,
+            hours_ago=5.0,
+            jobs=[_job("resolve-mode", "success"), _job("scan", "success")],
+            conclusion="failure",
+        )
+    ]
+
+    fresh = evaluate(runs, now=NOW)
+    assert fresh.state_chain.stale
+
+    repeat = evaluate(runs, now=NOW, last_alarm_at=NOW - timedelta(hours=4.0))
+
+    assert not repeat.state_chain.stale
+    assert not repeat.alarm
+    # The inventory stays complete: recovering that state means knowing
+    # which run holds it, whether or not anyone needs telling again.
+    assert repeat.state_chain.unreachable_runs == (1,)
+    assert repeat.state_chain.newly_unreachable_runs == ()
+
+
+def test_a_newer_unreachable_run_still_alarms() -> None:
+    runs = [
+        _run(
+            1,
+            hours_ago=5.0,
+            jobs=[_job("scan", "success")],
+            conclusion="failure",
+        ),
+        _run(
+            2,
+            hours_ago=1.0,
+            jobs=[_job("eod", "success")],
+            conclusion="failure",
+        ),
+    ]
+
+    verdict = evaluate(runs, now=NOW, last_alarm_at=NOW - timedelta(hours=4.0))
+
+    assert verdict.state_chain.stale
+    assert verdict.state_chain.newly_unreachable_runs == (2,)
+    assert set(verdict.state_chain.unreachable_runs) == {1, 2}
+
+
+def test_the_later_of_the_two_alarm_sources_wins() -> None:
+    """An in-run watchdog job and the supplied bound are both honoured.
+
+    History from before the 2026-10-24 split still carries a `health-watch`
+    job inside the pipeline run, so that source is kept; the newer explicit
+    bound must not be able to move the window backwards.
+    """
+    runs = [
+        # Older than either bound candidate, so it is reported only if the
+        # window reaches back that far.
+        _run(1, hours_ago=20.0, jobs=[_job("external", "failure")]),
+        _run(2, hours_ago=10.0, jobs=[_job("eod", "failure"), _job(WATCHDOG_JOB, "failure")]),
+        _run(3, hours_ago=2.0, jobs=[_job("scan", "failure")]),
+    ]
+
+    verdict = evaluate(runs, now=NOW, last_alarm_at=NOW - timedelta(hours=30.0))
+
+    # The in-run watchdog alarm at -10h is later than the supplied -30h, so
+    # it sets the bound; the supplied value must not drag it backwards.
+    assert verdict.last_alarm_at == NOW - timedelta(hours=10.0)
+    assert [i.job for i in verdict.already_reported] == ["external"]
+    # The alarming run itself stays in the window on purpose -- its
+    # watchdog ran alongside its data jobs and never judged them.
+    assert [i.job for i in verdict.incidents] == ["eod", "scan"]

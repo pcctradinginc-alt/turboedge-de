@@ -59,6 +59,22 @@ MONITORED_JOBS: frozenset[str] = frozenset(
     {"resolve-mode", "scan", "eod", "external", "research", "weekly", "monthly"}
 )
 
+#: The jobs that actually pack and upload state, and therefore the only
+#: ones whose success can make a red run's state "unreachable".
+#:
+#: `resolve-mode` is deliberately absent. It belongs in `MONITORED_JOBS`,
+#: because a resolve-mode that fails is a real incident, but it does no
+#: data work: it echoes which mode to run and packs nothing. Counting it
+#: produced exactly the wrong claim on run 41197107832, where the `weekly`
+#: job failed at the MAE/MFE step so that "Pack and upload state" was
+#: SKIPPED and no artifact existed at all -- while `resolve-mode` had
+#: succeeded, so the watchdog announced "successful data work is
+#: unreachable to the state restore". Nothing had been uploaded to be
+#: unreachable.
+STATE_PACKING_JOBS: frozenset[str] = frozenset(
+    {"scan", "eod", "external", "research", "weekly", "monthly"}
+)
+
 #: The watchdog's own job. Never monitored -- see reason 2 in the module
 #: docstring. A broken watchdog is a watchdog problem, not a data incident,
 #: and must not be able to manufacture an endless chain of alarms.
@@ -171,7 +187,15 @@ class StateChainVerdict:
     completed_runs_in_window: int
     #: Runs that did successful data work which the restore cannot reach,
     #: because the run as a whole went red and is therefore filtered out.
+    #: The COMPLETE inventory, never trimmed for reporting: recovering this
+    #: state means knowing every run that holds some, and a de-duplicated
+    #: inventory would quietly drop the older half of an incident.
     unreachable_runs: tuple[int, ...] = ()
+    #: The subset not yet reported, which is what drives the alarm. The
+    #: split exists because the two questions differ: "which runs hold
+    #: unreachable state" is an inventory the operator acts on, "should
+    #: anyone be told again" is de-duplication.
+    newly_unreachable_runs: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -232,6 +256,7 @@ def evaluate(
     current_run_id: int | None = None,
     window_hours: int = WINDOW_HOURS,
     history: Sequence[RunObservation] | None = None,
+    last_alarm_at: datetime | None = None,
 ) -> HealthVerdict:
     """Which monitored jobs failed recently and have not been reported yet.
 
@@ -245,6 +270,18 @@ def evaluate(
     watchdog ran in parallel with its data jobs and so never judged them --
     on purpose, so that a watchdog outage cannot stop a scan -- which means
     this is the first evaluation that can see them.
+
+    `last_alarm_at` is when this watchdog last alarmed, supplied by the
+    caller. It has to be, and that is the fix for a dead de-duplication:
+    the watchdog moved out of `pipeline.yml` into its own workflow on
+    2026-10-24, so `_is_watchdog_alarm` -- which looks for a `health-watch`
+    job *inside a pipeline run* -- stopped finding anything. `last_alarm_at`
+    was therefore always None, the window always began at the floor, and
+    every incident was re-reported on every invocation. With
+    `workflow_run` firing after each of six-plus daily pipeline runs, one
+    failing weekly job alarmed six-plus times a day for 36 hours. The
+    in-run lookup is kept as a second source so history from before the
+    split still counts; the later of the two wins.
     """
     window_floor = now - timedelta(hours=window_hours)
 
@@ -255,8 +292,10 @@ def evaluate(
     completed = [run for run in in_window if run.completed]
 
     alarm_times = [run.created_at for run in completed if _is_watchdog_alarm(run)]
-    last_alarm_at = max(alarm_times) if alarm_times else None
-    window_start = max(window_floor, last_alarm_at) if last_alarm_at else window_floor
+    if last_alarm_at is not None:
+        alarm_times.append(last_alarm_at)
+    newest_alarm = max(alarm_times) if alarm_times else None
+    window_start = max(window_floor, newest_alarm) if newest_alarm else window_floor
 
     incidents: list[Incident] = []
     already_reported: list[Incident] = []
@@ -299,13 +338,27 @@ def evaluate(
         if run.conclusion is not None
         and run.conclusion != "success"
         and (last_success is None or run.created_at > last_success)
-        and any(job.name in MONITORED_JOBS and job.conclusion == "success" for job in run.jobs)
+        # STATE_PACKING_JOBS, not MONITORED_JOBS: only a job that packs
+        # state can leave state behind to be unreachable.
+        and any(job.name in STATE_PACKING_JOBS and job.conclusion == "success" for job in run.jobs)
+    )
+    # De-duplication applies to the ALARM, not to the inventory above.
+    # Without it the state-chain alarm had none at all, unlike the incident
+    # list: the same unreachable run fired on every invocation for as long
+    # as it stayed in the window. A NEWER unreachable run is past
+    # `window_start` and still alarms, which is the part that must keep
+    # working.
+    newly_unreachable = tuple(
+        run.run_id
+        for run in completed
+        if run.run_id in set(unreachable) and run.created_at >= window_start
     )
     state_chain = StateChainVerdict(
-        stale=bool(unreachable) and conclusions_seen,
+        stale=bool(newly_unreachable) and conclusions_seen,
         last_success_at=last_success,
         completed_runs_in_window=len(completed),
         unreachable_runs=unreachable,
+        newly_unreachable_runs=newly_unreachable,
     )
 
     if incidents:
@@ -344,7 +397,7 @@ def evaluate(
         incidents=tuple(incidents),
         window_start=window_start,
         window_floor=window_floor,
-        last_alarm_at=last_alarm_at,
+        last_alarm_at=newest_alarm,
         considered_runs=len(completed),
         skipped_in_progress=skipped_in_progress,
         already_reported=tuple(already_reported),
@@ -452,11 +505,16 @@ def main(argv: list[str] | None = None) -> int:
     document = json.loads(sys.stdin.read() or "{}")
     now = _parse_timestamp(document["now"]) if document.get("now") else datetime.now(UTC)
     current = document.get("current_run_id")
+    # When this watchdog last alarmed, read from its OWN workflow history.
+    # Absent is absent: no value means no de-duplication bound from this
+    # source, never a fabricated one.
+    raw_last_alarm = document.get("last_alarm_at")
     verdict = evaluate(
         parse_runs(document.get("runs")),
         now=now,
         current_run_id=int(current) if current not in (None, "") else None,
         history=parse_runs(document.get("history")) if document.get("history") else None,
+        last_alarm_at=_parse_timestamp(raw_last_alarm) if raw_last_alarm else None,
     )
 
     print(markdown_summary(verdict))

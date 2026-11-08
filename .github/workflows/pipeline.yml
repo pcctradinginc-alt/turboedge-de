@@ -577,6 +577,15 @@ jobs:
       # Re-score first, so the decision ranks on current evidence rather
       # than on whatever the previous run left behind. `research queue` may
       # reorder freely and may only ever write PROPOSED.
+      # Phase 1 Alpha Discovery: generates feature-composed hypotheses and
+      # executes at most one pre-reviewed, exploratory-only DSL test.
+      # Uses the shared research screen cap; never confirms or trades.
+      - name: Autonomous alpha discovery (research only)
+        continue-on-error: true
+        run: |
+          uv run turboedge --log-format json research discover-alpha \
+            --json-out reports/weekly/alpha_discovery.json
+
       - name: Re-score the research queue
         run: uv run turboedge --log-format json research queue --limit 20
 

@@ -85,18 +85,20 @@ class Rule(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    underlying: Literal["DAX"] = UNDERLYING
+    underlying: Literal["DAX"] = "DAX"
     direction: Literal["LONG"] = "LONG"
     primary: Feature
     secondary: Feature
-    primary_weight: Literal[0.65] = 0.65
+    primary_weight: float = 0.65
     holding_hours: Literal[24] = 24
-    version: Literal["1"] = DSL_VERSION
+    version: Literal["1"] = "1"
 
     @model_validator(mode="after")
     def distinct_features(self) -> Self:
         if self.primary == self.secondary:
             raise ValueError("a novel rule needs two distinct observable features")
+        if self.primary_weight != 0.65:
+            raise ValueError("weight must be the pre-reviewed constant 0.65")
         return self
 
     @property

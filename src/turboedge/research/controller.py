@@ -298,9 +298,7 @@ def decide_next_action(
             evidence=base_evidence,
         )
 
-    unscreened = [
-        c for c in admissible if not c.exploratory_done and not c.has_exploratory_support
-    ]
+    unscreened = [c for c in admissible if not c.exploratory_done and not c.has_exploratory_support]
     if not unscreened:
         awaiting = await_confirmation()
         if awaiting is not None:

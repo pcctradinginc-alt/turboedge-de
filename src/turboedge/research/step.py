@@ -250,7 +250,6 @@ def _matches_current_harness(screen: ResearchScreen) -> bool:
     )
 
 
-
 def _eligible_support(screen: ResearchScreen) -> bool:
     """Conservatively revalidate a persisted exploratory CANDIDATE.
 
@@ -263,7 +262,8 @@ def _eligible_support(screen: ResearchScreen) -> bool:
         return False
     current = resolve_harness(screen.hypothesis_id)
     if current is None or (screen.harness, screen.harness_version) != (
-        current.name, current.version
+        current.name,
+        current.version,
     ):
         return False
     if screen.harness == "lottery_pricing":
@@ -763,7 +763,8 @@ def run_research_step(
             s.hypothesis_id for s in latest_completed.values() if _eligible_support(s)
         )
         legacy_unsupported = [
-            s.screen_id for s in latest_completed.values()
+            s.screen_id
+            for s in latest_completed.values()
             if s.produced_support and not _eligible_support(s)
         ]
         if legacy_unsupported:

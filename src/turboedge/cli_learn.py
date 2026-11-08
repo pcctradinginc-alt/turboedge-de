@@ -416,8 +416,7 @@ def learn_cmd(ctx: typer.Context) -> None:
                 "mean_weight_at_prediction": score.mean_weight,
                 "interpretable": score.interpretable,
                 "beats_null_mse": (
-                    beats_null(score, null_mse=null_score.mse)
-                    if null_score is not None else None
+                    beats_null(score, null_mse=null_score.mse) if null_score is not None else None
                 ),
             }
             for score in attribution.model_scores
@@ -463,7 +462,8 @@ def learn_cmd(ctx: typer.Context) -> None:
     }
     _print_counts("learn", counts)
     _write_summary(
-        "learn", counts,
+        "learn",
+        counts,
         attribution={
             "entries_considered": attribution.entries_considered,
             "entries_attributable": attribution.entries_attributable,

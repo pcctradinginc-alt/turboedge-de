@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from math import isfinite
 
 import numpy as np
@@ -53,10 +53,7 @@ class NetEVProbe:
             return "INSUFFICIENT_SAMPLE"
         if self.lower_ci_net_return is None or self.lower_ci_excess_over_naive is None:
             return "INSUFFICIENT_SAMPLE"
-        if (
-            self.lower_ci_net_return > MIN_NET_EDGE
-            and self.lower_ci_excess_over_naive > 0.0
-        ):
+        if self.lower_ci_net_return > MIN_NET_EDGE and self.lower_ci_excess_over_naive > 0.0:
             return "EXPLORATORY_CANDIDATE_NOT_CONFIRMED"
         return "NO_DEMONSTRATED_NET_ALPHA"
 
@@ -119,7 +116,7 @@ def probe(snapshots: list[ProductSnapshot]) -> NetEVProbe:
 
     # Select the FIRST eligible matched pair per day, irrespective of whether
     # either product later survives. This rules out ex-post survivor selection.
-    entries: dict[object, tuple[ProductSnapshot, ProductSnapshot]] = {}
+    entries: dict[date, tuple[ProductSnapshot, ProductSnapshot]] = {}
     ordered_pairs = sorted(
         pairs, key=lambda x: (x.window_start, x.issuer_a, x.isin_a, x.issuer_b, x.isin_b)
     )
@@ -144,17 +141,11 @@ def probe(snapshots: list[ProductSnapshot]) -> NetEVProbe:
     def observed_return(entry: ProductSnapshot) -> float | None:
         assert entry.ask is not None
         open_at = entry.retrieved_at
-        later = [
-            s for s in by_isin[entry.isin]
-            if open_at < s.retrieved_at <= open_at + EXIT_UNTIL
-        ]
+        later = [s for s in by_isin[entry.isin] if open_at < s.retrieved_at <= open_at + EXIT_UNTIL]
         # A documented KO takes precedence over any later apparent quote.
         if any(s.knocked_out for s in later):
             return -1.0 - EXECUTION_BUFFER_BPS / 10_000.0
-        exits = [
-            s for s in later
-            if s.retrieved_at >= open_at + EXIT_AFTER and _fresh_exit(s)
-        ]
+        exits = [s for s in later if s.retrieved_at >= open_at + EXIT_AFTER and _fresh_exit(s)]
         if not exits:
             return None
         bid = exits[0].bid

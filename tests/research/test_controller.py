@@ -414,8 +414,10 @@ def test_promotion_stays_locked_for_an_admitted_family() -> None:
 
 def test_supported_screen_does_not_block_other_development_screen() -> None:
     confirmed = _candidate(
-        hypothesis_id="RO-SUPPORTED", priority=0.9,
-        exploratory_done=True, has_exploratory_support=True,
+        hypothesis_id="RO-SUPPORTED",
+        priority=0.9,
+        exploratory_done=True,
+        has_exploratory_support=True,
     )
     new = _candidate(hypothesis_id="RO-INDEPENDENT", priority=0.2)
     action = _decide(candidates=[confirmed, new])
@@ -426,7 +428,9 @@ def test_supported_screen_does_not_block_other_development_screen() -> None:
 
 def test_supported_screen_still_requires_human_if_other_data_are_missing() -> None:
     confirmed = _candidate(
-        hypothesis_id="RO-SUPPORTED", exploratory_done=True, has_exploratory_support=True,
+        hypothesis_id="RO-SUPPORTED",
+        exploratory_done=True,
+        has_exploratory_support=True,
     )
     blocked = _candidate(hypothesis_id="RO-BLOCKED", data_ready=False)
     action = _decide(candidates=[confirmed, blocked])

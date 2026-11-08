@@ -17,25 +17,50 @@ _START = datetime(2026, 8, 1, 12, 0, tzinfo=UTC)
 
 
 def quote(
-    isin: str, issuer: str, at: datetime, *, bid: float, ask: float = 10.0,
+    isin: str,
+    issuer: str,
+    at: datetime,
+    *,
+    bid: float,
+    ask: float = 10.0,
     knocked_out: bool = False,
 ) -> ProductSnapshot:
     return ProductSnapshot(
-        isin=isin, wkn=isin[-6:], issuer=issuer, venue="fake",
-        underlying_raw="DAX", underlying_id="DAX", direction=Direction.LONG,
+        isin=isin,
+        wkn=isin[-6:],
+        issuer=issuer,
+        venue="fake",
+        underlying_raw="DAX",
+        underlying_id="DAX",
+        direction=Direction.LONG,
         product_type=ProductType.TURBO_OPEN_END,
-        financing_level=19000.0, knockout_barrier=19000.0,
-        ratio=0.01, currency="EUR", underlying_currency="EUR", quanto=False,
-        open_end=True, bid=bid, ask=ask, bid_size=100.0, ask_size=100.0,
-        quote_timestamp=at, quote_presence=True, bid_only=False,
-        knocked_out=knocked_out, underlying_price_ref=20000.0,
+        financing_level=19000.0,
+        knockout_barrier=19000.0,
+        ratio=0.01,
+        currency="EUR",
+        underlying_currency="EUR",
+        quanto=False,
+        open_end=True,
+        bid=bid,
+        ask=ask,
+        bid_size=100.0,
+        ask_size=100.0,
+        quote_timestamp=at,
+        quote_presence=True,
+        bid_only=False,
+        knocked_out=knocked_out,
+        underlying_price_ref=20000.0,
         underlying_price_ref_timestamp=at,
         ratio_reliability=FieldReliability.SOURCE_REPORTED,
         raw_hash=hashlib.sha256(isin.encode()).hexdigest(),
-        observation_time=at, available_at=at, retrieved_at=at,
-        source="fake", parser_version="1", is_stale=False, quality_score=0.99,
+        observation_time=at,
+        available_at=at,
+        retrieved_at=at,
+        source="fake",
+        parser_version="1",
+        is_stale=False,
+        quality_score=0.99,
     )
-
 
 def sample(days: int = 31, *, omit_exit: bool = False) -> list[ProductSnapshot]:
     rows = []
@@ -73,7 +98,9 @@ def test_one_day_with_many_products_is_not_an_independent_sample() -> None:
 
 def test_future_quote_cannot_change_selection_when_entry_quote_was_stale() -> None:
     rows = sample(days=1)
-    rows[1] = rows[1].model_copy(update={
-        "quote_timestamp": rows[1].retrieved_at - timedelta(minutes=20),
-    })
+    rows[1] = rows[1].model_copy(
+        update={
+            "quote_timestamp": rows[1].retrieved_at - timedelta(minutes=20),
+        }
+    )
     assert probe(rows).candidate_days == 0

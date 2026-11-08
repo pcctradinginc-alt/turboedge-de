@@ -120,7 +120,8 @@ def test_a_fresh_pair_after_three_days_is_an_independent_cohort(
         products=_pair(make_product_snapshot, _START),
         now=_START + timedelta(minutes=2),
     )
-    third = _START + timedelta(days=3)
+    # Saturday and Easter Monday are closed. Tuesday is the next viable cohort.
+    third = _START + timedelta(days=6)
     added = capture_daily_research_tape(
         root,
         products=_pair(make_product_snapshot, third),

@@ -83,6 +83,9 @@ on:
     - cron: "45 13 * * 1-5" # scan
     - cron: "50 15 * * 1-5" # scan
     - cron: "10 18 * * 1-5" # scan
+    # Mid-afternoon UTC stays within local German trading hours in CET/CEST.
+    # Separate mode avoids slowing live scan and EOD label/learn.
+    - cron: "30 14 * * 1-5" # research_capture
     - cron: "40 21 * * 1-5" # eod
     # One hour after eod, deliberately its own run rather than another job
     # inside eod's: `concurrency: turboedge-state` with cancel-in-progress
@@ -105,6 +108,7 @@ on:
         type: choice
         options:
           - scan
+          - research_capture
           - eod
           - external
           - research
@@ -175,6 +179,7 @@ jobs:
               case "$SCHEDULE_CRON" in
                 "40 7 * * 1-5"|"10 10 * * 1-5"|"45 13 * * 1-5"|"50 15 * * 1-5"|"10 18 * * 1-5")
                   mode="scan" ;;
+                "30 14 * * 1-5") mode="research_capture" ;;
                 "40 21 * * 1-5") mode="eod" ;;
                 "40 22 * * 1-5") mode="external" ;;
                 "0 6 * * 6") mode="weekly" ;;
@@ -195,7 +200,7 @@ jobs:
               ;;
           esac
           case "$mode" in
-            scan|eod|external|research|weekly|monthly) ;;
+            scan|research_capture|eod|external|research|weekly|monthly) ;;
             *)
               echo "::error::invalid resolved mode: $mode"
               exit 2
@@ -332,6 +337,54 @@ jobs:
           state_key: ${{ secrets.TURBOEDGE_STATE_KEY }}
 
   # ---------------------------------------------------------------------
+  # research_capture -- independently restored/packed state, market-hours
+  # deep fetch. The globally serialized turboedge-state concurrency group
+  # avoids restore/write races with scan and EOD. Closed days are skipped
+  # without treating historical issuer quotes as live evidence.
+  # ---------------------------------------------------------------------
+  research_capture:
+    needs: resolve-mode
+    if: needs.resolve-mode.outputs.mode == 'research_capture'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Restore TurboEdge state
+        id: state
+        uses: ./.github/actions/turboedge-state
+        with:
+          state_key: ${{ secrets.TURBOEDGE_STATE_KEY }}
+          mode: research_capture
+          allow_fresh_state: ${{ inputs.allow_fresh_state }}
+          github_token: ${{ github.token }}
+
+      - name: Capture fresh matched issuer quotes and audit archived PIT tape
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          TURBOEDGE_EMAIL_TO: ${{ secrets.TURBOEDGE_EMAIL_TO }}
+        run: |
+          uv run turboedge --log-format json archive products --require-market-hours --monitor
+
+      - name: Job summary
+        if: always()
+        uses: ./.github/actions/turboedge-state-summary
+        with:
+          mode: research_capture
+          state_note: ${{ steps.state.outputs.state_note }}
+
+      - name: Pack and upload state
+        if: success()
+        uses: ./.github/actions/turboedge-state-pack
+        with:
+          state_key: ${{ secrets.TURBOEDGE_STATE_KEY }}
+
+  # ---------------------------------------------------------------------
   # eod -- Mo-Fr, once, after market close: label -> learn -> reevaluate ->
   # compact
   # ---------------------------------------------------------------------
@@ -368,25 +421,6 @@ jobs:
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           TURBOEDGE_EMAIL_TO: ${{ secrets.TURBOEDGE_EMAIL_TO }}
         run: uv run turboedge --log-format json position reevaluate --email
-
-      # Deep, slow, once-a-day full-depth product fetch (research only --
-      # see pipeline/archive.py's module docstring). Deliberately placed in
-      # `eod`, never one of the five daily `scan-all` invocations: gettex's
-      # live-scan page cap (configs/sources.yaml, max_pages: 20) exists
-      # because full-depth fetching adds ~120s per underlying at the
-      # project's <=1 request/s politeness rule, which would push
-      # decision-time quote age past configs/risk.yaml's
-      # max_quote_age_at_decision_s and cause products to be rejected on
-      # staleness -- more data on the scan path would mean fewer candidates,
-      # not more. This command builds its own adapters and only overrides
-      # gettex's page cap for its own call, so the scan path's configured
-      # depth is completely unaffected. Writes product_snapshots/instruments
-      # for research only -- no pricing, no EV, no gates, no ledger entry,
-      # no notification -- and runs before `db compact` so today's deep
-      # snapshots are subject to the same retention policy as everything
-      # else.
-      - name: Archive full-depth product universe (research only)
-        run: uv run turboedge --log-format json archive products
 
       - name: Compact product_snapshots retention
         run: uv run turboedge --log-format json db compact

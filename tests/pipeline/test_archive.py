@@ -278,6 +278,7 @@ def test_deep_fetch_persists_curated_pit_tape_without_trading(
     tmp_path: Path,
 ) -> None:
     """End-to-end integration: actual deep pipeline -> compact Parquet tape."""
+    session = _NOW + timedelta(days=1)  # Monday; Sunday must not become an entry
     p1 = dax_product_factory(
         isin="DE000DEEP101",
         issuer="BNP Paribas",
@@ -285,8 +286,8 @@ def test_deep_fetch_persists_curated_pit_tape_without_trading(
         financing_level=19000.0,
         spot=20000.0,
         underlying_price_ref=20000.0,
-        underlying_price_ref_timestamp=_NOW,
-        quote_timestamp=_NOW,
+        underlying_price_ref_timestamp=session,
+        quote_timestamp=session,
     ).model_copy(update={"ratio_reliability": FieldReliability.SOURCE_REPORTED})
     p2 = dax_product_factory(
         isin="DE000DEEP102",
@@ -295,8 +296,8 @@ def test_deep_fetch_persists_curated_pit_tape_without_trading(
         financing_level=19000.0,
         spot=20000.0,
         underlying_price_ref=20000.0,
-        underlying_price_ref_timestamp=_NOW,
-        quote_timestamp=_NOW,
+        underlying_price_ref_timestamp=session,
+        quote_timestamp=session,
     ).model_copy(update={"ratio_reliability": FieldReliability.SOURCE_REPORTED})
     result = run_product_archive(
         cfg,
@@ -304,12 +305,12 @@ def test_deep_fetch_persists_curated_pit_tape_without_trading(
         product_adapters=[make_product_adapter("gettex", products=[p1, p2])],
         underlying_ids=["DAX"],
         state_dir=tmp_path / "state",
-        now=_NOW + timedelta(minutes=2),
+        now=session + timedelta(minutes=2),
     )
     assert result.snapshots_written == 2
     assert result.research_quotes_archived == 2
     assert result.research_entry_pairs == 1
-    tape = load_research_tape(tmp_path / "state", as_of=_NOW + timedelta(minutes=2))
+    tape = load_research_tape(tmp_path / "state", as_of=session + timedelta(minutes=2))
     assert len(tape) == 2
     assert {x.quote_role for x in tape} == {"entry"}
     counts = store.table_counts()

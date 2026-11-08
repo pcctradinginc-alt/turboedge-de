@@ -67,7 +67,12 @@ from turboedge.models.directional import (
 )
 from turboedge.models.forecast import ForecastModel
 from turboedge.notifications.dedup import NotificationDeduplicator, notification_hash
-from turboedge.notifications.gmail import EmailMessageSpec, GmailCredentials, GmailNotifier
+from turboedge.notifications.gmail import (
+    EmailMessageSpec,
+    GmailCredentials,
+    GmailNotifier,
+    NotificationError,
+)
 from turboedge.notifications.templates import PositionUpdateContext, render_position_update
 from turboedge.pipeline.archive import run_product_archive
 from turboedge.pipeline.scan_all import run_scan_all
@@ -78,6 +83,7 @@ from turboedge.reporting.monthly import build_monthly_report
 from turboedge.reporting.redaction import redact_console_enabled
 from turboedge.reporting.weekly import run_research_tournament
 from turboedge.research.alpha_discovery import run_discovery_step
+from turboedge.research.capture_monitor import record_capture_attempt, verify_restored_tape
 from turboedge.research.data_audit import (
     PLAUSIBLE_SCAN_SECONDS,
     ledger_census,
@@ -85,9 +91,10 @@ from turboedge.research.data_audit import (
     quote_freshness,
     snapshot_staleness_advantage,
 )
-from turboedge.research.data_factory import audit_research_tape
+from turboedge.research.data_factory import TapeCapture, audit_research_tape
 from turboedge.research.lottery_pricing import MIN_INDEPENDENT_DAYS
 from turboedge.research.lottery_pricing import evaluate as evaluate_lottery_pricing
+from turboedge.research.market_session import is_research_market_session
 from turboedge.research.product_pair_net_ev import probe as probe_product_pair_net_ev
 from turboedge.research.product_pairs import ComparabilityCriteria, census
 from turboedge.research.step import run_research_step
@@ -1691,6 +1698,12 @@ def archive_products_cmd(
             "path, which keeps its own configs/sources.yaml value."
         ),
     ),
+    require_market_hours: bool = typer.Option(
+        False, "--require-market-hours", help="Skip closed sessions before any fetch"
+    ),
+    monitor: bool = typer.Option(
+        False, "--monitor", help="Audit restored PIT archive, track failures and alert"
+    ),
 ) -> None:
     """Deep, slow, once-daily full-depth product fetch for research only.
 
@@ -1701,6 +1714,17 @@ def archive_products_cmd(
     of the five daily ``scan-all`` runs.
     """
     app_ctx = ctx.obj
+    started_at = datetime.now(UTC)
+    if require_market_hours and not is_research_market_session(started_at):
+        console.print("Research capture: CLOSED_SESSION (no fetch or synthetic exit)")
+        _write_summary("archive_products", {"closed_session_skipped": 1})
+        return
+    if monitor and not require_market_hours:
+        raise typer.BadParameter("--monitor requires --require-market-hours")
+    if monitor:
+        # Check the restored archive's persisted high-water mark BEFORE
+        # attempting a long external fetch. Never silently accept lost tape.
+        verify_restored_tape(app_ctx.state_dir, now=started_at)
     underlying_ids = list(underlying) if underlying else app_ctx.cfg.universe.enabled_ids()
     if not underlying_ids:
         err_console.print(
@@ -1722,12 +1746,60 @@ def archive_products_cmd(
             state_dir=app_ctx.state_dir,
         )
 
+    capture_monitor = None
+    if monitor:
+        finished_at = datetime.now(UTC)
+        capture_monitor = record_capture_attempt(
+            app_ctx.state_dir,
+            now=finished_at,
+            result=TapeCapture(
+                quotes_written=result.research_quotes_archived,
+                entry_pairs=result.research_entry_pairs,
+                followup_quotes=0,
+                tracked_isins=0,
+                tape_file_written=result.research_quotes_archived > 0,
+                eligible_pair_found=result.eligible_research_pair_found,
+            ),
+        )
+        if capture_monitor.alert:
+            credentials = GmailCredentials.from_env()
+            if credentials is None:
+                logger.error(
+                    "capture_monitor_alert_not_delivered",
+                    reason=capture_monitor.reason,
+                    message="Gmail secrets missing",
+                )
+            else:
+                spec = EmailMessageSpec(
+                    subject=f"Research capture degraded: {capture_monitor.reason}",
+                    body_text=(
+                        "Autonomous Research Data Factory has repeated missing "
+                        "fresh matched pairs or missing actual exit observations.\n"
+                        f"Reason: {capture_monitor.reason}\n"
+                        f"Consecutive misses: {capture_monitor.consecutive_no_pair}\n"
+                        f"Missing mature exits: {capture_monitor.missing_exits}\n"
+                        "Investigate the latest research_capture pipeline run. "
+                        "No alpha confirmation or trade was performed."
+                    ),
+                    to=credentials.recipients,
+                )
+                try:
+                    sent = _build_notifier(app_ctx).send(spec)
+                    if not sent.sent:
+                        logger.error(
+                            "capture_monitor_alert_not_delivered", reason=capture_monitor.reason
+                        )
+                except NotificationError:
+                    logger.exception("capture_monitor_alert_send_failed")
+
     counts = {
         "snapshots_written": result.snapshots_written,
         "instruments_upserted": result.instruments_upserted,
         "issuers_seen": len(result.issuers_seen),
         "research_quotes_archived": result.research_quotes_archived,
         "research_entry_pairs": result.research_entry_pairs,
+        "eligible_research_pair_found": int(result.eligible_research_pair_found),
+        "monitor_alert": int(capture_monitor.alert) if capture_monitor else 0,
     }
 
     if redact_console_enabled():
@@ -1769,6 +1841,7 @@ def archive_products_cmd(
         rows_fetched_by_underlying=result.rows_fetched_by_underlying,
         warnings=result.warnings,
         duration_s=result.duration_s,
+        capture_monitor=asdict(capture_monitor) if capture_monitor else None,
     )
 
 

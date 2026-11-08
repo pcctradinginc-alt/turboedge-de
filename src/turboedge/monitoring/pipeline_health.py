@@ -56,7 +56,7 @@ from typing import Any
 #: `resolve-mode` is included because every data job is gated on its output:
 #: if it fails, the run does nothing at all.
 MONITORED_JOBS: frozenset[str] = frozenset(
-    {"resolve-mode", "scan", "eod", "external", "research", "weekly", "monthly"}
+    {"resolve-mode", "scan", "research_capture", "eod", "external", "research", "weekly", "monthly"}
 )
 
 #: The jobs that actually pack and upload state, and therefore the only
@@ -72,7 +72,7 @@ MONITORED_JOBS: frozenset[str] = frozenset(
 #: unreachable to the state restore". Nothing had been uploaded to be
 #: unreachable.
 STATE_PACKING_JOBS: frozenset[str] = frozenset(
-    {"scan", "eod", "external", "research", "weekly", "monthly"}
+    {"scan", "research_capture", "eod", "external", "research", "weekly", "monthly"}
 )
 
 #: The watchdog's own job. Never monitored -- see reason 2 in the module

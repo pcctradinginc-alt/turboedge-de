@@ -23,6 +23,10 @@ from uuid import uuid4
 from pydantic import model_validator
 
 from turboedge.research.archive import ParquetResearchArchive, PointInTimeUnavailable, UnknownTable
+from turboedge.research.market_session import (
+    is_research_market_session,
+    observed_research_exit_is_market_quote,
+)
 from turboedge.research.product_pair_net_ev import _fresh_exit, _valid_quote
 from turboedge.research.product_pairs import ComparabilityCriteria, census
 from turboedge.storage.schemas import Direction, ProductSnapshot
@@ -59,6 +63,7 @@ class TapeCapture:
     followup_quotes: int
     tracked_isins: int
     tape_file_written: bool
+    eligible_pair_found: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,6 +140,9 @@ def _first_verified_pair(
         and q.retrieved_at <= as_of
         and q.available_at <= q.retrieved_at
         and _valid_quote(q)
+        and q.quote_timestamp is not None
+        and is_research_market_session(q.quote_timestamp, entry=True)
+        and is_research_market_session(q.retrieved_at, entry=True)
     ]
     by_isin = {q.isin: q for q in valid}
     matches = census(
@@ -188,6 +196,20 @@ def capture_daily_research_tape(
             earlier.retrieved_at < product.retrieved_at <= earlier.retrieved_at + FOLLOWUP_WINDOW
             and product.retrieved_at <= cutoff
             and product.available_at <= product.retrieved_at
+            and is_research_market_session(product.retrieved_at)
+            and (
+                product.knocked_out
+                or (
+                    product.quote_timestamp is not None
+                    and observed_research_exit_is_market_quote(
+                        product.quote_timestamp, product.retrieved_at
+                    )
+                    and _fresh_exit(product)
+                    and product.ask is not None
+                    and product.bid is not None
+                    and product.bid <= product.ask
+                )
+            )
         ):
             continue
         new_quotes.append(
@@ -229,7 +251,7 @@ def capture_daily_research_tape(
             seen.add(key)
             unique.append(quote)
     if not unique:
-        return TapeCapture(0, 0, 0, len(tracked), False)
+        return TapeCapture(0, 0, 0, len(tracked), False, pair is not None)
 
     # Never forge an earlier write time. In production this is the actual
     # current UTC time immediately after fetch; injected 'now' exists for
@@ -242,6 +264,7 @@ def capture_daily_research_tape(
         followup_quotes=sum(q.quote_role == "followup" for q in unique),
         tracked_isins=len(tracked),
         tape_file_written=True,
+        eligible_pair_found=pair is not None,
     )
 
 
@@ -255,7 +278,7 @@ def _has_observed_exit(entry: ResearchQuote, history: list[ResearchQuote]) -> bo
     ]
     # A documented KO observed before exit counts as an observed (negative)
     # outcome, not as a falsely "missing" winning Bid.
-    if any(s.knocked_out for s in valid):
+    if any(s.knocked_out and is_research_market_session(s.retrieved_at) for s in valid):
         return True
     return any(
         s.retrieved_at >= entry.retrieved_at + EXIT_AFTER
@@ -263,6 +286,8 @@ def _has_observed_exit(entry: ResearchQuote, history: list[ResearchQuote]) -> bo
         and s.ask is not None
         and s.bid is not None
         and s.bid <= s.ask
+        and s.quote_timestamp is not None
+        and observed_research_exit_is_market_quote(s.quote_timestamp, s.retrieved_at)
         for s in valid
     )
 

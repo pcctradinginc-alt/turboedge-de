@@ -276,6 +276,7 @@ def test_every_data_job_and_the_mode_gate_are_monitored() -> None:
     assert {
         "resolve-mode",
         "scan",
+        "research_capture",
         "eod",
         "external",
         "research",

@@ -721,6 +721,14 @@ jobs:
           uv run turboedge --log-format json research product-pairs \
             --json-out reports/weekly/product_pairs.json
 
+      # Exploratory-only DAX LONG net-EV measurement against NO_TRADE.
+      # Missing exits fail closed; this cannot promote or order anything.
+      - name: Probe cross-issuer product net EV (research only)
+        continue-on-error: true
+        run: |
+          uv run turboedge --log-format json research product-pair-net-ev \
+            --json-out reports/weekly/product_pair_net_ev.json
+
       - name: Re-score the research queue
         run: uv run turboedge --log-format json research queue --limit 14
 

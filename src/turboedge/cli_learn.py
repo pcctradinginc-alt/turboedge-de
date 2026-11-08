@@ -77,6 +77,7 @@ from turboedge.reporting.html import save_monthly_report, save_weekly_report, su
 from turboedge.reporting.monthly import build_monthly_report
 from turboedge.reporting.redaction import redact_console_enabled
 from turboedge.reporting.weekly import run_research_tournament
+from turboedge.research.alpha_discovery import run_discovery_step
 from turboedge.research.data_audit import (
     PLAUSIBLE_SCAN_SECONDS,
     ledger_census,
@@ -944,6 +945,55 @@ def research_product_pairs_cmd(
         console.print(f"Wrote {json_path}")
 
     _write_summary("research_product_pairs", {"pairs": result.pair_count}, **payload)
+
+
+def research_discover_alpha_cmd(
+    ctx: typer.Context,
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Show the next DSL hypothesis without changing research tables"
+    ),
+    json_out: str = typer.Option(
+        "reports/weekly/alpha_discovery.json",
+        "--json-out",
+        help="Write the evidence and research decision to this JSON report",
+    ),
+) -> None:
+    """Autonomously generate and test a bounded exploratory alpha question.
+
+    Zero autonomous confirmation, promotion, model weighting or trading.
+    Every executed screen shares the existing research quarter budget.
+    """
+    app_ctx = ctx.obj
+    now = datetime.now(UTC)
+    with Store(app_ctx.db_path) as store:
+        store.init_schema()
+        result = run_discovery_step(store, now=now, dry_run=dry_run)
+
+    path = Path(json_out)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(asdict(result), indent=2, default=str), encoding="utf-8")
+    console.print(
+        f"ALPHA DISCOVERY {result.status} "
+        f"development_days={result.development_days} "
+        f"validation_days={result.validation_days} "
+        f"proposals={len(result.candidate_ids)} "
+        f"verdict={result.verdict or '-'}",
+        markup=False,
+        highlight=False,
+    )
+    _write_summary(
+        "research_discover_alpha",
+        {
+            "development_days": result.development_days,
+            "validation_days": result.validation_days,
+            "proposals": len(result.candidate_ids),
+            "screen_executed": int(result.status == "SCREENED_EXPLORATORY"),
+        },
+        verdict=result.verdict,
+        research_status=result.status,
+        confirmation_allowed=False,
+        trades_allowed=False,
+    )
 
 
 def research_product_pair_net_ev_cmd(
@@ -2237,6 +2287,7 @@ def register_learn_commands(app: typer.Typer, position_app: typer.Typer) -> None
     research_app.command("backfill-trials")(research_backfill_trials_cmd)
     research_app.command("ko-calibration")(research_ko_calibration_cmd)
     research_app.command("step")(research_step_cmd)
+    research_app.command("discover-alpha")(research_discover_alpha_cmd)
     research_app.command("product-pairs")(research_product_pairs_cmd)
     research_app.command("product-pair-net-ev")(research_product_pair_net_ev_cmd)
     research_app.command("data-audit")(research_data_audit_cmd)

@@ -216,6 +216,10 @@ def build_candidates(
                 exploratory_done=opportunity.hypothesis_id in screened_hypothesis_ids,
                 has_exploratory_support=opportunity.hypothesis_id in supported_hypothesis_ids,
                 screenable=opportunity.hypothesis_id not in unharnessed_hypothesis_ids,
+                evidence_completeness=(
+                    item.priority.evidence_completeness if item.priority is not None else None
+                ),
+                economic_value_basis=str(opportunity.expected_economic_value.basis),
             )
         )
     return out
@@ -244,6 +248,43 @@ def _matches_current_harness(screen: ResearchScreen) -> bool:
         and screen.harness == harness.name
         and screen.harness_version == harness.version
     )
+
+
+def _eligible_support(screen: ResearchScreen) -> bool:
+    """Conservatively revalidate a persisted exploratory CANDIDATE.
+
+    Historical findings are immutable, but they must not grant confirmatory
+    eligibility after their statistics have been invalidated. A method
+    version change is not independent confirmation. Fail closed when the
+    required evidence is missing from an old screen.
+    """
+    if not screen.produced_support:
+        return False
+    current = resolve_harness(screen.hypothesis_id)
+    if current is None or (screen.harness, screen.harness_version) != (
+        current.name,
+        current.version,
+    ):
+        return False
+    if screen.harness == "lottery_pricing":
+        from turboedge.research.lottery_pricing import (
+            MIN_CELLS,
+            MIN_ECONOMIC_SIZE_BPS,
+            MIN_INDEPENDENT_DAYS,
+        )
+
+        metrics = screen.metrics
+        try:
+            return (
+                int(metrics.get("distinct_days", 0)) >= MIN_INDEPENDENT_DAYS
+                and int(metrics.get("cells_used", 0)) >= MIN_CELLS
+                and float(metrics.get("median_economic_size_bps", 0)) >= MIN_ECONOMIC_SIZE_BPS
+                and float(metrics.get("mean_spread_slope", 0)) < 0
+                and metrics.get("interval_excludes_zero") is True
+            )
+        except (TypeError, ValueError, OverflowError):
+            return False
+    return True
 
 
 def _attempts(screen: ResearchScreen) -> int:
@@ -711,9 +752,27 @@ def run_research_step(
             and _matches_current_harness(s)
             and not _is_retryable(s, now=now)
         )
-        # Support is evidence, and evidence does not expire with a version
-        # bump: a question that a screen already backed stays backed.
-        supported_ids = frozenset(s.hypothesis_id for s in screens if s.produced_support)
+        # Only the most recent COMPLETED screen of the current harness
+        # version can support confirmation. Keep older CANDIDATE rows for
+        # audit, never turn a superseded/underpowered result into approval.
+        latest_completed: dict[str, ResearchScreen] = {}
+        for s in sorted(screens, key=lambda x: x.finished_at or x.started_at):
+            if s.status is ScreenStatus.COMPLETED:
+                latest_completed[s.hypothesis_id] = s
+        supported_ids = frozenset(
+            s.hypothesis_id for s in latest_completed.values() if _eligible_support(s)
+        )
+        legacy_unsupported = [
+            s.screen_id
+            for s in latest_completed.values()
+            if s.produced_support and not _eligible_support(s)
+        ]
+        if legacy_unsupported:
+            log.warning(
+                "research_legacy_support_not_eligible",
+                screened_candidates=len(legacy_unsupported),
+                screen_ids=legacy_unsupported,
+            )
         no_harness_ids = frozenset(
             s.hypothesis_id for s in screens if s.status is ScreenStatus.NO_APPROVED_HARNESS
         )

@@ -1206,3 +1206,77 @@ def test_a_question_without_harness_readiness_keeps_the_catalogue_proxy() -> Non
 
     assert not candidate.data_ready
     assert candidate.effective_sample is None
+
+
+def test_legacy_cost_candidate_with_three_days_cannot_request_confirmation(
+    store: Store, failed_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from turboedge.research.step import _eligible_support
+    from turboedge.storage.schemas import ResearchScreen
+
+    _seed(store, "RO-LOTTERY-PRICING", priority=0.9, family=InformationFamily.PRODUCT_SELECTION)
+    real = resolve_harness("RO-LOTTERY-PRICING")
+    assert real is not None
+    screen = ResearchScreen(
+        screen_id="2026Q4_SCREEN_legacy_lottery",
+        trial_id="2026Q4_SCREEN_legacy_lottery",
+        hypothesis_id="RO-LOTTERY-PRICING",
+        family="product_selection",
+        harness=real.name,
+        harness_version=real.version,
+        spec={},
+        data_version="old",
+        quarter=_QUARTER,
+        status=ScreenStatus.COMPLETED,
+        verdict="CANDIDATE",
+        metrics={
+            "supported": True,
+            "distinct_days": 3,
+            "cells_used": 107,
+            "interval_excludes_zero": True,
+            "mean_spread_slope": -0.4,
+            "median_economic_size_bps": 20.0,
+        },
+        started_at=_NOW,
+        finished_at=_NOW,
+    )
+    store.upsert_research_screen(screen)
+    assert _eligible_support(screen) is False
+    action = _step(store, failed_path, now=_NOW + timedelta(days=1), dry_run=True)
+    assert action.kind is not ActionKind.AWAIT_CONFIRMATION_APPROVAL
+    assert store.list_research_screens(quarter=_QUARTER)[0].verdict == "CANDIDATE"
+
+
+def test_new_cost_candidate_requires_complete_independent_evidence() -> None:
+    from turboedge.research.step import _eligible_support
+    from turboedge.storage.schemas import ResearchScreen
+
+    real = resolve_harness("RO-LOTTERY-PRICING")
+    assert real is not None
+    screen = ResearchScreen(
+        screen_id="2026Q4_SCREEN_sufficient_lottery",
+        trial_id="2026Q4_SCREEN_sufficient_lottery",
+        hypothesis_id="RO-LOTTERY-PRICING",
+        family="product_selection",
+        harness=real.name,
+        harness_version=real.version,
+        spec={},
+        data_version="new",
+        quarter=_QUARTER,
+        status=ScreenStatus.COMPLETED,
+        verdict="CANDIDATE",
+        metrics={
+            "supported": True,
+            "distinct_days": 20,
+            "cells_used": 107,
+            "interval_excludes_zero": True,
+            "mean_spread_slope": -0.4,
+            "median_economic_size_bps": 20.0,
+        },
+        started_at=_NOW,
+        finished_at=_NOW,
+    )
+    assert _eligible_support(screen)
+    assert not _eligible_support(
+        screen.model_copy(update={"metrics": {**screen.metrics, "interval_excludes_zero": False}})
+    )

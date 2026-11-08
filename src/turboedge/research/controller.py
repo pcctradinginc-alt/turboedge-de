@@ -163,6 +163,9 @@ class Candidate:
     #: nothing about them and must not report that it has. It skips them
     #: and screens a question it can actually answer.
     screenable: bool = True
+    #: Provenance of ranking inputs, never interpreted as measured alpha.
+    evidence_completeness: float | None = None
+    economic_value_basis: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -246,11 +249,13 @@ def decide_next_action(
         if c.family in PERMITTED_EXPLORATORY_FAMILIES and c.family not in blocked
     ]
 
-    # 3. Exploratory support already exists somewhere: the next genuinely
-    #    informative step is a confirmatory trial, and that is not the
-    #    loop's to start.
+    # A supported screen waits for a human, but must not hold up other
+    # independent, previously permitted DEVELOPMENT-only screens.
     supported = [c for c in admissible if c.has_exploratory_support]
-    if supported:
+
+    def await_confirmation() -> ResearchAction | None:
+        if not supported:
+            return None
         best = max(supported, key=lambda c: (c.priority or 0.0, c.hypothesis_id))
         room = confirmatory_budget - confirmatory_trials_this_quarter
         return ResearchAction(
@@ -270,6 +275,9 @@ def decide_next_action(
     # 1. The exploratory ceiling. Checked after shelving and support so that
     #    a spent quarter still reports the more useful of the two states.
     if exploratory_screens_this_quarter >= EXPLORATORY_SCREENS_PER_QUARTER:
+        awaiting = await_confirmation()
+        if awaiting is not None:
+            return awaiting
         return ResearchAction(
             kind=ActionKind.NO_ACTION,
             reason=(
@@ -290,8 +298,11 @@ def decide_next_action(
             evidence=base_evidence,
         )
 
-    unscreened = [c for c in admissible if not c.exploratory_done]
+    unscreened = [c for c in admissible if not c.exploratory_done and not c.has_exploratory_support]
     if not unscreened:
+        awaiting = await_confirmation()
+        if awaiting is not None:
+            return awaiting
         return ResearchAction(
             kind=ActionKind.NO_ACTION,
             reason=(
@@ -304,6 +315,9 @@ def decide_next_action(
 
     pending = [c for c in unscreened if c.screenable]
     if not pending:
+        awaiting = await_confirmation()
+        if awaiting is not None:
+            return awaiting
         return ResearchAction(
             kind=ActionKind.NO_ACTION,
             reason=(
@@ -341,7 +355,12 @@ def decide_next_action(
     #       reason rather than silently.
     ranked = sorted(
         pending,
-        key=lambda c: (c.priority is None, -(c.priority or 0.0), c.hypothesis_id),
+        key=lambda c: (
+            c.priority is None,
+            -(c.priority or 0.0),
+            -(c.evidence_completeness or 0.0),
+            c.hypothesis_id,
+        ),
     )
 
     skipped: list[dict[str, Any]] = []
@@ -393,11 +412,18 @@ def decide_next_action(
             evidence={
                 **base_evidence,
                 "priority": candidate.priority,
+                "priority_evidence_completeness": candidate.evidence_completeness,
+                "economic_value_basis": candidate.economic_value_basis,
                 "effective_sample": candidate.effective_sample,
                 "required_sample": candidate.required_sample,
                 "skipped_for_data": skipped,
             },
         )
+
+    # A confirmation request is independent of blocked future exploration.
+    awaiting = await_confirmation()
+    if awaiting is not None:
+        return awaiting
 
     # Nothing in the queue has its data. Report against the highest-ranked
     # question, because that is the one whose data would unblock the most

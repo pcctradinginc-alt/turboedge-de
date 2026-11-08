@@ -62,6 +62,7 @@ def quote(
         quality_score=0.99,
     )
 
+
 def sample(days: int = 31, *, omit_exit: bool = False) -> list[ProductSnapshot]:
     rows = []
     for i in range(days):

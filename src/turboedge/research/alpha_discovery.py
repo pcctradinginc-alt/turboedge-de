@@ -19,7 +19,7 @@ from collections import defaultdict
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime, timedelta
 from enum import StrEnum
-from itertools import permutations
+from itertools import pairwise, permutations
 from math import isfinite
 from typing import Literal, Self
 
@@ -331,7 +331,7 @@ def evaluate(
         len(set(ordered_days)) != len(ordered_days)
         or any(
             (b - a).days < MIN_DAY_SPACING
-            for a, b in zip(ordered_days, ordered_days[1:], strict=False)
+            for a, b in pairwise(ordered_days)
         )
     ):
         return Measurement(
@@ -376,9 +376,7 @@ def evaluate(
     bound_excess = _lower_confidence_bound(excess)
     if missing_exit or missing_feature:
         verdict = "INCOMPLETE_EVIDENCE"
-    elif len(validation) < MIN_VALIDATION_DAYS:
-        verdict = "AWAIT_DATA"
-    elif bound_net is None or bound_excess is None:
+    elif len(validation) < MIN_VALIDATION_DAYS or bound_net is None or bound_excess is None:
         verdict = "AWAIT_DATA"
     elif bound_net > MIN_ECONOMIC_LCB and bound_excess > 0:
         verdict = "CANDIDATE_REQUIRES_INDEPENDENT_CONFIRMATION"

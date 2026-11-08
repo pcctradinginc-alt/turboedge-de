@@ -78,6 +78,7 @@ class ArchiveResult:
     duration_s: float
     research_quotes_archived: int = 0
     research_entry_pairs: int = 0
+    eligible_research_pair_found: bool = False
 
 
 def _add_warning(warnings: list[str], message: str) -> None:
@@ -192,12 +193,14 @@ def run_product_archive(
     # appended to the existing immutable Parquet archive. This is research
     # collection, never live scan, pricing, a ledger decision or a trade.
     research_quotes_archived = research_entry_pairs = 0
+    eligible_research_pair_found = False
     if state_dir is not None and products:
         capture = capture_daily_research_tape(
             state_dir, products=list(products), now=now or datetime.now(UTC)
         )
         research_quotes_archived = capture.quotes_written
         research_entry_pairs = capture.entry_pairs
+        eligible_research_pair_found = capture.eligible_pair_found
 
     issuers_seen: dict[str, int] = dict(Counter(p.issuer for p in products))
 
@@ -216,6 +219,7 @@ def run_product_archive(
         duration_s=round(duration_s, 1),
         research_quotes_archived=research_quotes_archived,
         research_entry_pairs=research_entry_pairs,
+        eligible_research_pair_found=eligible_research_pair_found,
     )
 
     return ArchiveResult(
@@ -228,6 +232,7 @@ def run_product_archive(
         duration_s=round(duration_s, 1),
         research_quotes_archived=research_quotes_archived,
         research_entry_pairs=research_entry_pairs,
+        eligible_research_pair_found=eligible_research_pair_found,
     )
 
 

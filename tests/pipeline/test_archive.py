@@ -12,15 +12,17 @@ quietly wires archiving into the decision path fails loudly here.
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from turboedge.adapters.base import AdapterError
 from turboedge.adapters.gettex import GettexAdapter
 from turboedge.config import TurboEdgeConfig
 from turboedge.pipeline.archive import ArchiveResult, run_product_archive
+from turboedge.research.data_factory import load_research_tape
 from turboedge.storage.duckdb import Store
-from turboedge.storage.schemas import Direction, ProductSnapshot
+from turboedge.storage.schemas import Direction, FieldReliability, ProductSnapshot
 
 _NOW = datetime(2026, 9, 27, 12, 0, tzinfo=UTC)
 
@@ -266,3 +268,51 @@ def test_run_product_archive_writes_no_ledger_or_candidate_rows(
         if table not in ("product_snapshots", "instruments") and n != 0
     }
     assert untouched == {}
+
+
+def test_deep_fetch_persists_curated_pit_tape_without_trading(
+    cfg: TurboEdgeConfig,
+    store: Store,
+    make_product_adapter: Callable[..., Any],
+    dax_product_factory: Callable[..., ProductSnapshot],
+    tmp_path: Path,
+) -> None:
+    """End-to-end integration: actual deep pipeline -> compact Parquet tape."""
+    p1 = dax_product_factory(
+        isin="DE000DEEP101",
+        issuer="BNP Paribas",
+        direction=Direction.LONG,
+        financing_level=19000.0,
+        spot=20000.0,
+        underlying_price_ref=20000.0,
+        underlying_price_ref_timestamp=_NOW,
+        quote_timestamp=_NOW,
+    ).model_copy(update={"ratio_reliability": FieldReliability.SOURCE_REPORTED})
+    p2 = dax_product_factory(
+        isin="DE000DEEP102",
+        issuer="Goldman Sachs",
+        direction=Direction.LONG,
+        financing_level=19000.0,
+        spot=20000.0,
+        underlying_price_ref=20000.0,
+        underlying_price_ref_timestamp=_NOW,
+        quote_timestamp=_NOW,
+    ).model_copy(update={"ratio_reliability": FieldReliability.SOURCE_REPORTED})
+    result = run_product_archive(
+        cfg,
+        store,
+        product_adapters=[make_product_adapter("gettex", products=[p1, p2])],
+        underlying_ids=["DAX"],
+        state_dir=tmp_path / "state",
+        now=_NOW + timedelta(minutes=2),
+    )
+    assert result.snapshots_written == 2
+    assert result.research_quotes_archived == 2
+    assert result.research_entry_pairs == 1
+    tape = load_research_tape(tmp_path / "state", as_of=_NOW + timedelta(minutes=2))
+    assert len(tape) == 2
+    assert {x.quote_role for x in tape} == {"entry"}
+    counts = store.table_counts()
+    assert counts["forward_ledger"] == 0
+    assert counts["candidate_sets"] == 0
+    assert counts["signals"] == 0

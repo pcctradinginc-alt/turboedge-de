@@ -85,6 +85,7 @@ from turboedge.research.data_audit import (
     quote_freshness,
     snapshot_staleness_advantage,
 )
+from turboedge.research.data_factory import audit_research_tape
 from turboedge.research.lottery_pricing import MIN_INDEPENDENT_DAYS
 from turboedge.research.lottery_pricing import evaluate as evaluate_lottery_pricing
 from turboedge.research.product_pair_net_ev import probe as probe_product_pair_net_ev
@@ -967,11 +968,13 @@ def research_discover_alpha_cmd(
     now = datetime.now(UTC)
     with Store(app_ctx.db_path) as store:
         store.init_schema()
-        result = run_discovery_step(store, now=now, dry_run=dry_run)
+        result = run_discovery_step(store, now=now, state_dir=app_ctx.state_dir, dry_run=dry_run)
+    quality = audit_research_tape(app_ctx.state_dir, as_of=now)
 
     path = Path(json_out)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(asdict(result), indent=2, default=str), encoding="utf-8")
+    payload = {**asdict(result), "data_health": asdict(quality)}
+    path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
     console.print(
         f"ALPHA DISCOVERY {result.status} "
         f"development_days={result.development_days} "
@@ -988,7 +991,13 @@ def research_discover_alpha_cmd(
             "validation_days": result.validation_days,
             "proposals": len(result.candidate_ids),
             "screen_executed": int(result.status == "SCREENED_EXPLORATORY"),
+            "archive_files": quality.archive_files,
+            "independent_entry_days": quality.independent_entry_days,
+            "complete_exit_days": quality.complete_exit_days,
+            "missing_exit_days": quality.missing_exit_days,
+            "pending_exit_days": quality.pending_exit_days,
         },
+        data_health=asdict(quality),
         verdict=result.verdict,
         research_status=result.status,
         confirmation_allowed=False,
@@ -1710,12 +1719,15 @@ def archive_products_cmd(
             product_adapters=product_adapters,
             underlying_ids=underlying_ids,
             max_pages=max_pages,
+            state_dir=app_ctx.state_dir,
         )
 
     counts = {
         "snapshots_written": result.snapshots_written,
         "instruments_upserted": result.instruments_upserted,
         "issuers_seen": len(result.issuers_seen),
+        "research_quotes_archived": result.research_quotes_archived,
+        "research_entry_pairs": result.research_entry_pairs,
     }
 
     if redact_console_enabled():

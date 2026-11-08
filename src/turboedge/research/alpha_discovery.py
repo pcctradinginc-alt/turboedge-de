@@ -502,7 +502,8 @@ def run_discovery_step(
     # 24-48-hour exit window has matured. A still-open cohort is pending,
     # not an invented failed exit and not a convenient omitted loser.
     validation = [
-        pair for pair in validation
+        pair
+        for pair in validation
         if max(pair.left.retrieved_at, pair.right.retrieved_at) + EXIT_LATEST <= now
     ]
     history = store.list_research_screens()

@@ -101,7 +101,10 @@ def load_research_tape(state_dir: Path, *, as_of: datetime) -> list[ResearchQuot
                 "research quote has future/unreconstructable observation chronology"
             )
         key = (
-            quote.isin, quote.retrieved_at, quote.quote_role, quote.cohort_day,
+            quote.isin,
+            quote.retrieved_at,
+            quote.quote_role,
+            quote.cohort_day,
             quote.raw_hash,
         )
         if key not in keys:
@@ -115,7 +118,8 @@ def _first_verified_pair(
 ) -> tuple[ProductSnapshot, ProductSnapshot] | None:
     """Select from the first PIT-valid comparable pair; no future P&L input."""
     valid = [
-        q for q in quotes
+        q
+        for q in quotes
         if q.underlying_id == "DAX"
         and q.direction is Direction.LONG
         and q.retrieved_at <= as_of
@@ -156,19 +160,14 @@ def capture_daily_research_tape(
     """
     cutoff = _assert_cutoff(now)
     old = load_research_tape(state_dir, as_of=cutoff)
-    old_keys = {
-        (q.isin, q.retrieved_at, q.quote_role, q.cohort_day, q.raw_hash)
-        for q in old
-    }
+    old_keys = {(q.isin, q.retrieved_at, q.quote_role, q.cohort_day, q.raw_hash) for q in old}
     entries = [q for q in old if q.quote_role == "entry"]
     latest_entry = max((q.cohort_day for q in entries), default=None)
 
     # Only entry rows own a cohort. A follow-up quote may not be mistaken
     # for a new trade entry when the discovery engine builds test sessions.
     tracked = {
-        q.isin: q
-        for q in entries
-        if timedelta(0) < cutoff - q.retrieved_at <= FOLLOWUP_WINDOW
+        q.isin: q for q in entries if timedelta(0) < cutoff - q.retrieved_at <= FOLLOWUP_WINDOW
     }
     new_quotes: list[ResearchQuote] = []
     for product in products:
@@ -210,7 +209,10 @@ def capture_daily_research_tape(
     seen = set(old_keys)
     for quote in new_quotes:
         key = (
-            quote.isin, quote.retrieved_at, quote.quote_role, quote.cohort_day,
+            quote.isin,
+            quote.retrieved_at,
+            quote.quote_role,
+            quote.cohort_day,
             quote.raw_hash,
         )
         if key not in seen:
@@ -223,9 +225,7 @@ def capture_daily_research_tape(
     # current UTC time immediately after fetch; injected 'now' exists for
     # deterministic tests.
     run_id = f"{cutoff.strftime('%Y%m%dT%H%M%SZ')}-{uuid4().hex[:12]}"
-    write_snapshot_parquet(
-        RESEARCH_TAPE_TABLE, unique, run_id, state_dir, snapshot_date=cutoff
-    )
+    write_snapshot_parquet(RESEARCH_TAPE_TABLE, unique, run_id, state_dir, snapshot_date=cutoff)
     return TapeCapture(
         quotes_written=len(unique),
         entry_pairs=sum(1 for q in unique if q.quote_role == "entry") // 2,
@@ -235,9 +235,7 @@ def capture_daily_research_tape(
     )
 
 
-def _has_observed_exit(
-    entry: ResearchQuote, history: list[ResearchQuote]
-) -> bool:
+def _has_observed_exit(entry: ResearchQuote, history: list[ResearchQuote]) -> bool:
     valid = [
         s
         for s in history
@@ -252,7 +250,9 @@ def _has_observed_exit(
     return any(
         s.retrieved_at >= entry.retrieved_at + EXIT_AFTER
         and _fresh_exit(s)
-        and s.ask is not None and s.bid is not None and s.bid <= s.ask
+        and s.ask is not None
+        and s.bid is not None
+        and s.bid <= s.ask
         for s in valid
     )
 
@@ -306,9 +306,7 @@ def audit_research_tape(
         complete_exit_days=complete,
         missing_exit_days=missing,
         pending_exit_days=pending,
-        invalid_entry_quotes=sum(
-            not _valid_quote(q) for q in data if q.quote_role == "entry"
-        ),
+        invalid_entry_quotes=sum(not _valid_quote(q) for q in data if q.quote_role == "entry"),
         invalid_temporal_rows=invalid_temporal,
     )
 

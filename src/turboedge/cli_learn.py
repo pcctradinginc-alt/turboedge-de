@@ -968,9 +968,7 @@ def research_discover_alpha_cmd(
     now = datetime.now(UTC)
     with Store(app_ctx.db_path) as store:
         store.init_schema()
-        result = run_discovery_step(
-            store, now=now, state_dir=app_ctx.state_dir, dry_run=dry_run
-        )
+        result = run_discovery_step(store, now=now, state_dir=app_ctx.state_dir, dry_run=dry_run)
     quality = audit_research_tape(app_ctx.state_dir, as_of=now)
 
     path = Path(json_out)

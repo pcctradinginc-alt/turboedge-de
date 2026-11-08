@@ -309,9 +309,7 @@ def test_deep_fetch_persists_curated_pit_tape_without_trading(
     assert result.snapshots_written == 2
     assert result.research_quotes_archived == 2
     assert result.research_entry_pairs == 1
-    tape = load_research_tape(
-        tmp_path / "state", as_of=_NOW + timedelta(minutes=2)
-    )
+    tape = load_research_tape(tmp_path / "state", as_of=_NOW + timedelta(minutes=2))
     assert len(tape) == 2
     assert {x.quote_role for x in tape} == {"entry"}
     counts = store.table_counts()

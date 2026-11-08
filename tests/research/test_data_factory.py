@@ -33,7 +33,8 @@ _PASSWORD = "a-very-long-encryption-test-password"
 
 
 def _pair(
-    make: Callable[..., ProductSnapshot], at: datetime,
+    make: Callable[..., ProductSnapshot],
+    at: datetime,
     *,
     exit_bid: bool = False,
 ) -> list[ProductSnapshot]:
@@ -48,9 +49,7 @@ def _pair(
             make(
                 isin=isin,
                 issuer=issuer,
-                raw_hash=hashlib.sha256(
-                    f"{isin}/{at.isoformat()}".encode()
-                ).hexdigest(),
+                raw_hash=hashlib.sha256(f"{isin}/{at.isoformat()}".encode()).hexdigest(),
                 underlying_price_ref=20000.0,
                 knockout_barrier=19000.0,
                 financing_level=19000.0,
@@ -75,9 +74,7 @@ def test_daily_deep_archive_keeps_entry_and_48h_followups(
 ) -> None:
     root = tmp_path / "state"
     day0 = _pair(make_product_snapshot, _START)
-    a = capture_daily_research_tape(
-        root, products=day0, now=_START + timedelta(minutes=2)
-    )
+    a = capture_daily_research_tape(root, products=day0, now=_START + timedelta(minutes=2))
     assert a.entry_pairs == 1
     assert a.quotes_written == 2
     assert a.followup_quotes == 0
@@ -119,12 +116,14 @@ def test_a_fresh_pair_after_three_days_is_an_independent_cohort(
 ) -> None:
     root = tmp_path / "state"
     capture_daily_research_tape(
-        root, products=_pair(make_product_snapshot, _START),
+        root,
+        products=_pair(make_product_snapshot, _START),
         now=_START + timedelta(minutes=2),
     )
     third = _START + timedelta(days=3)
     added = capture_daily_research_tape(
-        root, products=_pair(make_product_snapshot, third),
+        root,
+        products=_pair(make_product_snapshot, third),
         now=third + timedelta(minutes=2),
     )
     assert added.entry_pairs == 1
@@ -136,7 +135,8 @@ def test_pending_exits_not_mistaken_for_mature_complete_outcomes(
 ) -> None:
     root = tmp_path / "state"
     capture_daily_research_tape(
-        root, products=_pair(make_product_snapshot, _START),
+        root,
+        products=_pair(make_product_snapshot, _START),
         now=_START + timedelta(minutes=2),
     )
     before = audit_research_tape(root, as_of=_START + timedelta(days=1))
@@ -159,9 +159,11 @@ def test_file_write_time_prevents_future_backfill_from_entering_past(
     )
     future = _START + timedelta(days=5)
     write_snapshot_parquet(
-        RESEARCH_TAPE_TABLE, [record],
+        RESEARCH_TAPE_TABLE,
+        [record],
         f"{future.strftime('%Y%m%dT%H%M%SZ')}-aaaa1234bbbb",
-        root, snapshot_date=future,
+        root,
+        snapshot_date=future,
     )
     assert load_research_tape(root, as_of=_START + timedelta(days=4)) == []
     assert len(load_research_tape(root, as_of=future + timedelta(minutes=1))) == 1
@@ -172,17 +174,17 @@ def test_corrupt_chronology_fails_closed(
 ) -> None:
     root = tmp_path / "state"
     quote = _pair(make_product_snapshot, _START)[0]
-    quote = quote.model_copy(
-        update={"retrieved_at": _START + timedelta(days=3)}
-    )
+    quote = quote.model_copy(update={"retrieved_at": _START + timedelta(days=3)})
     record = ResearchQuote.model_validate(
         {**quote.model_dump(), "quote_role": "entry", "cohort_day": _START.date()}
     )
     tomorrow = _START + timedelta(days=1)
     write_snapshot_parquet(
-        RESEARCH_TAPE_TABLE, [record],
+        RESEARCH_TAPE_TABLE,
+        [record],
         f"{tomorrow.strftime('%Y%m%dT%H%M%SZ')}-bbbb1234cccc",
-        root, snapshot_date=tomorrow,
+        root,
+        snapshot_date=tomorrow,
     )
     with pytest.raises(PointInTimeUnavailable):
         load_research_tape(root, as_of=tomorrow + timedelta(minutes=1))
@@ -195,9 +197,7 @@ def test_discovery_never_falls_back_to_compacted_duckdb(
     with Store(root / "turboedge.duckdb") as store:
         store.init_schema()
         store.append_product_snapshots(_pair(make_product_snapshot, _START))
-        result = run_discovery_step(
-            store, now=_START + timedelta(days=4), state_dir=root
-        )
+        result = run_discovery_step(store, now=_START + timedelta(days=4), state_dir=root)
         assert result.status == "AWAIT_DATA"
         assert result.eligible_days == 0
         assert store.list_research_trials() == []
@@ -213,7 +213,8 @@ def test_lean_state_carries_only_curated_research_parquet_and_restores_it(
     with Store(root / "turboedge.duckdb") as store:
         store.init_schema()
     capture_daily_research_tape(
-        root, products=_pair(make_product_snapshot, _START),
+        root,
+        products=_pair(make_product_snapshot, _START),
         now=_START + timedelta(minutes=2),
     )
     # The full scan tape is intentionally NOT part of the rolling lean pack.
@@ -223,7 +224,9 @@ def test_lean_state_carries_only_curated_research_parquet_and_restores_it(
 
     encrypted = tmp_path / "lean.enc"
     pack_state(
-        root, encrypted, _PASSWORD,
+        root,
+        encrypted,
+        _PASSWORD,
         config=ArchiveConfig(include_dirs=LEAN_INCLUDE_DIRS),
     )
     restored = tmp_path / "restored"
@@ -240,12 +243,14 @@ def test_followup_cannot_be_promoted_to_new_entry_by_discovery(
 
     root = tmp_path / "state"
     capture_daily_research_tape(
-        root, products=_pair(make_product_snapshot, _START),
+        root,
+        products=_pair(make_product_snapshot, _START),
         now=_START + timedelta(minutes=2),
     )
     day1 = _START + timedelta(days=1)
     capture_daily_research_tape(
-        root, products=_pair(make_product_snapshot, day1, exit_bid=True),
+        root,
+        products=_pair(make_product_snapshot, day1, exit_bid=True),
         now=day1 + timedelta(minutes=2),
     )
     quotes = load_research_tape(root, as_of=_START + timedelta(days=3))

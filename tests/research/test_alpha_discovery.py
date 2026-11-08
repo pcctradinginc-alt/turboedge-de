@@ -93,8 +93,8 @@ def _history(days: int = 120, *, missing_b_exit: bool = False, negative: bool = 
     rows: list[ProductSnapshot] = []
     for i in range(days):
         at = _FIRST + timedelta(days=3 * i)
-        isin_a = f"DE000GENA{i:04d}"
-        isin_b = f"DE000GENB{i:04d}"
+        isin_a = f"DE000GNA{i:04d}"
+        isin_b = f"DE000GNB{i:04d}"
         rows.extend(
             [
                 _quote(isin_a, "BankA", at, bid=9.50, size=100.0),

@@ -27,9 +27,7 @@ _MONDAY = datetime(2026, 11, 9, 14, 30, tzinfo=UTC)
 _MISSING = TapeCapture(0, 0, 0, 0, False, False)
 
 
-def _products(
-    make: Callable[..., ProductSnapshot], at: datetime
-) -> list[ProductSnapshot]:
+def _products(make: Callable[..., ProductSnapshot], at: datetime) -> list[ProductSnapshot]:
     products = []
     for i, issuer in enumerate(("AlphaBank", "BetaBank")):
         products.append(
@@ -112,9 +110,7 @@ def test_friday_followup_allowed_but_new_friday_cohort_forbidden(
 def test_capture_monitor_alerts_after_three_distinct_missing_days(tmp_path: Path) -> None:
     state = tmp_path / "state"
     seen = [
-        record_capture_attempt(
-            state, now=_MONDAY + timedelta(days=i), result=_MISSING
-        )
+        record_capture_attempt(state, now=_MONDAY + timedelta(days=i), result=_MISSING)
         for i in range(3)
     ]
     assert [x.consecutive_no_pair for x in seen] == [1, 2, 3]
@@ -125,13 +121,9 @@ def test_capture_monitor_alerts_after_three_distinct_missing_days(tmp_path: Path
 def test_same_day_retry_and_friday_are_not_new_failure_days(tmp_path: Path) -> None:
     state = tmp_path / "state"
     monday = record_capture_attempt(state, now=_MONDAY, result=_MISSING)
-    retry = record_capture_attempt(
-        state, now=_MONDAY + timedelta(minutes=15), result=_MISSING
-    )
+    retry = record_capture_attempt(state, now=_MONDAY + timedelta(minutes=15), result=_MISSING)
     assert monday.consecutive_no_pair == retry.consecutive_no_pair == 1
-    friday = record_capture_attempt(
-        state, now=_MONDAY + timedelta(days=4), result=_MISSING
-    )
+    friday = record_capture_attempt(state, now=_MONDAY + timedelta(days=4), result=_MISSING)
     assert friday.consecutive_no_pair == 1
     assert not friday.alert
 

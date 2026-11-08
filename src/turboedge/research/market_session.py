@@ -76,10 +76,7 @@ def is_research_market_session(moment: datetime, *, entry: bool = False) -> bool
 
 def observed_research_exit_is_market_quote(snapshot_time: datetime, retrieved_at: datetime) -> bool:
     """Both the issuer's quote and the archival receipt must be in-session."""
-    return (
-        is_research_market_session(snapshot_time)
-        and is_research_market_session(retrieved_at)
-    )
+    return is_research_market_session(snapshot_time) and is_research_market_session(retrieved_at)
 
 
 __all__ = [

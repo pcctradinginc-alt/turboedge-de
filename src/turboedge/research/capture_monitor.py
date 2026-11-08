@@ -133,8 +133,10 @@ def record_capture_attempt(
         and after.missing_exit_days > before.last_missing_exit_alert_count
     )
     issue = (
-        "NO_FRESH_CROSS_ISSUER_PAIRS" if alert_no_pairs
-        else "MISSING_REAL_EXITS" if alert_missing
+        "NO_FRESH_CROSS_ISSUER_PAIRS"
+        if alert_no_pairs
+        else "MISSING_REAL_EXITS"
+        if alert_missing
         else "OK"
     )
     updated = CaptureMonitorState(

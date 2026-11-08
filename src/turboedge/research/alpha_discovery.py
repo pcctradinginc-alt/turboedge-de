@@ -21,6 +21,7 @@ from datetime import UTC, date, datetime, timedelta
 from enum import StrEnum
 from itertools import pairwise, permutations
 from math import isfinite
+from pathlib import Path
 from typing import Literal, Self
 
 import numpy as np
@@ -33,6 +34,7 @@ from turboedge.meta.research_opportunity import (
     ResearchOpportunity,
 )
 from turboedge.research.controller import EXPLORATORY_SCREENS_PER_QUARTER
+from turboedge.research.data_factory import ResearchQuote, load_research_tape
 from turboedge.research.product_pair_net_ev import (
     EXECUTION_BUFFER_BPS,
     MAX_QUOTE_AGE_S,
@@ -180,6 +182,10 @@ def _candidate_sessions(snapshots: list[ProductSnapshot], *, now: datetime) -> l
         and s.available_at <= s.retrieved_at
         and s.underlying_id == UNDERLYING
         and s.direction is DIRECTION
+        # Follow-up prices are observations for exits, not new entry
+        # opportunities. Their inclusion as entries would create survival
+        # selection from the prior day's deliberately tracked instruments.
+        and (not isinstance(s, ResearchQuote) or s.quote_role == "entry")
     ]
     by_quote: dict[tuple[str, datetime], list[ProductSnapshot]] = defaultdict(list)
     for s in eligible:
@@ -469,6 +475,7 @@ def run_discovery_step(
     *,
     now: datetime,
     snapshots: list[ProductSnapshot] | None = None,
+    state_dir: Path | None = None,
     dry_run: bool = False,
 ) -> DiscoveryOutcome:
     """Generate, register and test <=1 new DSL idea; shared quarterly cap.
@@ -480,13 +487,24 @@ def run_discovery_step(
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("discovery cutoff must be timezone aware")
     now = now.astimezone(UTC)
-    all_quotes = (
-        snapshots
-        if snapshots is not None
-        else store.list_product_snapshots(underlying_id=UNDERLYING, until=now)
-    )
+    if snapshots is not None:
+        all_quotes = snapshots
+    else:
+        if state_dir is None:
+            raise ValueError(
+                "autonomous discovery needs a PIT research tape state_dir; "
+                "never silently fall back to compacted DuckDB quotes"
+            )
+        all_quotes = list[ProductSnapshot](load_research_tape(state_dir, as_of=now))
     sessions = _candidate_sessions(all_quotes, now=now)
     development, validation = _split(sessions)
+    # Recent entries are not eligible to be scored until their full
+    # 24-48-hour exit window has matured. A still-open cohort is pending,
+    # not an invented failed exit and not a convenient omitted loser.
+    validation = [
+        pair for pair in validation
+        if max(pair.left.retrieved_at, pair.right.retrieved_at) + EXIT_LATEST <= now
+    ]
     history = store.list_research_screens()
     candidates = generate(development, history=history)
     quarter = f"{now.year}Q{(now.month - 1) // 3 + 1}"

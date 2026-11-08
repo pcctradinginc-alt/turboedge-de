@@ -105,6 +105,10 @@ LEAN_INCLUDE_DIRS: tuple[str, ...] = tuple(d for d in _DEFAULT_INCLUDE_DIRS if d
 #: Manifest-path prefix (posix, trailing slash) identifying the immutable
 #: Parquet archive subtree -- what `unpack_state_subset` restores.
 SNAPSHOTS_PREFIX = "snapshots/"
+# One narrow research tape uses the EXISTING Parquet archive and is retained
+# with the encrypted lean state. Ordinary scan snapshots stay incremental and
+# excluded, so this does not re-upload the whole archive five times daily.
+CURATED_RESEARCH_TAPE = "research_product_quotes"
 # Directory names never included even if nested under one of the include
 # dirs above (currently none are, but this stays defensive).
 _EXCLUDE_DIR_NAMES: frozenset[str] = frozenset({"imports"})
@@ -175,6 +179,17 @@ def _iter_include_files(state_dir: Path, config: ArchiveConfig) -> list[Path]:
             if any(part in _EXCLUDE_DIR_NAMES for part in rel_parts):
                 continue
             files.append(path)
+
+    if config.include_dirs == LEAN_INCLUDE_DIRS:
+        tape = state_dir / "snapshots" / CURATED_RESEARCH_TAPE
+        if tape.is_symlink():
+            raise StateArchiveError("curated research archive path is a symlink")
+        if tape.is_dir():
+            for path in sorted(tape.rglob("*.parquet")):
+                if path.is_symlink():
+                    raise StateArchiveError("curated research archive contains a symlink")
+                if path.is_file():
+                    files.append(path)
 
     return files
 

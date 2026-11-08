@@ -44,7 +44,8 @@ import time
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
+from pathlib import Path
 
 import structlog
 
@@ -52,6 +53,7 @@ from turboedge.adapters.base import ProductFetchContext
 from turboedge.adapters.gettex import GettexAdapter
 from turboedge.adapters.registry import ProductSourceAdapter
 from turboedge.config import TurboEdgeConfig
+from turboedge.research.data_factory import capture_daily_research_tape
 from turboedge.storage.duckdb import Store
 from turboedge.storage.schemas import ProductSnapshot
 from turboedge.universe.discover import merge_snapshots
@@ -74,6 +76,8 @@ class ArchiveResult:
     rows_fetched_by_underlying: dict[str, int]
     warnings: list[str]
     duration_s: float
+    research_quotes_archived: int = 0
+    research_entry_pairs: int = 0
 
 
 def _add_warning(warnings: list[str], message: str) -> None:
@@ -113,6 +117,7 @@ def run_product_archive(
     underlying_ids: Sequence[str] | None = None,
     max_pages: int = 150,
     now: datetime | None = None,
+    state_dir: Path | None = None,
 ) -> ArchiveResult:
     """Fetch every enabled product source at full depth and persist, nothing else.
 
@@ -154,7 +159,6 @@ def run_product_archive(
         :class:`ArchiveResult` with persisted counts and the issuer breakdown
         that is this command's entire point.
     """
-    del now  # no pricing/EV/gates here -- nothing in this function is time-dependent
     started = time.monotonic()
     warnings: list[str] = []
 
@@ -183,6 +187,18 @@ def run_product_archive(
     snapshots_written = store.append_product_snapshots(products)
     instruments_upserted = store.upsert_instruments(products)
 
+    # The complete daily deep fetch remains in the established DuckDB table.
+    # Only a tiny, explicitly chosen pair and its 48-hour follow-up are
+    # appended to the existing immutable Parquet archive. This is research
+    # collection, never live scan, pricing, a ledger decision or a trade.
+    research_quotes_archived = research_entry_pairs = 0
+    if state_dir is not None and products:
+        capture = capture_daily_research_tape(
+            state_dir, products=list(products), now=now or datetime.now(UTC)
+        )
+        research_quotes_archived = capture.quotes_written
+        research_entry_pairs = capture.entry_pairs
+
     issuers_seen: dict[str, int] = dict(Counter(p.issuer for p in products))
 
     rows_fetched_by_underlying: dict[str, int] = dict.fromkeys(ids, 0)
@@ -198,6 +214,8 @@ def run_product_archive(
         instruments_upserted=instruments_upserted,
         issuers_seen=issuers_seen,
         duration_s=round(duration_s, 1),
+        research_quotes_archived=research_quotes_archived,
+        research_entry_pairs=research_entry_pairs,
     )
 
     return ArchiveResult(
@@ -208,6 +226,8 @@ def run_product_archive(
         rows_fetched_by_underlying=rows_fetched_by_underlying,
         warnings=warnings,
         duration_s=round(duration_s, 1),
+        research_quotes_archived=research_quotes_archived,
+        research_entry_pairs=research_entry_pairs,
     )
 
 

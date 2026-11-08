@@ -41,8 +41,8 @@ def sample(days: int = 31, *, omit_exit: bool = False) -> list[ProductSnapshot]:
     rows = []
     for i in range(days):
         t = _START + timedelta(days=i * 3)
-        a = f"DE000PRA{i:05d}"
-        b = f"DE000PRB{i:05d}"
+        a = f"DE000PRA{i:04d}"
+        b = f"DE000PRB{i:04d}"
         rows.extend([quote(a, "BankA", t, bid=9.90), quote(b, "BankB", t, bid=9.99)])
         rows.append(quote(a, "BankA", t + timedelta(days=1), bid=10.8))
         if not omit_exit or i > 0:

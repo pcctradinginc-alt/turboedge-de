@@ -120,14 +120,19 @@ def probe(snapshots: list[ProductSnapshot]) -> NetEVProbe:
     # Select the FIRST eligible matched pair per day, irrespective of whether
     # either product later survives. This rules out ex-post survivor selection.
     entries: dict[object, tuple[ProductSnapshot, ProductSnapshot]] = {}
-    for pair in sorted(pairs, key=lambda x: (x.window_start, x.issuer_a, x.isin_a, x.issuer_b, x.isin_b)):
+    ordered_pairs = sorted(
+        pairs, key=lambda x: (x.window_start, x.issuer_a, x.isin_a, x.issuer_b, x.isin_b)
+    )
+    for pair in ordered_pairs:
         if pair.underlying_id != "DAX" or pair.direction is not Direction.LONG:
             continue
         day = pair.window_start.date()
         if day in entries:
             continue
-        left = next((x for x in by_minute.get((pair.isin_a, pair.window_start), []) if _valid_quote(x)), None)
-        right = next((x for x in by_minute.get((pair.isin_b, pair.window_start), []) if _valid_quote(x)), None)
+        left_options = by_minute.get((pair.isin_a, pair.window_start), [])
+        right_options = by_minute.get((pair.isin_b, pair.window_start), [])
+        left = next((x for x in left_options if _valid_quote(x)), None)
+        right = next((x for x in right_options if _valid_quote(x)), None)
         if left is None or right is None:
             continue
         # If the two instruments were not actually available within one
@@ -164,7 +169,11 @@ def probe(snapshots: list[ProductSnapshot]) -> NetEVProbe:
         naive = min((left, right), key=lambda s: (s.issuer, s.isin))
         selected = min(
             (left, right),
-            key=lambda s: ((s.ask - s.bid) / s.ask, s.issuer, s.isin),  # type: ignore[operator]
+            key=lambda s: (
+                (float(s.ask or 0.0) - float(s.bid or 0.0)) / float(s.ask or 1.0),
+                s.issuer,
+                s.isin,
+            ),
         )
         selected_return = observed_return(selected)
         naive_return = observed_return(naive)

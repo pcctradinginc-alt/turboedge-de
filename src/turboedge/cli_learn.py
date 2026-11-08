@@ -86,6 +86,7 @@ from turboedge.research.data_audit import (
 )
 from turboedge.research.lottery_pricing import MIN_INDEPENDENT_DAYS
 from turboedge.research.lottery_pricing import evaluate as evaluate_lottery_pricing
+from turboedge.research.product_pair_net_ev import probe as probe_product_pair_net_ev
 from turboedge.research.product_pairs import ComparabilityCriteria, census
 from turboedge.research.step import run_research_step
 from turboedge.simulation.ko_calibration import build_ko_calibration_dataset
@@ -943,6 +944,48 @@ def research_product_pairs_cmd(
         console.print(f"Wrote {json_path}")
 
     _write_summary("research_product_pairs", {"pairs": result.pair_count}, **payload)
+
+
+def research_product_pair_net_ev_cmd(
+    ctx: typer.Context,
+    json_out: str = typer.Option(
+        "reports/weekly/product_pair_net_ev.json",
+        "--json-out",
+        help="Read-only exploratory net-EV diagnostics; never a confirmatory trial",
+    ),
+) -> None:
+    """DAX LONG cross-issuer quote-pair net-EV test against NO_TRADE.
+
+    Fixed horizon, bid/ask, buffer and independent-day floor live in the
+    pre-declared probe. Incomplete exits fail closed; no promotion or orders.
+    """
+    app_ctx = ctx.obj
+    with Store(app_ctx.db_path) as store:
+        store.init_schema()
+        snapshots = store.list_product_snapshots(underlying_id="DAX")
+    result = probe_product_pair_net_ev(snapshots)
+    payload = asdict(result)
+    payload["verdict"] = result.verdict
+    payload["research_stage"] = "EXPLORATORY_ONLY"
+    payload["baseline"] = "NO_TRADE_0"
+    path = Path(json_out)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    console.print(
+        f"PRODUCT PAIR NET EV {result.verdict} "
+        f"candidate_days={result.candidate_days} complete_days={result.complete_days} "
+        f"missing_exit_days={result.missing_exit_days}"
+    )
+    _write_summary(
+        "research_product_pair_net_ev",
+        {
+            "candidate_days": result.candidate_days,
+            "complete_days": result.complete_days,
+            "missing_exit_days": result.missing_exit_days,
+        },
+        verdict=result.verdict,
+        confirmation_allowed=False,
+    )
 
 
 def research_queue_cmd(
@@ -2195,6 +2238,7 @@ def register_learn_commands(app: typer.Typer, position_app: typer.Typer) -> None
     research_app.command("ko-calibration")(research_ko_calibration_cmd)
     research_app.command("step")(research_step_cmd)
     research_app.command("product-pairs")(research_product_pairs_cmd)
+    research_app.command("product-pair-net-ev")(research_product_pair_net_ev_cmd)
     research_app.command("data-audit")(research_data_audit_cmd)
     research_app.command("lottery-pricing")(research_lottery_pricing_cmd)
     app.add_typer(research_app, name="research")

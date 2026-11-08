@@ -216,6 +216,10 @@ def build_candidates(
                 exploratory_done=opportunity.hypothesis_id in screened_hypothesis_ids,
                 has_exploratory_support=opportunity.hypothesis_id in supported_hypothesis_ids,
                 screenable=opportunity.hypothesis_id not in unharnessed_hypothesis_ids,
+                evidence_completeness=(
+                    item.priority.evidence_completeness if item.priority is not None else None
+                ),
+                economic_value_basis=str(opportunity.expected_economic_value.basis),
             )
         )
     return out

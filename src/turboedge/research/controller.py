@@ -163,6 +163,9 @@ class Candidate:
     #: nothing about them and must not report that it has. It skips them
     #: and screens a question it can actually answer.
     screenable: bool = True
+    #: Provenance of ranking inputs, never interpreted as measured alpha.
+    evidence_completeness: float | None = None
+    economic_value_basis: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -354,7 +357,12 @@ def decide_next_action(
     #       reason rather than silently.
     ranked = sorted(
         pending,
-        key=lambda c: (c.priority is None, -(c.priority or 0.0), c.hypothesis_id),
+        key=lambda c: (
+            c.priority is None,
+            -(c.priority or 0.0),
+            -(c.evidence_completeness or 0.0),
+            c.hypothesis_id,
+        ),
     )
 
     skipped: list[dict[str, Any]] = []
@@ -406,6 +414,8 @@ def decide_next_action(
             evidence={
                 **base_evidence,
                 "priority": candidate.priority,
+                "priority_evidence_completeness": candidate.evidence_completeness,
+                "economic_value_basis": candidate.economic_value_basis,
                 "effective_sample": candidate.effective_sample,
                 "required_sample": candidate.required_sample,
                 "skipped_for_data": skipped,

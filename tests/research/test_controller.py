@@ -433,3 +433,12 @@ def test_supported_screen_still_requires_human_if_other_data_are_missing() -> No
     assert action.kind is ActionKind.AWAIT_CONFIRMATION_APPROVAL
     assert action.hypothesis_id == "RO-SUPPORTED"
     assert action.evidence["confirmatory_budget_remaining"] == 6
+
+
+def test_equal_priority_prefers_more_complete_evidence_not_alphabetical_order() -> None:
+    thin = _candidate(hypothesis_id="AAA", priority=0.5, evidence_completeness=0.1)
+    measured = _candidate(hypothesis_id="ZZZ", priority=0.5, evidence_completeness=0.8)
+    action = _decide(candidates=[thin, measured])
+    assert action.kind is ActionKind.START_EXPLORATORY
+    assert action.hypothesis_id == "ZZZ"
+    assert action.evidence["priority_evidence_completeness"] == 0.8

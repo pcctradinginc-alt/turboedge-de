@@ -1236,8 +1236,8 @@ def test_legacy_cost_candidate_with_three_days_cannot_request_confirmation(
 
 
 def test_new_cost_candidate_requires_complete_independent_evidence() -> None:
-    from turboedge.storage.schemas import ResearchScreen
     from turboedge.research.step import _eligible_support
+    from turboedge.storage.schemas import ResearchScreen
     real = resolve_harness("RO-LOTTERY-PRICING")
     assert real is not None
     screen = ResearchScreen(

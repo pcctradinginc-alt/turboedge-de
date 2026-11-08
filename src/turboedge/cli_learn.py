@@ -78,7 +78,6 @@ from turboedge.reporting.monthly import build_monthly_report
 from turboedge.reporting.redaction import redact_console_enabled
 from turboedge.reporting.weekly import run_research_tournament
 from turboedge.research.alpha_discovery import run_discovery_step
-from turboedge.research.data_factory import audit_research_tape
 from turboedge.research.data_audit import (
     PLAUSIBLE_SCAN_SECONDS,
     ledger_census,
@@ -86,6 +85,7 @@ from turboedge.research.data_audit import (
     quote_freshness,
     snapshot_staleness_advantage,
 )
+from turboedge.research.data_factory import audit_research_tape
 from turboedge.research.lottery_pricing import MIN_INDEPENDENT_DAYS
 from turboedge.research.lottery_pricing import evaluate as evaluate_lottery_pricing
 from turboedge.research.product_pair_net_ev import probe as probe_product_pair_net_ev

@@ -18,9 +18,9 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Self
+from uuid import uuid4
 
 from pydantic import model_validator
-from uuid import uuid4
 
 from turboedge.research.archive import ParquetResearchArchive, PointInTimeUnavailable, UnknownTable
 from turboedge.research.product_pair_net_ev import _fresh_exit, _valid_quote

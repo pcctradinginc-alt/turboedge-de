@@ -101,9 +101,7 @@ def _history(days: int = 120, *, missing_b_exit: bool = False, negative: bool = 
                 _quote(isin_b, "BankB", at, bid=9.95, size=200.0, age_seconds=20),
             ]
         )
-        rows.append(
-            _quote(isin_a, "BankA", at + timedelta(days=1), bid=9.2 if negative else 10.8)
-        )
+        rows.append(_quote(isin_a, "BankA", at + timedelta(days=1), bid=9.2 if negative else 10.8))
         if not missing_b_exit or i < days // 2:
             rows.append(
                 _quote(
@@ -192,9 +190,7 @@ def test_idempotent_does_not_rescreen_an_existing_hypothesis(store: Store) -> No
 
 
 def test_missing_exit_refuses_positive_evidence(store: Store) -> None:
-    result = run_discovery_step(
-        store, now=_NOW, snapshots=_history(missing_b_exit=True)
-    )
+    result = run_discovery_step(store, now=_NOW, snapshots=_history(missing_b_exit=True))
     assert result.status == "SCREENED_EXPLORATORY"
     assert result.verdict == "INCOMPLETE_EVIDENCE"
     assert result.measurement is not None

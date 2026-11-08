@@ -101,9 +101,7 @@ class Rule(BaseModel):
 
     @property
     def hypothesis_id(self) -> str:
-        fingerprint = hashlib.sha256(
-            self.model_dump_json().encode("utf-8")
-        ).hexdigest()[:16]
+        fingerprint = hashlib.sha256(self.model_dump_json().encode("utf-8")).hexdigest()[:16]
         return f"RO-GEN-{fingerprint.upper()}"
 
 
@@ -171,12 +169,11 @@ def _rule_score(snapshot: ProductSnapshot, rule: Rule) -> float | None:
     return rule.primary_weight * a + (1.0 - rule.primary_weight) * b
 
 
-def _candidate_sessions(
-    snapshots: list[ProductSnapshot], *, now: datetime
-) -> list[PairDay]:
+def _candidate_sessions(snapshots: list[ProductSnapshot], *, now: datetime) -> list[PairDay]:
     """PIT-valid first cross-issuer pair on each non-overlapping UTC day."""
     eligible = [
-        s for s in snapshots
+        s
+        for s in snapshots
         if s.retrieved_at <= now
         and s.available_at <= s.retrieved_at
         and s.underlying_id == UNDERLYING
@@ -229,9 +226,7 @@ def _split(sessions: list[PairDay]) -> tuple[list[PairDay], list[PairDay]]:
     return development, [s for s in sessions[middle:] if s.day > cutoff]
 
 
-def generate(
-    development: list[PairDay], *, history: list[ResearchScreen]
-) -> list[Candidate]:
+def generate(development: list[PairDay], *, history: list[ResearchScreen]) -> list[Candidate]:
     """Learn *which observable differences exist*, never which exits won."""
     if len(development) < MIN_DEVELOPMENT_DAYS:
         return []
@@ -248,9 +243,9 @@ def generate(
                 contrast[feature] = value
 
     rejected = [
-        s for s in history
-        if s.harness == HARNESS
-        and s.verdict in {"REJECTED", "NO_DEMONSTRATED_NET_ALPHA"}
+        s
+        for s in history
+        if s.harness == HARNESS and s.verdict in {"REJECTED", "NO_DEMONSTRATED_NET_ALPHA"}
     ]
     proposals: list[Candidate] = []
     for primary, secondary in permutations(contrast, 2):
@@ -277,25 +272,26 @@ def generate(
 
 def _exit_return(
     entry: ProductSnapshot,
-    *, histories: dict[str, list[ProductSnapshot]],
+    *,
+    histories: dict[str, list[ProductSnapshot]],
 ) -> float | None:
     """Ask to actual later Bid, KO losses first; no invented exit prices."""
     if entry.ask is None:
         return None
     window = [
-        s for s in histories.get(entry.isin, ())
+        s
+        for s in histories.get(entry.isin, ())
         if entry.retrieved_at < s.retrieved_at <= entry.retrieved_at + EXIT_LATEST
         and s.available_at <= s.retrieved_at
     ]
     exits = [
-        s for s in window
-        if s.retrieved_at >= entry.retrieved_at + EXIT_EARLIEST and _fresh_exit(s)
+        s for s in window if s.retrieved_at >= entry.retrieved_at + EXIT_EARLIEST and _fresh_exit(s)
     ]
     exit_snapshot = min(exits, key=lambda x: x.retrieved_at) if exits else None
     ko_before_exit = [
-        s for s in window
-        if s.knocked_out
-        and (exit_snapshot is None or s.retrieved_at <= exit_snapshot.retrieved_at)
+        s
+        for s in window
+        if s.knocked_out and (exit_snapshot is None or s.retrieved_at <= exit_snapshot.retrieved_at)
     ]
     if ko_before_exit:
         return -1.0 - EXECUTION_BUFFER_BPS / 10000.0
@@ -309,9 +305,7 @@ def _lower_confidence_bound(values: list[float]) -> float | None:
         return None
     data = np.asarray(values, dtype=np.float64)
     rng = np.random.default_rng(BOOTSTRAP_SEED)
-    means = np.mean(
-        data[rng.integers(0, len(data), size=(BOOTSTRAP_REPS, len(data)))], axis=1
-    )
+    means = np.mean(data[rng.integers(0, len(data), size=(BOOTSTRAP_REPS, len(data)))], axis=1)
     # At most six prespecified DSL permutations: family-wise one-sided 5%.
     return float(np.quantile(means, 0.05 / MAX_EXPLORATORY_TESTS))
 
@@ -327,17 +321,18 @@ def evaluate(
     # Externally supplied validation rows must be truly separate trading
     # sessions; repeating one positive day must never inflate sample size.
     ordered_days = [pair.day for pair in validation]
-    if (
-        len(set(ordered_days)) != len(ordered_days)
-        or any(
-            (b - a).days < MIN_DAY_SPACING
-            for a, b in pairwise(ordered_days)
-        )
+    if len(set(ordered_days)) != len(ordered_days) or any(
+        (b - a).days < MIN_DAY_SPACING for a, b in pairwise(ordered_days)
     ):
         return Measurement(
-            verdict="INVALID_SAMPLE", validation_days=len(validation),
-            completed_days=0, missing_exit_days=0, missing_feature_days=0,
-            mean_net=None, lcb_net=None, mean_excess_naive=None,
+            verdict="INVALID_SAMPLE",
+            validation_days=len(validation),
+            completed_days=0,
+            missing_exit_days=0,
+            missing_feature_days=0,
+            mean_net=None,
+            lcb_net=None,
+            mean_excess_naive=None,
             lcb_excess_naive=None,
         )
     histories: dict[str, list[ProductSnapshot]] = defaultdict(list)
@@ -438,10 +433,7 @@ def _opportunity(candidate: Candidate, validation_days: int) -> ResearchOpportun
 
 
 def _fingerprint(sessions: list[PairDay]) -> str:
-    material = [
-        (p.day.isoformat(), p.left.raw_hash, p.right.raw_hash)
-        for p in sessions
-    ]
+    material = [(p.day.isoformat(), p.left.raw_hash, p.right.raw_hash) for p in sessions]
     return hashlib.sha256(json.dumps(material, sort_keys=True).encode()).hexdigest()[:16]
 
 
@@ -462,7 +454,8 @@ def run_discovery_step(
         raise ValueError("discovery cutoff must be timezone aware")
     now = now.astimezone(UTC)
     all_quotes = (
-        snapshots if snapshots is not None
+        snapshots
+        if snapshots is not None
         else store.list_product_snapshots(underlying_id=UNDERLYING, until=now)
     )
     sessions = _candidate_sessions(all_quotes, now=now)
@@ -470,22 +463,22 @@ def run_discovery_step(
     history = store.list_research_screens()
     candidates = generate(development, history=history)
     quarter = f"{now.year}Q{(now.month - 1) // 3 + 1}"
-    consumed = sum(
-        s.quarter == quarter and s.status in EXECUTED_SCREEN_STATUSES
-        for s in history
-    )
-    already_screened = {
-        s.hypothesis_id for s in history if s.harness == HARNESS
-    }
+    consumed = sum(s.quarter == quarter and s.status in EXECUTED_SCREEN_STATUSES for s in history)
+    already_screened = {s.hypothesis_id for s in history if s.harness == HARNESS}
     novel = [c for c in candidates if c.rule.hypothesis_id not in already_screened]
     candidate_ids = tuple(c.rule.hypothesis_id for c in novel[:MAX_PROPOSALS_PER_CYCLE])
 
     def outcome(status: str, reason: str) -> DiscoveryOutcome:
         return DiscoveryOutcome(
-            status=status, eligible_days=len(sessions),
-            development_days=len(development), validation_days=len(validation),
-            candidate_ids=candidate_ids, selected_hypothesis_id=None,
-            screen_id=None, verdict=None, reason=reason,
+            status=status,
+            eligible_days=len(sessions),
+            development_days=len(development),
+            validation_days=len(validation),
+            candidate_ids=candidate_ids,
+            selected_hypothesis_id=None,
+            screen_id=None,
+            verdict=None,
+            reason=reason,
         )
 
     if not candidates:
@@ -513,28 +506,40 @@ def run_discovery_step(
     screen_id = f"{quarter}_AUTO_DSL_{spec.hypothesis_id.removeprefix('RO-GEN-')}"
     if dry_run:
         return DiscoveryOutcome(
-            status="DRY_RUN", eligible_days=len(sessions),
-            development_days=len(development), validation_days=len(validation),
-            candidate_ids=candidate_ids, selected_hypothesis_id=spec.hypothesis_id,
-            screen_id=screen_id, verdict=None, reason="no writes or tests in dry-run",
+            status="DRY_RUN",
+            eligible_days=len(sessions),
+            development_days=len(development),
+            validation_days=len(validation),
+            candidate_ids=candidate_ids,
+            selected_hypothesis_id=spec.hypothesis_id,
+            screen_id=screen_id,
+            verdict=None,
+            reason="no writes or tests in dry-run",
         )
 
     screen = ResearchScreen(
-        screen_id=screen_id, trial_id=screen_id,
+        screen_id=screen_id,
+        trial_id=screen_id,
         hypothesis_id=spec.hypothesis_id,
         family=str(InformationFamily.PRODUCT_SELECTION),
-        harness=HARNESS, harness_version=DSL_VERSION,
+        harness=HARNESS,
+        harness_version=DSL_VERSION,
         spec=spec.model_dump(mode="json"),
-        data_version=_fingerprint(validation), quarter=quarter,
-        status=ScreenStatus.RUNNING, started_at=now,
+        data_version=_fingerprint(validation),
+        quarter=quarter,
+        status=ScreenStatus.RUNNING,
+        started_at=now,
     )
     # Write RUNNING before executing; an interrupted invocation remains visible
     # and blocks an unbudgeted automatic re-test on restart.
     store.insert_research_trial(
         ResearchTrial(
-            trial_id=screen_id, kind=SCREEN_KIND,
+            trial_id=screen_id,
+            kind=SCREEN_KIND,
             description=f"Phase 1 DSL {spec.primary.value}+{spec.secondary.value}",
-            created_at=now, quarter=quarter, status=TrialStatus.EXPERIMENTAL,
+            created_at=now,
+            quarter=quarter,
+            status=TrialStatus.EXPERIMENTAL,
         )
     )
     store.upsert_research_screen(screen)
@@ -567,10 +572,14 @@ def run_discovery_step(
         )
     )
     return DiscoveryOutcome(
-        status="SCREENED_EXPLORATORY", eligible_days=len(sessions),
-        development_days=len(development), validation_days=len(validation),
-        candidate_ids=candidate_ids, selected_hypothesis_id=spec.hypothesis_id,
-        screen_id=screen_id, verdict=measurement.verdict,
+        status="SCREENED_EXPLORATORY",
+        eligible_days=len(sessions),
+        development_days=len(development),
+        validation_days=len(validation),
+        candidate_ids=candidate_ids,
+        selected_hypothesis_id=spec.hypothesis_id,
+        screen_id=screen_id,
+        verdict=measurement.verdict,
         reason=(
             "historical research only; even a candidate requires untouched "
             "confirmation and human-governed promotion"

@@ -83,6 +83,7 @@ from turboedge.reporting.monthly import build_monthly_report
 from turboedge.reporting.redaction import redact_console_enabled
 from turboedge.reporting.weekly import run_research_tournament
 from turboedge.research.alpha_discovery import run_discovery_step
+from turboedge.research.capture_monitor import record_capture_attempt, verify_restored_tape
 from turboedge.research.data_audit import (
     PLAUSIBLE_SCAN_SECONDS,
     ledger_census,
@@ -90,11 +91,10 @@ from turboedge.research.data_audit import (
     quote_freshness,
     snapshot_staleness_advantage,
 )
-from turboedge.research.capture_monitor import record_capture_attempt, verify_restored_tape
 from turboedge.research.data_factory import TapeCapture, audit_research_tape
-from turboedge.research.market_session import is_research_market_session
 from turboedge.research.lottery_pricing import MIN_INDEPENDENT_DAYS
 from turboedge.research.lottery_pricing import evaluate as evaluate_lottery_pricing
+from turboedge.research.market_session import is_research_market_session
 from turboedge.research.product_pair_net_ev import probe as probe_product_pair_net_ev
 from turboedge.research.product_pairs import ComparabilityCriteria, census
 from turboedge.research.step import run_research_step
@@ -1786,7 +1786,9 @@ def archive_products_cmd(
                 try:
                     sent = _build_notifier(app_ctx).send(spec)
                     if not sent.sent:
-                        logger.error("capture_monitor_alert_not_delivered", reason=capture_monitor.reason)
+                        logger.error(
+                            "capture_monitor_alert_not_delivered", reason=capture_monitor.reason
+                        )
                 except NotificationError:
                     logger.exception("capture_monitor_alert_send_failed")
 

@@ -410,3 +410,26 @@ def test_promotion_stays_locked_for_an_admitted_family() -> None:
         candidates=[_candidate(family="product_selection", has_exploratory_support=True)]
     )
     assert action.evidence["promotion_unlocked"] is False
+
+
+def test_supported_screen_does_not_block_other_development_screen() -> None:
+    confirmed = _candidate(
+        hypothesis_id="RO-SUPPORTED", priority=0.9,
+        exploratory_done=True, has_exploratory_support=True,
+    )
+    new = _candidate(hypothesis_id="RO-INDEPENDENT", priority=0.2)
+    action = _decide(candidates=[confirmed, new])
+    assert action.kind is ActionKind.START_EXPLORATORY
+    assert action.hypothesis_id == "RO-INDEPENDENT"
+    assert action.evidence["promotion_unlocked"] is False
+
+
+def test_supported_screen_still_requires_human_if_other_data_are_missing() -> None:
+    confirmed = _candidate(
+        hypothesis_id="RO-SUPPORTED", exploratory_done=True, has_exploratory_support=True,
+    )
+    blocked = _candidate(hypothesis_id="RO-BLOCKED", data_ready=False)
+    action = _decide(candidates=[confirmed, blocked])
+    assert action.kind is ActionKind.AWAIT_CONFIRMATION_APPROVAL
+    assert action.hypothesis_id == "RO-SUPPORTED"
+    assert action.evidence["confirmatory_budget_remaining"] == 6

@@ -109,8 +109,8 @@ def test_the_resolver_validation_accepts_exactly_the_mode_jobs(
     workflow: dict[str, Any],
 ) -> None:
     script = _resolver_script(workflow)
-    # The second `case` validates the resolved mode: `scan|eod|...) ;;`
-    match = re.search(r"^\s*([a-z|]+)\)\s*;;\s*$", script, re.M)
+    # The second `case` validates the resolved mode including snake_case names.
+    match = re.search(r"^\s*([a-z_|]+)\)\s*;;\s*$", script, re.M)
     assert match is not None, "no mode-validation case found in resolve-mode"
     accepted = set(match.group(1).split("|"))
 

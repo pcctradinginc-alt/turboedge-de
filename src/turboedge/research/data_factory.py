@@ -17,7 +17,9 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import Literal
+from typing import Self
+
+from pydantic import model_validator
 from uuid import uuid4
 
 from turboedge.research.archive import ParquetResearchArchive, PointInTimeUnavailable, UnknownTable
@@ -37,9 +39,17 @@ MAX_ENTRY_QUOTE_DIFFERENCE_SECONDS = 60
 class ResearchQuote(ProductSnapshot):
     """Original quote, plus immutable research-only entry-vs-exit provenance."""
 
-    quote_role: Literal["entry", "followup"]
+    quote_role: str
     cohort_day: date
-    research_tape_version: Literal["1"] = "1"
+    research_tape_version: str = "1"
+
+    @model_validator(mode="after")
+    def _check_frozen_roles(self) -> Self:
+        if self.quote_role not in {"entry", "followup"}:
+            raise ValueError("research quote role must be entry or followup")
+        if self.research_tape_version != "1":
+            raise ValueError("unsupported research quote tape version")
+        return self
 
 
 @dataclass(frozen=True, slots=True)

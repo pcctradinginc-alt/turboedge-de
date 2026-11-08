@@ -101,7 +101,15 @@ def _history(days: int = 120, *, missing_b_exit: bool = False, negative: bool = 
                 _quote(isin_b, "BankB", at, bid=9.95, size=200.0, age_seconds=20),
             ]
         )
-        rows.append(_quote(isin_a, "BankA", at + timedelta(days=1), bid=9.2 if negative else 10.8))
+        rows.append(
+            _quote(
+                isin_a,
+                "BankA",
+                at + timedelta(days=1),
+                bid=9.2 if negative else 10.8,
+                ask=9.3 if negative else 10.9,
+            )
+        )
         if not missing_b_exit or i < days // 2:
             rows.append(
                 _quote(
@@ -109,6 +117,7 @@ def _history(days: int = 120, *, missing_b_exit: bool = False, negative: bool = 
                     "BankB",
                     at + timedelta(days=1, minutes=3),
                     bid=9.0 if negative else 11.5,
+                    ask=9.1 if negative else 11.6,
                 )
             )
     return rows
@@ -309,3 +318,13 @@ def test_duplicate_days_never_count_as_independent_trials() -> None:
     )
     assert measurement.verdict == "INVALID_SAMPLE"
     assert measurement.lcb_net is None
+
+
+def test_crossed_exit_quote_is_not_evidence_of_positive_net_ev(store: Store) -> None:
+    rows = _history()
+    for index, row in enumerate(rows):
+        if row.issuer == "BankB" and row.bid == 11.5:
+            rows[index] = row.model_copy(update={"ask": 10.0})
+    result = run_discovery_step(store, now=_NOW, snapshots=rows)
+    assert result.status == "SCREENED_EXPLORATORY"
+    assert result.verdict == "INCOMPLETE_EVIDENCE"

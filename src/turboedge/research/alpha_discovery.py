@@ -287,7 +287,15 @@ def _exit_return(
         and s.available_at <= s.retrieved_at
     ]
     exits = [
-        s for s in window if s.retrieved_at >= entry.retrieved_at + EXIT_EARLIEST and _fresh_exit(s)
+        s
+        for s in window
+        if (
+            s.retrieved_at >= entry.retrieved_at + EXIT_EARLIEST
+            and _fresh_exit(s)
+            and s.ask is not None
+            and s.bid is not None
+            and s.bid <= s.ask
+        )
     ]
     exit_snapshot = min(exits, key=lambda x: x.retrieved_at) if exits else None
     ko_before_exit = [
@@ -434,8 +442,25 @@ def _opportunity(candidate: Candidate, validation_days: int) -> ResearchOpportun
     )
 
 
-def _fingerprint(sessions: list[PairDay]) -> str:
-    material = [(p.day.isoformat(), p.left.raw_hash, p.right.raw_hash) for p in sessions]
+def _fingerprint(
+    sessions: list[PairDay], *, snapshots: list[ProductSnapshot], now: datetime
+) -> str:
+    """Bind the entry and outcome quote records into the evidence version."""
+    isins = {s.isin for p in sessions for s in (p.left, p.right)}
+    used = sorted(
+        (
+            s.isin,
+            s.retrieved_at.isoformat(),
+            s.quote_timestamp.isoformat() if s.quote_timestamp is not None else None,
+            s.raw_hash,
+            s.bid,
+            s.ask,
+            s.knocked_out,
+        )
+        for s in snapshots
+        if s.isin in isins and s.retrieved_at <= now and s.available_at <= s.retrieved_at
+    )
+    material = {"cutoff": now.isoformat(), "quotes": used}
     return hashlib.sha256(json.dumps(material, sort_keys=True).encode()).hexdigest()[:16]
 
 
@@ -527,7 +552,7 @@ def run_discovery_step(
         harness=HARNESS,
         harness_version=DSL_VERSION,
         spec=spec.model_dump(mode="json"),
-        data_version=_fingerprint(validation),
+        data_version=_fingerprint(validation, snapshots=all_quotes, now=now),
         quarter=quarter,
         status=ScreenStatus.RUNNING,
         started_at=now,

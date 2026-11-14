@@ -186,6 +186,7 @@ class PromotionSuggestion(BaseModel):
     reasons: list[str]
     ev_improvement: float | None
     winrate_improvement: float | None
+    matched_effective_sample: float | None = None
 
 
 class DemotionSuggestion(BaseModel):
@@ -231,6 +232,69 @@ class TournamentReport(BaseModel):
     demotions: list[DemotionSuggestion]
     weight_preview: list[WeightPreviewEntry]
     notes: list[str]
+
+
+def _matched_economic_edge(
+    challenger: list[tuple[LedgerEntry, LedgerLabel]],
+    champion: list[tuple[LedgerEntry, LedgerLabel]],
+) -> tuple[float | None, float | None, float]:
+    """Compare only identical entry events, never unrelated model populations.
+
+    Multiple products for the same prediction/event are one observation:
+    first average product returns within each event, then compare the two
+    models' event means. Average uniqueness is applied across matched
+    event label windows before computing any decision-relevant improvement.
+    This is research evidence only; confirmed fill/cost evidence is separate.
+    """
+    from turboedge.backtest.purged_cv import average_uniqueness
+
+    def grouped(
+        pairs: list[tuple[LedgerEntry, LedgerLabel]],
+    ) -> dict[tuple[str, str, int, datetime, date], tuple[float, int]]:
+        data: dict[tuple[str, str, int, datetime, date], list[float]] = defaultdict(list)
+        for entry, label in pairs:
+            if label.realized_selected_pnl is None:
+                continue
+            key = (
+                entry.underlying,
+                entry.direction.value,
+                entry.horizon_days,
+                entry.prediction_time,
+                entry.exit_due,
+            )
+            data[key].append(label.realized_selected_pnl)
+        return {key: (float(np.mean(vals)), len(vals)) for key, vals in data.items()}
+
+    challenger_events = grouped(challenger)
+    champion_events = grouped(champion)
+    shared = sorted(set(challenger_events) & set(champion_events))
+    if not shared:
+        return None, None, 0.0
+    start = min(key[3].date() for key in shared)
+    windows = [
+        ((key[3].date() - start).days, (key[4] - start).days)
+        for key in shared
+    ]
+    t0 = np.asarray([w[0] for w in windows], dtype=np.int64)
+    t1 = np.asarray([w[1] for w in windows], dtype=np.int64)
+    weights = average_uniqueness(t0, t1)
+    diff = np.asarray(
+        [challenger_events[key][0] - champion_events[key][0] for key in shared],
+        dtype=np.float64,
+    )
+    win_diff = np.asarray(
+        [
+            float(challenger_events[key][0] > 0.0)
+            - float(champion_events[key][0] > 0.0)
+            for key in shared
+        ],
+        dtype=np.float64,
+    )
+    return (
+        float(np.average(diff, weights=weights)),
+        float(np.average(win_diff, weights=weights)),
+        float(np.sum(weights)),
+    )
 
 
 def _win_rate(pairs: list[tuple[LedgerEntry, LedgerLabel]]) -> float | None:
@@ -574,26 +638,24 @@ def run_research_tournament(
         challenger_pairs = by_family.get(m.signal_family, [])
 
         ev_improvement: float | None = None
+        winrate_improvement: float | None = None
+        paired_effective_sample: float | None = None
         if (
             fam_result.evidence_source == "forward_ledger"
-            and fam_result.mean_return is not None
             and champion_result is not None
             and champion_result.evidence_source == "forward_ledger"
-            and champion_result.mean_return is not None
         ):
-            # Still exploratory: the full promotion gate below explicitly
-            # requires paired outcomes and independent confirmation.
-            ev_improvement = fam_result.mean_return - champion_result.mean_return
-        elif champion_entry is None and fam_result.evidence_source == "forward_ledger":
-            # First-champion reference is NO_TRADE (zero cash return), not a
-            # fictitious champion with an invented win rate.
+            ev_improvement, winrate_improvement, paired_effective_sample = (
+                _matched_economic_edge(challenger_pairs, champion_pairs)
+            )
+        elif (
+            champion_entry is None
+            and fam_result.evidence_source == "forward_ledger"
+        ):
+            # First champion's reference is explicit NO_TRADE (return 0),
+            # not a fictitious reference with a made-up hit rate.
             ev_improvement = fam_result.mean_return
-
-        winrate_improvement: float | None = None
-        wr_challenger = _win_rate(challenger_pairs)
-        wr_champion = _win_rate(champion_pairs)
-        if wr_challenger is not None and wr_champion is not None:
-            winrate_improvement = wr_challenger - wr_champion
+            paired_effective_sample = fam_result.n_effective
 
         # Never promote based on backtest data alone (Spec §29)
         backtest_only = fam_result.evidence_source == "walkforward_backtest"
@@ -601,6 +663,10 @@ def run_research_tournament(
             "reliable_sample": fam_result.reliable
             and fam_result.n_effective >= _MIN_EFFECTIVE_SAMPLE_FOR_SIGNIFICANCE,
             "registered_trial_id": m.trial_id is not None,
+            "matched_effective_sample>=100": (
+                paired_effective_sample is not None
+                and paired_effective_sample >= _MIN_EFFECTIVE_SAMPLE_FOR_SIGNIFICANCE
+            ),
             "independent_confirmation_and_risk_gates": False,  # not shown by weekly ledger
             "bh_rejected": bool(fam_result.bh_rejected),
             "z_score>=threshold": fam_result.z_score is not None
@@ -629,6 +695,7 @@ def run_research_tournament(
                 reasons=reasons,
                 ev_improvement=ev_improvement,
                 winrate_improvement=winrate_improvement,
+                matched_effective_sample=paired_effective_sample,
             )
         )
 

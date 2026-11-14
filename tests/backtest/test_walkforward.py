@@ -142,3 +142,23 @@ def test_walk_forward_evaluate_raises_when_insufficient_history(
             step=10,
             embargo=5,
         )
+
+
+def test_oos_sample_size_accounts_for_overlapping_horizon_labels(
+    make_bars: Callable[..., list[UnderlyingBar]],
+) -> None:
+    """Daily 10d predictions share future bars and cannot count as iid rows."""
+    bars = make_bars(600, seed=31)
+    result = walk_forward_evaluate(
+        lambda: NullModel(NullModelConfig(min_train_samples=20)),
+        bars,
+        horizons=[10],
+        min_train=200,
+        step=50,
+        embargo=10,
+    )[0]
+    assert len(result.oos_predictions) >= 100
+    assert 3 <= result.n_effective < len(result.oos_predictions) / 3
+    # The statistic is the directional strategy's unconditional return,
+    # not an average of conditional long and short winners.
+    assert np.isfinite(result.mean_oos_signal_return)

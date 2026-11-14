@@ -616,3 +616,96 @@ def test_sharpe_is_per_trade_and_not_annualized(
     # convention would put this at ~9-16x plain_sharpe; a bound well below
     # that pins the regression.
     assert abs(result.sharpe) < 5.0
+
+
+def test_multiple_underlyings_and_horizons_are_not_silently_overwritten(store) -> None:
+    """A walk-forward cell belongs to (model, underlying, horizon)."""
+    from turboedge.reporting.html import to_plain_text
+    from turboedge.storage.schemas import WalkforwardResultRecord
+
+    _register(store, "test_model", "hash-test", "test_family", ModelStatus.PROTECTED)
+    base = dict(
+        model_id="test_model",
+        model_hash="hash-test",
+        signal_family="test_family",
+        evaluated_at=datetime(2026, 8, 28, 12, tzinfo=UTC),
+        n_folds=5,
+        brier=0.23,
+        brier_null=0.25,
+        log_loss=0.65,
+        ece=0.08,
+        hit_rate=0.58,
+        psr=0.71,
+        n_effective=48.0,
+        config_hash="cfg-hash",
+        git_commit="abc123",
+        params={},
+    )
+    records = [
+        WalkforwardResultRecord(**base, underlying_id="DAX", horizon_days=5,
+                                mean_oos_return=0.002),
+        WalkforwardResultRecord(**base, underlying_id="NDX", horizon_days=5,
+                                mean_oos_return=-0.005),
+        WalkforwardResultRecord(**base, underlying_id="DAX", horizon_days=10,
+                                mean_oos_return=0.003),
+    ]
+    store.append_walkforward_results(records)
+    latest = store.latest_walkforward_results(signal_family="test_family")
+    assert {(r.underlying_id, r.horizon_days) for r in latest} == {
+        ("DAX", 5), ("NDX", 5), ("DAX", 10)
+    }
+    report = run_research_tournament(store, as_of=_AS_OF)
+    fam = next(f for f in report.families if f.signal_family == "test_family")
+    assert len(fam.walkforward_cells) == 3
+    assert fam.evidence_source == "walkforward_backtest"
+    assert fam.mean_return is None
+    assert fam.psr is None
+    assert fam.reliable is False
+    body = to_plain_text(report)
+    assert "underlying=NDX horizon=5d" in body
+    assert "underlying=DAX horizon=10d" in body
+    assert "Brutto-Richtungsrenditen" in body
+
+
+def test_ambiguous_exit_excluded_from_economic_inference(
+    store, record_labeled
+) -> None:
+    """Last-known discounted fallback is NOT an actual exit fill."""
+    from turboedge.storage.schemas import ExitReason
+
+    _register(store, "logit_v1", "hash-logit", "logit", ModelStatus.CHALLENGER)
+    record_labeled(
+        entry_overrides=dict(model_hash="hash-logit", signal_id="logit_v1",
+                             exit_due=date(2026, 8, 18)),
+        label_overrides=dict(
+            realized_selected_pnl=0.80,
+            exit_reason=ExitReason.NO_EXIT_QUOTE_CONSERVATIVE,
+            ambiguous_path=True,
+        ),
+    )
+    report = run_research_tournament(store, as_of=_AS_OF)
+    fam = next(f for f in report.families if f.signal_family == "logit")
+    assert fam.n == 0
+    assert fam.mean_return is None
+    assert any("1 fehlende/ambigue Exits" in n for n in report.notes)
+
+
+def test_first_champion_is_compared_to_no_trade_without_auto_promotion(
+    store, record_labeled
+) -> None:
+    """An absent champion must not invent a reference win rate."""
+    _register(store, "first_v1", "hash-first", "first", ModelStatus.CHALLENGER,
+              trial_id="TR-2026Q4-first")
+    record_labeled(
+        entry_overrides=dict(model_hash="hash-first", signal_id="first_v1",
+                             exit_due=date(2026, 8, 18)),
+        label_overrides=dict(realized_selected_pnl=0.02),
+    )
+    report = run_research_tournament(store, as_of=_AS_OF)
+    suggestion = next(p for p in report.promotions if p.challenger_model_id == "first_v1")
+    assert suggestion.champion_model_id is None
+    assert suggestion.ev_improvement == pytest.approx(0.02)
+    assert suggestion.winrate_improvement is None
+    assert suggestion.passes_ladder is False
+    assert any("independent_confirmation_and_risk_gates: failed" in s
+               for s in suggestion.reasons)

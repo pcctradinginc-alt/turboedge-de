@@ -307,10 +307,12 @@ def render_weekly_html(report: TournamentReport) -> str:
         for f in report.families
     )
     parts.append(f"<table>{header}{rows}</table>")
-    parts.append("<p class='meta'>* Forward-Ledger: Ask-zu-Bid/KO-Rendite ohne "
-                 "Fill-Nachweis oder Steuern. Walk-forward: historische Brutto-"
-                 "Richtungsrendite des Basiswerts, kein Turbo-Netto-EV. "
-                 "Kein Vergleich der beiden Quellen als gleiche Messung.</p>")
+    parts.append(
+        "<p class='meta'>* Forward-Ledger: Ask-zu-Bid/KO-Rendite ohne "
+        "Fill-Nachweis oder Steuern. Walk-forward: historische Brutto-"
+        "Richtungsrendite des Basiswerts, kein Turbo-Netto-EV. "
+        "Kein Vergleich der beiden Quellen als gleiche Messung.</p>"
+    )
     for f in report.families:
         if f.walkforward_cells:
             cell_rows = "".join(
@@ -321,10 +323,12 @@ def render_weekly_html(report: TournamentReport) -> str:
                 for c in f.walkforward_cells
             )
             parts.append(f"<h4>{_esc(f.signal_family)}: historische OOS-Zellen (Brutto)</h4>")
-            parts.append("<table><tr><th>Modell</th><th>Basiswert</th>"
-                         "<th>Horizont</th><th>Folds</th><th>n_eff</th>"
-                         "<th>Brutto-Richtung</th><th>Brier</th><th>Null-Brier</th>"
-                         f"</tr>{cell_rows}</table>")
+            parts.append(
+                "<table><tr><th>Modell</th><th>Basiswert</th>"
+                "<th>Horizont</th><th>Folds</th><th>n_eff</th>"
+                "<th>Brutto-Richtung</th><th>Brier</th><th>Null-Brier</th>"
+                f"</tr>{cell_rows}</table>"
+            )
         if f.notes:
             note_str = "; ".join(_esc(n) for n in f.notes)
             parts.append(f"<p class='notes'>{_esc(f.signal_family)}: {note_str}</p>")

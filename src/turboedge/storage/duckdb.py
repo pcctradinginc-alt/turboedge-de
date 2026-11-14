@@ -2819,20 +2819,22 @@ class Store:
         self, *, signal_family: str | None = None, underlying_id: str | None = None
     ) -> list[WalkforwardResultRecord]:
         """Most recent :class:`WalkforwardResultRecord` per ``(model_id,
-        horizon_days)``, optionally filtered -- what
+        underlying_id, horizon_days)``, optionally filtered -- what
         ``reporting/weekly.run_research_tournament`` would read once it is
         wired to prefer this table over forward-ledger-only data (see
         Kurzbericht)."""
         all_rows = self.list_walkforward_results(
             signal_family=signal_family, underlying_id=underlying_id
         )
-        latest: dict[tuple[str, int], WalkforwardResultRecord] = {}
+        # Underlyings must never overwrite one another: DAX/NDX/SPX with
+        # the same model and horizon are distinct OOS cells, not duplicates.
+        latest: dict[tuple[str, str, int], WalkforwardResultRecord] = {}
         for r in all_rows:
-            key = (r.model_id, r.horizon_days)
+            key = (r.model_id, r.underlying_id, r.horizon_days)
             existing = latest.get(key)
             if existing is None or r.evaluated_at > existing.evaluated_at:
                 latest[key] = r
-        return sorted(latest.values(), key=lambda r: (r.model_id, r.horizon_days))
+        return sorted(latest.values(), key=lambda r: (r.model_id, r.underlying_id, r.horizon_days))
 
     # -- KO-probability calibration (W10) --------------------------------------
 

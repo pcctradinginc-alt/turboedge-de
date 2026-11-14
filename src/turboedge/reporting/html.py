@@ -511,11 +511,7 @@ def _weekly_plain_text(report: TournamentReport) -> str:
                 f"  {p.challenger_model_id} ({p.challenger_signal_family}): "
                 f"passes_ladder={p.passes_ladder} trial_id={p.trial_id} "
                 f"paired_n_eff={_num(p.matched_effective_sample, 2)} "
-                "benchmark=NO_TRADE" if p.champion_model_id is None else
-                f"  {p.challenger_model_id} ({p.challenger_signal_family}): "
-                f"passes_ladder={p.passes_ladder} trial_id={p.trial_id} "
-                f"paired_n_eff={_num(p.matched_effective_sample, 2)} "
-                f"benchmark={p.champion_model_id}"
+                f"benchmark={p.champion_model_id or 'NO_TRADE'}"
             )
     else:
         lines.append("  keine Challenger registriert")

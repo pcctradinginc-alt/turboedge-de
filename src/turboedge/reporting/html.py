@@ -279,11 +279,10 @@ def render_weekly_html(report: TournamentReport) -> str:
     )
     champion = _esc(report.champion_model_id) if report.champion_model_id else "keiner registriert"
     parts.append(f"<p>Champion-Modell: {champion}</p>")
-    parts.append("<p class='banner'><strong>Alpha validiert: NEIN.</strong> "
-                 "Keine Handelsfreigabe. Historische Richtungsrenditen sind "
-                 "keine Nettorenditen von Turbo-Produkten. "</p>" if False else 
-                 "<p class='banner'><strong>Alpha validiert: NEIN.</strong> "
-                 "Keine Handelsfreigabe; OOS-Basiswert-Renditen sind keine Turbo-Nettorenditen.</p>")
+    parts.append(
+        "<p class='banner'>Dieser Turnierbericht erteilt KEINE Handelsfreigabe. "
+        "Historische OOS-Richtungsrenditen sind keine Turbo-Nettorenditen.</p>"
+    )
 
     parts.append("<h2>Signalfamilien</h2>")
     header = (
@@ -464,7 +463,7 @@ def _monthly_plain_text(report: MonthlyReport) -> str:
 def _weekly_plain_text(report: TournamentReport) -> str:
     lines = [
         "TurboEdge-DE Weekly Research Tournament",
-        "Validierter Alpha: NEIN | Handelsfreigabe: GESPERRT",
+        "Turnierbericht: keine Handelsfreigabe und kein alleiniger Alpha-Nachweis.",
         "Hinweis: Brutto-Richtungsrenditen aus Backtests sind KEINE Turbo-Nettorenditen.",
         f"Fenster: {report.window_start.isoformat()} - {report.window_end.isoformat()}",
         f"Champion: {report.champion_model_id or 'keiner registriert'}",

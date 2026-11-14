@@ -54,6 +54,7 @@ from turboedge.storage.schemas import (
     LedgerEntry,
     LedgerEntryStatus,
     LedgerLabel,
+    ExitReason,
     ModelStatus,
 )
 
@@ -100,6 +101,28 @@ class WeeklyTournamentConfig(BaseModel):
     demotion_ece_threshold: float = Field(default=0.15)  # GOVERNANCE.md §6.2
 
 
+class WalkforwardCell(BaseModel):
+    """One historical diagnostic cell; it is NOT a turbo P&L observation.
+
+    A DAX/5d cell must not be overwritten by an NDX/5d or DAX/10d cell.
+    Neither pooling folds nor selecting the latest timestamp provides an
+    unbiased strategy-level net-EV estimate.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    model_id: str
+    underlying_id: str
+    horizon_days: int
+    n_folds: int
+    n_effective: float
+    mean_gross_direction_return: float
+    brier: float
+    brier_null: float | None
+    psr: float | None
+    evaluated_at: datetime
+
+
 class FamilyResult(BaseModel):
     """One signal family's in-window performance from forward-ledger or walk-forward backtest.
 
@@ -139,6 +162,7 @@ class FamilyResult(BaseModel):
     ece: float | None = None
     mean_regret: float | None = None
     notes: list[str] = Field(default_factory=list)
+    walkforward_cells: list[WalkforwardCell] = Field(default_factory=list)
 
 
 class PromotionSuggestion(BaseModel):
@@ -244,13 +268,25 @@ def run_research_tournament(
 
     ledger = ForwardLedger(store)
     all_pairs = ledger.entries()
-    matured = [
+    matured_all = [
         (e, lbl)
         for e, lbl in all_pairs
         if e.status == LedgerEntryStatus.LABELED
         and lbl is not None
         and window_start <= e.exit_due <= window_end
     ]
+    # A discounted last-known quote is deliberately conservative for
+    # position management, but is NOT a measured executable exit. Keep
+    # ambiguous/missing exits out of significance and economic comparisons.
+    matured = [
+        (e, lbl)
+        for e, lbl in matured_all
+        if lbl is not None
+        and lbl.realized_selected_pnl is not None
+        and not lbl.ambiguous_path
+        and lbl.exit_reason in (ExitReason.HORIZON, ExitReason.KO)
+    ]
+    excluded_exit_count = len(matured_all) - len(matured)
 
     registry_entries = store.list_model_registry_entries()
     hash_map = registry_hash_map(registry_entries)
@@ -267,12 +303,30 @@ def run_research_tournament(
     p_values: dict[str, float] = {}
     # Fetch walk-forward results for fallback when forward-ledger is empty
     wf_results = store.latest_walkforward_results()
-    wf_by_family: dict[str, dict[int, Any]] = defaultdict(dict)
+    wf_by_family: dict[str, list[Any]] = defaultdict(list)
     for wf_rec in wf_results:
-        wf_by_family[wf_rec.signal_family][wf_rec.horizon_days] = wf_rec
+        wf_by_family[wf_rec.signal_family].append(wf_rec)
 
     for family in sorted(families_present):
         pairs = by_family.get(family, [])
+        wf_cells = [
+            WalkforwardCell(
+                model_id=wf.model_id,
+                underlying_id=wf.underlying_id,
+                horizon_days=wf.horizon_days,
+                n_folds=wf.n_folds,
+                n_effective=wf.n_effective,
+                mean_gross_direction_return=wf.mean_oos_return,
+                brier=wf.brier,
+                brier_null=wf.brier_null,
+                psr=wf.psr if wf.n_effective >= _MIN_EFFECTIVE_SAMPLE_FOR_SIGNIFICANCE else None,
+                evaluated_at=wf.evaluated_at,
+            )
+            for wf in sorted(
+                wf_by_family.get(family, []),
+                key=lambda w: (w.model_id, w.underlying_id, w.horizon_days),
+            )
+        ]
         n = len(pairs)
         # Per-family, NOT pooled across families (family_average_uniqueness_weights'
         # docstring explains why that distinction matters): family A's own
@@ -397,13 +451,14 @@ def run_research_tournament(
 
             if not protected and p_value is not None:
                 p_values[family] = p_value
-        elif n == 0 and family in wf_by_family:
-            # Fallback: use walk-forward results if no forward-ledger data
-            wf_best = max(wf_by_family[family].values(), key=lambda x: x.evaluated_at)
+        elif n == 0 and len(wf_cells) == 1:
+            # Historical single-cell diagnostic only: not a 60-day net-turbo
+            # outcome, not comparable against another family's forward ledger.
+            wf_best = wf_by_family[family][0]
             evidence_source = "walkforward_backtest"
             mean_return = wf_best.mean_oos_return
             sharpe_val = None  # Walk-forward doesn't provide Sharpe directly
-            psr_val = wf_best.psr
+            psr_val = None  # historical raw PSR is not evidence of a turbo net edge
             dsr_val = None  # DSR not available from backtest
             z_score = None  # Can't compute z-score without returns array
             p_value = None  # Can't compute p-value from backtest alone
@@ -417,7 +472,15 @@ def run_research_tournament(
             notes.append(
                 f"Keine Forward-Ledger-Daten; Walk-Forward-Backtest-Ergebnisse verwendet "
                 f"(evaluiert {wf_best.evaluated_at.date()}, {wf_best.n_folds} Folds). "
+                "Rendite ist brutto Richtungsrendite des Basiswerts, KEIN Netto-Turbo-EV; "
                 "keine automatische Promotion basierend auf Backtest-Evidenz (Spec §29)."
+            )
+        elif n == 0 and len(wf_cells) > 1:
+            evidence_source = "walkforward_backtest"
+            notes.append(
+                f"{len(wf_cells)} historische OOS-Zellen getrennt nach Modell/Basiswert/Horizont; "
+                "kein Cherry-Picking der neuesten Zelle, keine vermischte Mean/PSR. "
+                "Historische Basiswert-Richtungsrenditen sind kein Netto-Turbo-EV."
             )
         else:
             if n < cfg.min_trades_for_comparison and n > 0:
@@ -471,6 +534,7 @@ def run_research_tournament(
             ece=ece_val,
             mean_regret=mean_regret,
             notes=notes,
+            walkforward_cells=wf_cells,
         )
 
     tested_families = sorted(p_values)
@@ -500,11 +564,19 @@ def run_research_tournament(
 
         ev_improvement: float | None = None
         if (
-            fam_result.mean_return is not None
+            fam_result.evidence_source == "forward_ledger"
+            and fam_result.mean_return is not None
             and champion_result is not None
+            and champion_result.evidence_source == "forward_ledger"
             and champion_result.mean_return is not None
         ):
+            # Still exploratory: the full promotion gate below explicitly
+            # requires paired outcomes and independent confirmation.
             ev_improvement = fam_result.mean_return - champion_result.mean_return
+        elif champion_entry is None and fam_result.evidence_source == "forward_ledger":
+            # First-champion reference is NO_TRADE (zero cash return), not a
+            # fictitious champion with an invented win rate.
+            ev_improvement = fam_result.mean_return
 
         winrate_improvement: float | None = None
         wr_challenger = _win_rate(challenger_pairs)
@@ -515,7 +587,10 @@ def run_research_tournament(
         # Never promote based on backtest data alone (Spec §29)
         backtest_only = fam_result.evidence_source == "walkforward_backtest"
         checks = {
-            "reliable_sample": fam_result.reliable,
+            "reliable_sample": fam_result.reliable
+            and fam_result.n_effective >= _MIN_EFFECTIVE_SAMPLE_FOR_SIGNIFICANCE,
+            "registered_trial_id": m.trial_id is not None,
+            "independent_confirmation_and_risk_gates": False,  # not shown by weekly ledger
             "bh_rejected": bool(fam_result.bh_rejected),
             "z_score>=threshold": fam_result.z_score is not None
             and fam_result.z_score >= cfg.ladder_min_zscore,
@@ -524,8 +599,9 @@ def run_research_tournament(
             "ev_improvement>=threshold": ev_improvement is not None
             and ev_improvement >= cfg.ladder_min_ev_improvement,
             "winrate_improvement>=threshold": (
-                winrate_improvement is not None
-                and winrate_improvement >= cfg.ladder_min_winrate_improvement
+                champion_entry is None  # first champion: no artificial champion winrate
+                or (winrate_improvement is not None
+                    and winrate_improvement >= cfg.ladder_min_winrate_improvement)
             ),
         }
         if backtest_only:
@@ -587,10 +663,20 @@ def run_research_tournament(
             )
 
     notes = [
-        "Vergleich nutzt Forward-Ledger-Daten, wo verfügbar; Walk-Forward-Backtest-Ergebnisse "
-        "als Fallback (nicht im Store persistiert), wenn Forward-Ledger leer (Spec §29). "
+        "Historische Walk-Forward-Zellen sind nur Basiswert-Richtungsdiagnostik. "
+        "Forward-Ledger besteht aus tatsächlichen Quote-/KO-Exit-Labels; "
+        "keine gemeinsame Nettorendite oder gemeinsame Signifikanz zwischen beiden Datenarten. "
         f"Fenster: {window_start.isoformat()}..{window_end.isoformat()}.",
     ]
+    notes.append(
+        f"Exit-Qualitaet: {len(matured)} bestaetigte Quote-/KO-Exits im Fenster; "
+        f"{excluded_exit_count} fehlende/ambigue Exits aus der Performance-Messung ausgeschlossen."
+    )
+    notes.append(
+        "Produktkosten: Forward-Rendite verwendet Einstiegs-Ask und beobachteten "
+        "Ausstiegs-Bid oder KO, aber keine nachgewiesenen echten Fills/Steuern/Gebuehren; "
+        "keine Trading-Freigabe. OOS-Brutto-Basiswert-Return ist keine Turbo-Rendite."
+    )
     if champion_model_id is None:
         notes.append("Kein Modell mit status=champion im Registry gefunden.")
 
@@ -600,7 +686,9 @@ def run_research_tournament(
         if all(w > 0.0 for w in current_weights.values()):
             utilities = {
                 m.model_id: (results[m.signal_family].mean_return or 0.0)
-                if m.signal_family in results
+                if (m.signal_family in results
+                    and results[m.signal_family].evidence_source == "forward_ledger"
+                    and results[m.signal_family].n_effective >= _MIN_EFFECTIVE_SAMPLE_FOR_SIGNIFICANCE)
                 else 0.0
                 for m in registry_entries
             }
@@ -650,5 +738,6 @@ __all__ = [
     "TournamentReport",
     "WeeklyTournamentConfig",
     "WeightPreviewEntry",
+    "WalkforwardCell",
     "run_research_tournament",
 ]

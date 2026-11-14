@@ -51,6 +51,7 @@ from turboedge.reporting._common import (
 )
 from turboedge.storage.duckdb import Store
 from turboedge.storage.schemas import (
+    Category,
     ExitReason,
     LedgerEntry,
     LedgerEntryStatus,
@@ -149,6 +150,7 @@ class FamilyResult(BaseModel):
     protected: bool
     n: int
     n_effective: float
+    research_only_n: int = 0
     reliable: bool
     evidence_source: str = "forward_ledger"  # "forward_ledger" or "walkforward_backtest"
     mean_return: float | None = None
@@ -352,11 +354,22 @@ def run_research_tournament(
     hash_map = registry_hash_map(registry_entries)
 
     by_family: dict[str, list[tuple[LedgerEntry, LedgerLabel]]] = defaultdict(list)
+    research_only_counts: dict[str, int] = defaultdict(int)
     for e, lbl in matured:
-        by_family[signal_family_for(e, hash_map)].append((e, lbl))
+        family = signal_family_for(e, hash_map)
+        if e.category == Category.ACTIONABLE and not e.is_shadow:
+            by_family[family].append((e, lbl))
+        else:
+            # WATCH/REJECT/stratified shadows are counterfactual research,
+            # not a portfolio that was ever proposed for trading. Never use
+            # these observations to claim a strategy return or a promotion.
+            research_only_counts[family] += 1
 
     families_present = (
-        {m.signal_family for m in registry_entries} | set(by_family) | {cfg.protected_signal_family}
+        {m.signal_family for m in registry_entries}
+        | set(by_family)
+        | set(research_only_counts)
+        | {cfg.protected_signal_family}
     )
 
     results: dict[str, FamilyResult] = {}
@@ -388,6 +401,7 @@ def run_research_tournament(
             )
         ]
         n = len(pairs)
+        research_only_n = research_only_counts.get(family, 0)
         # Per-family, NOT pooled across families (family_average_uniqueness_weights'
         # docstring explains why that distinction matters): family A's own
         # significance must not be diluted by family B's trades on the same
@@ -399,6 +413,11 @@ def run_research_tournament(
         )
         protected = family == cfg.protected_signal_family
         notes: list[str] = []
+        if research_only_n:
+            notes.append(
+                f"{research_only_n} WATCH/REJECT/Shadow-Exits nur Forschungsbeobachtung, "
+                "nicht als Strategie-Trade/Netto-Alpha gewertet."
+            )
         evidence_source = "forward_ledger"
 
         mean_return: float | None = None
@@ -591,6 +610,7 @@ def run_research_tournament(
             protected=protected,
             n=n,
             n_effective=n_eff,
+            research_only_n=research_only_n,
             reliable=reliable,
             evidence_source=evidence_source,
             mean_return=mean_return,
@@ -751,6 +771,8 @@ def run_research_tournament(
     ]
     notes.append(
         f"Exit-Qualitaet: {len(matured)} bestaetigte Quote-/KO-Exits im Fenster; "
+        f"{sum(map(len, by_family.values()))} ACTIONABLE-Nicht-Shadow Outcomes; "
+        f"{sum(research_only_counts.values())} WATCH/REJECT/Shadow-Outcomes nur Forschung; "
         f"{excluded_exit_count} fehlende/ambigue Exits aus der Performance-Messung ausgeschlossen."
     )
     notes.append(

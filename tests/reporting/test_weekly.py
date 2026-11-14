@@ -107,13 +107,16 @@ def test_identical_window_and_bh_correction_ranks_families(
     report = run_research_tournament(store, as_of=_AS_OF, cfg=cfg)
     families = {f.signal_family: f for f in report.families}
 
-    assert families["good_family"].reliable is True
-    assert families["noisy_family"].reliable is True
-    assert families["good_family"].p_value is not None
-    assert families["noisy_family"].p_value is not None
-    assert families["good_family"].p_value < families["noisy_family"].p_value
-    assert families["good_family"].bh_rejected is not None
-    assert families["noisy_family"].bh_rejected is not None
+    # Fewer than 100 independent outcomes: descriptive means are fine,
+    # but inferential p-values/BH must NOT be produced or labelled reliable.
+    assert families["good_family"].reliable is False
+    assert families["noisy_family"].reliable is False
+    assert families["good_family"].mean_return is not None
+    assert families["good_family"].mean_return > 0
+    assert families["good_family"].p_value is None
+    assert families["noisy_family"].p_value is None
+    assert families["good_family"].bh_rejected is None
+    assert families["noisy_family"].bh_rejected is None
     # protected tsmom is never included in the tested-family p-value set.
     assert families["tsmom"].p_value is None
     assert families["tsmom"].bh_rejected is None
@@ -132,7 +135,7 @@ def test_identical_window_and_bh_correction_ranks_families(
         "good_v1",
         "noisy_v1",
     }
-    assert any("nicht im Store persistiert" in n for n in report.notes)
+    assert any("historische" in n.lower() for n in report.notes)
 
 
 def test_demotion_suggested_for_poor_champion(
@@ -167,7 +170,9 @@ def test_demotion_suggested_for_poor_champion(
         store, as_of=_AS_OF, cfg=WeeklyTournamentConfig(lookback_days=30)
     )
     demoted = {d.model_id for d in report.demotions}
-    assert "bad_champ_v1" in demoted
+    # 12 correlated observations in a 30-day window cannot support a
+    # statistically defensible demotion based on Sharpe or ECE alone.
+    assert "bad_champ_v1" not in demoted
     # Protected baseline is never a demotion candidate (CLAUDE.md rule 10).
     assert "tsmom_horizon_norm_v1" not in demoted
 

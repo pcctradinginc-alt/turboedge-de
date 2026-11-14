@@ -671,7 +671,14 @@ def run_research_tournament(
 
         # Never promote based on backtest data alone (Spec §29)
         backtest_only = fam_result.evidence_source == "walkforward_backtest"
+        valid_entry_quotes = bool(challenger_pairs) and all(
+            0.0 <= (entry.prediction_time - entry.entry_quote_timestamp).total_seconds() <= 300.0
+            and entry.entry_ask > 0.0
+            and (entry.entry_bid is None or entry.entry_bid <= entry.entry_ask)
+            for entry, _ in challenger_pairs
+        )
         checks = {
+            "quote_freshness_and_bid_ask": valid_entry_quotes,
             "reliable_sample": fam_result.reliable
             and fam_result.n_effective >= _MIN_EFFECTIVE_SAMPLE_FOR_SIGNIFICANCE,
             "registered_trial_id": m.trial_id is not None,
@@ -780,6 +787,19 @@ def run_research_tournament(
         "Ausstiegs-Bid oder KO, aber keine nachgewiesenen echten Fills/Steuern/Gebuehren; "
         "keine Trading-Freigabe. OOS-Brutto-Basiswert-Return ist keine Turbo-Rendite."
     )
+    quarter = f"{as_of.year}Q{(as_of.month - 1) // 3 + 1}"
+    quarter_trials = store.list_research_trials(quarter=quarter)
+    exploratory_trials = sum(t.kind == "exploratory_screen" for t in quarter_trials)
+    confirmatory_trials = sum(t.kind != "exploratory_screen" for t in quarter_trials)
+    research_screens = store.list_research_screens(quarter=quarter)
+    notes.append(
+        f"Research-Budget {quarter}: {exploratory_trials} registrierte explorative "
+        f"Trials, {len(research_screens)} ausgefuehrte Screens (Limit 12), "
+        f"{confirmatory_trials} nicht-explorative Trials (Limit 6). "
+        "Keine automatische Freigabe; bestaetigende Evidenz separat erforderlich."
+    )
+    if len(research_screens) > 12 or confirmatory_trials > 6:
+        notes.append("GOVERNANCE_BUDGET_EXCEEDED: weiterer Trial/Freigabe blockieren.")
     if champion_model_id is None:
         notes.append("Kein Modell mit status=champion im Registry gefunden.")
 

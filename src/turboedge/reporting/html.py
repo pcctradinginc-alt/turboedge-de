@@ -287,6 +287,7 @@ def render_weekly_html(report: TournamentReport) -> str:
     parts.append("<h2>Signalfamilien</h2>")
     header = (
         "<tr><th>Familie</th><th>Quelle</th><th>protected</th><th>n</th><th>n_eff</th>"
+        "<th>Research-only</th>"
         "<th>Ø Rendite*</th>"
         "<th>Sharpe</th><th>PSR</th><th>DSR</th><th>z</th><th>p</th><th>BH rejected</th>"
         "<th>Brier</th><th>ECE</th><th>Ø Regret</th></tr>"
@@ -294,7 +295,8 @@ def render_weekly_html(report: TournamentReport) -> str:
     rows = "".join(
         f"<tr><td>{_esc(f.signal_family)}</td><td>{_esc(f.evidence_source)}</td>"
         f"<td>{'ja' if f.protected else ''}</td>"
-        f"<td>{f.n}</td><td>{f.n_effective:.1f}</td><td>{_pct(f.mean_return)}</td>"
+        f"<td>{f.n}</td><td>{f.n_effective:.1f}</td>"
+        f"<td>{f.research_only_n}</td><td>{_pct(f.mean_return)}</td>"
         f"<td>{_num(f.sharpe, 2) if f.sharpe is not None else '-'}</td>"
         f"<td>{_num(f.psr, 3) if f.psr is not None else '-'}</td>"
         f"<td>{_num(f.dsr, 3) if f.dsr is not None else '-'}</td>"
@@ -341,12 +343,14 @@ def render_weekly_html(report: TournamentReport) -> str:
             f"<td>{_esc(p.trial_id) if p.trial_id else '-'}</td>"
             f"<td>{'JA' if p.passes_ladder else 'nein'}</td>"
             f"<td>{_pct(p.ev_improvement)}</td><td>{_pct(p.winrate_improvement)}</td>"
+            f"<td>{_num(p.matched_effective_sample, 1)}</td>"
             f"<td>{'; '.join(_esc(r) for r in p.reasons)}</td></tr>"
             for p in report.promotions
         )
         parts.append(
             "<table><tr><th>Challenger</th><th>Familie</th><th>Champion</th><th>Trial-ID</th>"
             "<th>Ladder Rule</th><th>EV-Verbesserung</th><th>Winrate-Verbesserung</th>"
+            "<th>Gepaarte n_eff</th>"
             f"<th>Details</th></tr>{rows}</table>"
         )
     else:
@@ -485,6 +489,7 @@ def _weekly_plain_text(report: TournamentReport) -> str:
             f"  {f.signal_family}{' [protected]' if f.protected else ''} "
             f"[{f.evidence_source}]: "
             f"n={f.n} n_effective={_num(f.n_effective, 2)} "
+            f"research_only_n={f.research_only_n} "
             f"mean_return={_num(f.mean_return, 4)} sharpe_per_trade={_num(f.sharpe, 2)} "
             f"psr={_num(f.psr, 3)} dsr={_num(f.dsr, 3)} bh_rejected={f.bh_rejected}"
         )
@@ -504,7 +509,13 @@ def _weekly_plain_text(report: TournamentReport) -> str:
         for p in report.promotions:
             lines.append(
                 f"  {p.challenger_model_id} ({p.challenger_signal_family}): "
-                f"passes_ladder={p.passes_ladder} trial_id={p.trial_id}"
+                f"passes_ladder={p.passes_ladder} trial_id={p.trial_id} "
+                f"paired_n_eff={_num(p.matched_effective_sample, 2)} "
+                "benchmark=NO_TRADE" if p.champion_model_id is None else
+                f"  {p.challenger_model_id} ({p.challenger_signal_family}): "
+                f"passes_ladder={p.passes_ladder} trial_id={p.trial_id} "
+                f"paired_n_eff={_num(p.matched_effective_sample, 2)} "
+                f"benchmark={p.champion_model_id}"
             )
     else:
         lines.append("  keine Challenger registriert")

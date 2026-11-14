@@ -702,7 +702,9 @@ def run_research_tournament(
                 m.model_id: (results[m.signal_family].mean_return or 0.0)
                 if (m.signal_family in results
                     and results[m.signal_family].evidence_source == "forward_ledger"
-                    and results[m.signal_family].n_effective >= _MIN_EFFECTIVE_SAMPLE_FOR_SIGNIFICANCE)
+                    and results[m.signal_family].n_effective
+                    >= _MIN_EFFECTIVE_SAMPLE_FOR_SIGNIFICANCE
+                )
                 else 0.0
                 for m in registry_entries
             }
@@ -750,8 +752,8 @@ __all__ = [
     "FamilyResult",
     "PromotionSuggestion",
     "TournamentReport",
+    "WalkforwardCell",
     "WeeklyTournamentConfig",
     "WeightPreviewEntry",
-    "WalkforwardCell",
     "run_research_tournament",
 ]

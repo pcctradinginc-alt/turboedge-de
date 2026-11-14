@@ -51,10 +51,10 @@ from turboedge.reporting._common import (
 )
 from turboedge.storage.duckdb import Store
 from turboedge.storage.schemas import (
+    ExitReason,
     LedgerEntry,
     LedgerEntryStatus,
     LedgerLabel,
-    ExitReason,
     ModelStatus,
 )
 
@@ -334,7 +334,10 @@ def run_research_tournament(
         # underlying/day.
         family_weights = family_average_uniqueness_weights(pairs)
         n_eff = float(sum(family_weights.values()))
-        reliable = n >= cfg.min_trades_for_comparison
+        reliable = (
+            n >= cfg.min_trades_for_comparison
+            and n_eff >= _MIN_EFFECTIVE_SAMPLE_FOR_SIGNIFICANCE
+        )
         protected = family == cfg.protected_signal_family
         notes: list[str] = []
         evidence_source = "forward_ledger"
@@ -376,9 +379,13 @@ def run_research_tournament(
             ]
             mean_regret = statistics.mean(regrets) if regrets else None
 
-        if reliable and n >= 3:
+        if n >= cfg.min_trades_for_comparison and n >= 3:
             std = float(np.std(returns, ddof=1))
-            if std > 0.0 and n_eff >= 3.0 and mean_return is not None:
+            if (
+                std > 0.0
+                and n_eff >= _MIN_EFFECTIVE_SAMPLE_FOR_SIGNIFICANCE
+                and mean_return is not None
+            ):
                 # Standard error and degrees of freedom use n_eff, not n: a
                 # t-test's validity comes from the number of *independent*
                 # draws, and row count overstates that whenever labels
@@ -390,20 +397,14 @@ def run_research_tournament(
                 p_value = float(1.0 - stats.t.cdf(t_stat, df=n_eff - 1.0))
                 p_value = min(max(p_value, 1e-12), 1.0 - 1e-12)
                 z_score = float(stats.norm.ppf(1.0 - p_value))
-            elif std > 0.0 and n_eff < 3.0:
-                # n_eff collapses below what a t-test can even use (e.g. the
-                # §6.9 case: 2,672 same-window rows -> n_eff=1.00) -- no
-                # z-/p-value, and this family is excluded from the BH set
-                # below rather than silently defaulted to "not significant"
-                # (which would be a different, also-wrong number).
+            elif n_eff < _MIN_EFFECTIVE_SAMPLE_FOR_SIGNIFICANCE:
                 notes.append(
-                    f"n_effective={n_eff:.2f} < 3: kein z-/p-Wert trotz n={n} Zeilen -- "
-                    "Average-Uniqueness-Gewichte kollabieren auf zu wenige unabhaengige "
-                    "Label-Fenster fuer einen t-Test (docs/measured_results.md §6.9/§6.11)."
+                    f"n_effective={n_eff:.2f} < 100: kein z-/p-Wert, keine "
+                    "BH-Korrektur und keine belastbare Inferenz trotz "
+                    f"n={n} Rohzeilen; 100 unabh. Outcomes erforderlich."
                 )
             else:
-                p_value = 0.5
-                z_score = 0.0
+                notes.append("Renditekonstanz/fehlende Streuung: kein valider Inferenztest.")
 
             if mean_return is not None:
                 # Sharpe: per-trade, deliberately NOT annualized (Master
@@ -445,11 +446,21 @@ def run_research_tournament(
                 # whole change exists to catch, where n_eff is 1.00.
                 if n_eff >= _MIN_EFFECTIVE_SAMPLE_FOR_SIGNIFICANCE:
                     psr_val = probabilistic_sharpe_ratio(returns_for_mean, n_effective=n_eff)
+                    tested_hypotheses = max(
+                        1,
+                        len(families_present),
+                        len(store.list_research_trials()),
+                        len(store.list_research_screens()),
+                    )
                     dsr_val = deflated_sharpe_ratio(
-                        returns_for_mean, max(1, len(families_present)), n_effective=n_eff
+                        returns_for_mean, tested_hypotheses, n_effective=n_eff
                     )
 
-            if not protected and p_value is not None:
+            if (
+                not protected
+                and p_value is not None
+                and any(m.signal_family == family and m.trial_id for m in registry_entries)
+            ):
                 p_values[family] = p_value
         elif n == 0 and len(wf_cells) == 1:
             # Historical single-cell diagnostic only: not a 60-day net-turbo
@@ -634,20 +645,23 @@ def run_research_tournament(
         if fam_result is None:
             continue
         demotion_reasons: list[str] = []
-        if fam_result.sharpe is not None and fam_result.sharpe < cfg.demotion_sharpe_threshold:
+        if (fam_result.reliable and fam_result.sharpe is not None
+                and fam_result.sharpe < cfg.demotion_sharpe_threshold):
             demotion_reasons.append(
                 f"Sharpe {fam_result.sharpe:.3f} < {cfg.demotion_sharpe_threshold:.3f} "
                 "im Beobachtungsfenster (GOVERNANCE.md §6.2)"
             )
         if (
-            fam_result.mean_regret is not None
+            fam_result.reliable
+            and fam_result.mean_regret is not None
             and fam_result.mean_regret > cfg.demotion_regret_threshold
         ):
             demotion_reasons.append(
                 f"mittleres Regret {fam_result.mean_regret:.4f} > "
                 f"{cfg.demotion_regret_threshold:.4f} (GOVERNANCE.md §6.2)"
             )
-        if fam_result.ece is not None and fam_result.ece > cfg.demotion_ece_threshold:
+        if (fam_result.reliable and fam_result.ece is not None
+                and fam_result.ece > cfg.demotion_ece_threshold):
             demotion_reasons.append(
                 f"ECE {fam_result.ece:.4f} > {cfg.demotion_ece_threshold:.4f} (GOVERNANCE.md §6.2)"
             )

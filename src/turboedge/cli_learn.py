@@ -1247,10 +1247,14 @@ def forecast_cmd(
 
 
 def _mean_oos_return(r: Any) -> float:
-    vals = [
-        v for v in (r.mean_oos_return_when_long, r.mean_oos_return_when_short) if not math.isnan(v)
-    ]
-    return float(np.mean(vals)) if vals else 0.0
+    """Direction-strategy return versus NO_TRADE, not a turbo-net return.
+
+    The former average of conditional long/short averages gave equal weight
+    to sides even when one was rarely traded, and excluded neutral forecasts.
+    This field is historical *diagnostic* evidence only; the promotion gates
+    must require separately measured product-level net returns.
+    """
+    return float(r.mean_oos_signal_return)
 
 
 def backtest_cmd(
@@ -1352,7 +1356,7 @@ def backtest_cmd(
                         hit_rate=r.hit_rate,
                         mean_oos_return=_mean_oos_return(r),
                         psr=r.psr,
-                        n_effective=float(len(r.oos_predictions)),
+                        n_effective=r.n_effective,
                         config_hash=hash_value,
                         git_commit=commit,
                         params={},

@@ -2377,10 +2377,12 @@ def _run_ev_pipeline(
             LedgerEntry(
                 run_id=run_id,
                 candidate_id=original.candidate_id,
-                signal_id=signal.signal_id if signal is not None else f"{run_id}-{underlying_id}",
-                signal_version_hash=(
-                    signal.signal_version_hash if signal is not None else "unavailable"
-                ),
+                # Pricing/EV uses the ensemble forecast, not an individual
+                # TSMOM signal. Record its identity explicitly so the weekly
+                # ledger cannot misattribute 40k ensemble rows to TSMOM or
+                # a per-run unresolved pseudo-family.
+                signal_id="ensemble_v1",
+                signal_version_hash=ensemble_by_horizon[ev.horizon_days].model_hash,
                 trial_id=_ROUTINE_TRIAL_ID,
                 prediction_time=prediction_time,
                 underlying=underlying_id,

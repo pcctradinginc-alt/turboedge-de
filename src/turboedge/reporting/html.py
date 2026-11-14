@@ -286,7 +286,8 @@ def render_weekly_html(report: TournamentReport) -> str:
 
     parts.append("<h2>Signalfamilien</h2>")
     header = (
-        "<tr><th>Familie</th><th>Quelle</th><th>protected</th><th>n</th><th>n_eff</th><th>Ø Rendite*</th>"
+        "<tr><th>Familie</th><th>Quelle</th><th>protected</th><th>n</th><th>n_eff</th>"
+        "<th>Ø Rendite*</th>"
         "<th>Sharpe</th><th>PSR</th><th>DSR</th><th>z</th><th>p</th><th>BH rejected</th>"
         "<th>Brier</th><th>ECE</th><th>Ø Regret</th></tr>"
     )

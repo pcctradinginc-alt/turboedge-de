@@ -279,15 +279,21 @@ def render_weekly_html(report: TournamentReport) -> str:
     )
     champion = _esc(report.champion_model_id) if report.champion_model_id else "keiner registriert"
     parts.append(f"<p>Champion-Modell: {champion}</p>")
+    parts.append("<p class='banner'><strong>Alpha validiert: NEIN.</strong> "
+                 "Keine Handelsfreigabe. Historische Richtungsrenditen sind "
+                 "keine Nettorenditen von Turbo-Produkten. "</p>" if False else 
+                 "<p class='banner'><strong>Alpha validiert: NEIN.</strong> "
+                 "Keine Handelsfreigabe; OOS-Basiswert-Renditen sind keine Turbo-Nettorenditen.</p>")
 
     parts.append("<h2>Signalfamilien</h2>")
     header = (
-        "<tr><th>Familie</th><th>protected</th><th>n</th><th>n_eff</th><th>Ø Rendite</th>"
+        "<tr><th>Familie</th><th>Quelle</th><th>protected</th><th>n</th><th>n_eff</th><th>Ø Rendite*</th>"
         "<th>Sharpe</th><th>PSR</th><th>DSR</th><th>z</th><th>p</th><th>BH rejected</th>"
         "<th>Brier</th><th>ECE</th><th>Ø Regret</th></tr>"
     )
     rows = "".join(
-        f"<tr><td>{_esc(f.signal_family)}</td><td>{'ja' if f.protected else ''}</td>"
+        f"<tr><td>{_esc(f.signal_family)}</td><td>{_esc(f.evidence_source)}</td>"
+        f"<td>{'ja' if f.protected else ''}</td>"
         f"<td>{f.n}</td><td>{f.n_effective:.1f}</td><td>{_pct(f.mean_return)}</td>"
         f"<td>{_num(f.sharpe, 2) if f.sharpe is not None else '-'}</td>"
         f"<td>{_num(f.psr, 3) if f.psr is not None else '-'}</td>"
@@ -301,7 +307,24 @@ def render_weekly_html(report: TournamentReport) -> str:
         for f in report.families
     )
     parts.append(f"<table>{header}{rows}</table>")
+    parts.append("<p class='meta'>* Forward-Ledger: Ask-zu-Bid/KO-Rendite ohne "
+                 "Fill-Nachweis oder Steuern. Walk-forward: historische Brutto-"
+                 "Richtungsrendite des Basiswerts, kein Turbo-Netto-EV. "
+                 "Kein Vergleich der beiden Quellen als gleiche Messung.</p>")
     for f in report.families:
+        if f.walkforward_cells:
+            cell_rows = "".join(
+                f"<tr><td>{_esc(c.model_id)}</td><td>{_esc(c.underlying_id)}</td>"
+                f"<td>{c.horizon_days}d</td><td>{c.n_folds}</td>"
+                f"<td>{c.n_effective:.1f}</td><td>{_pct(c.mean_gross_direction_return)}</td>"
+                f"<td>{_num(c.brier, 4)}</td><td>{_num(c.brier_null, 4)}</td></tr>"
+                for c in f.walkforward_cells
+            )
+            parts.append(f"<h4>{_esc(f.signal_family)}: historische OOS-Zellen (Brutto)</h4>")
+            parts.append("<table><tr><th>Modell</th><th>Basiswert</th>"
+                         "<th>Horizont</th><th>Folds</th><th>n_eff</th>"
+                         "<th>Brutto-Richtung</th><th>Brier</th><th>Null-Brier</th>"
+                         f"</tr>{cell_rows}</table>")
         if f.notes:
             note_str = "; ".join(_esc(n) for n in f.notes)
             parts.append(f"<p class='notes'>{_esc(f.signal_family)}: {note_str}</p>")
@@ -441,6 +464,8 @@ def _monthly_plain_text(report: MonthlyReport) -> str:
 def _weekly_plain_text(report: TournamentReport) -> str:
     lines = [
         "TurboEdge-DE Weekly Research Tournament",
+        "Validierter Alpha: NEIN | Handelsfreigabe: GESPERRT",
+        "Hinweis: Brutto-Richtungsrenditen aus Backtests sind KEINE Turbo-Nettorenditen.",
         f"Fenster: {report.window_start.isoformat()} - {report.window_end.isoformat()}",
         f"Champion: {report.champion_model_id or 'keiner registriert'}",
         "",
@@ -453,14 +478,22 @@ def _weekly_plain_text(report: TournamentReport) -> str:
         # opened in one scan on one day, worth ~1 independent observation.
         # Sharpe is per-trade and unannualized (see reporting/weekly.py).
         lines.append(
-            f"  {f.signal_family}{' [protected]' if f.protected else ''}: "
+            f"  {f.signal_family}{' [protected]' if f.protected else ''} "
+            f"[{f.evidence_source}]: "
             f"n={f.n} n_effective={_num(f.n_effective, 2)} "
             f"mean_return={_num(f.mean_return, 4)} sharpe_per_trade={_num(f.sharpe, 2)} "
             f"psr={_num(f.psr, 3)} dsr={_num(f.dsr, 3)} bh_rejected={f.bh_rejected}"
         )
+        for cell in f.walkforward_cells:
+            lines.append(
+                f"      HISTORICAL GROSS cell: model={cell.model_id} "
+                f"underlying={cell.underlying_id} horizon={cell.horizon_days}d "
+                f"folds={cell.n_folds} n_eff={cell.n_effective:.2f} "
+                f"gross_direction_return={cell.mean_gross_direction_return:.5f} "
+                f"brier={cell.brier:.4f} null_brier={_num(cell.brier_null, 4)}"
+            )
         for note in f.notes:
-            if "n_effective" in note:
-                lines.append(f"      {note}")
+            lines.append(f"      {note}")
     lines.append("")
     lines.append("Promotion-Vorschlaege:")
     if report.promotions:
@@ -478,6 +511,9 @@ def _weekly_plain_text(report: TournamentReport) -> str:
             lines.append(f"  {d.model_id}: " + "; ".join(d.reasons))
     else:
         lines.append("  keine")
+    lines.append("")
+    lines.append("Datenqualitaet und Freigabe:")
+    lines.extend(f"  {note}" for note in report.notes)
     lines.append("")
     lines.append(_FOOTER_TEXT)
     return "\n".join(lines)

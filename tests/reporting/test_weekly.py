@@ -642,17 +642,20 @@ def test_multiple_underlyings_and_horizons_are_not_silently_overwritten(store) -
         params={},
     )
     records = [
-        WalkforwardResultRecord(**base, underlying_id="DAX", horizon_days=5,
-                                mean_oos_return=0.002),
-        WalkforwardResultRecord(**base, underlying_id="NDX", horizon_days=5,
-                                mean_oos_return=-0.005),
-        WalkforwardResultRecord(**base, underlying_id="DAX", horizon_days=10,
-                                mean_oos_return=0.003),
+        WalkforwardResultRecord(**base, underlying_id="DAX", horizon_days=5, mean_oos_return=0.002),
+        WalkforwardResultRecord(
+            **base, underlying_id="NDX", horizon_days=5, mean_oos_return=-0.005
+        ),
+        WalkforwardResultRecord(
+            **base, underlying_id="DAX", horizon_days=10, mean_oos_return=0.003
+        ),
     ]
     store.append_walkforward_results(records)
     latest = store.latest_walkforward_results(signal_family="test_family")
     assert {(r.underlying_id, r.horizon_days) for r in latest} == {
-        ("DAX", 5), ("NDX", 5), ("DAX", 10)
+        ("DAX", 5),
+        ("NDX", 5),
+        ("DAX", 10),
     }
     report = run_research_tournament(store, as_of=_AS_OF)
     fam = next(f for f in report.families if f.signal_family == "test_family")
@@ -667,16 +670,15 @@ def test_multiple_underlyings_and_horizons_are_not_silently_overwritten(store) -
     assert "Brutto-Richtungsrenditen" in body
 
 
-def test_ambiguous_exit_excluded_from_economic_inference(
-    store, record_labeled
-) -> None:
+def test_ambiguous_exit_excluded_from_economic_inference(store, record_labeled) -> None:
     """Last-known discounted fallback is NOT an actual exit fill."""
     from turboedge.storage.schemas import ExitReason
 
     _register(store, "logit_v1", "hash-logit", "logit", ModelStatus.CHALLENGER)
     record_labeled(
-        entry_overrides=dict(model_hash="hash-logit", signal_id="logit_v1",
-                             exit_due=date(2026, 8, 18)),
+        entry_overrides=dict(
+            model_hash="hash-logit", signal_id="logit_v1", exit_due=date(2026, 8, 18)
+        ),
         label_overrides=dict(
             realized_selected_pnl=0.80,
             exit_reason=ExitReason.NO_EXIT_QUOTE_CONSERVATIVE,
@@ -694,11 +696,13 @@ def test_first_champion_is_compared_to_no_trade_without_auto_promotion(
     store, record_labeled
 ) -> None:
     """An absent champion must not invent a reference win rate."""
-    _register(store, "first_v1", "hash-first", "first", ModelStatus.CHALLENGER,
-              trial_id="TR-2026Q4-first")
+    _register(
+        store, "first_v1", "hash-first", "first", ModelStatus.CHALLENGER, trial_id="TR-2026Q4-first"
+    )
     record_labeled(
-        entry_overrides=dict(model_hash="hash-first", signal_id="first_v1",
-                             exit_due=date(2026, 8, 18)),
+        entry_overrides=dict(
+            model_hash="hash-first", signal_id="first_v1", exit_due=date(2026, 8, 18)
+        ),
         label_overrides=dict(realized_selected_pnl=0.02),
     )
     report = run_research_tournament(store, as_of=_AS_OF)
@@ -707,5 +711,4 @@ def test_first_champion_is_compared_to_no_trade_without_auto_promotion(
     assert suggestion.ev_improvement == pytest.approx(0.02)
     assert suggestion.winrate_improvement is None
     assert suggestion.passes_ladder is False
-    assert any("independent_confirmation_and_risk_gates: failed" in s
-               for s in suggestion.reasons)
+    assert any("independent_confirmation_and_risk_gates: failed" in s for s in suggestion.reasons)

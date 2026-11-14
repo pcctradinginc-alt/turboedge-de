@@ -14,7 +14,7 @@ from datetime import datetime
 import numpy as np
 
 from turboedge.backtest import metrics as bt_metrics
-from turboedge.backtest.purged_cv import PurgedWalkForwardSplit
+from turboedge.backtest.purged_cv import PurgedWalkForwardSplit, average_uniqueness
 from turboedge.backtest.significance import probabilistic_sharpe_ratio
 from turboedge.models.forecast import ForecastModel, HorizonForecast
 from turboedge.models.quantile import QUANTILE_LEVELS
@@ -48,6 +48,8 @@ class WalkForwardResult:
     pinball_by_quantile: dict[str, float]  # mean pinball loss per "q05".."q95" key
     coverage_90: float  # empirical coverage of the [q05, q95] interval (nominal 0.90)
     coverage_50: float  # empirical coverage of the [q25, q75] interval (nominal 0.50)
+    n_effective: float = 0.0  # overlap-adjusted OOS label count, NOT row count
+    mean_oos_signal_return: float = 0.0  # unconditional direction-strategy return, NOT turbo net EV
 
 
 def walk_forward_evaluate(
@@ -84,6 +86,7 @@ def walk_forward_evaluate(
         t1 = t0 + h
         oos: list[tuple[datetime, float, float]] = []
         oos_forecasts: list[tuple[datetime, HorizonForecast, float]] = []
+        oos_indices: list[int] = []  # source bar indices preserve label-overlap geometry
         n_folds = 0
         model_id = ""
 
@@ -100,6 +103,7 @@ def walk_forward_evaluate(
                 bar = sorted_bars[i]
                 realized_return = float(np.log(closes[i + h] / closes[i]))
                 forecast = model.predict(sorted_bars, bar.available_at, horizons=[h])[0]
+                oos_indices.append(i)
                 oos.append((bar.ts, forecast.p_up, realized_return))
                 oos_forecasts.append((bar.ts, forecast, realized_return))
 
@@ -120,6 +124,13 @@ def walk_forward_evaluate(
         mean_short = float(np.mean(-rets[short_mask])) if np.any(short_mask) else float("nan")
 
         signal_returns = np.where(long_mask, rets, np.where(short_mask, -rets, 0.0))
+        # Consecutive h-day OOS labels overlap: 1,247 forecasts are not 1,247
+        # independent outcomes. Use the SAME labelled bar-index intervals as
+        # purged-CV, not the raw prediction count (reported incorrectly before).
+        starts = np.asarray(oos_indices, dtype=np.int64)
+        weights = average_uniqueness(starts, starts + h)
+        n_effective = float(np.sum(weights))
+        mean_signal_return = float(np.average(signal_returns, weights=weights))
 
         # Phase D: score the full predictive distribution (CRPS/pinball/coverage)
         # against the same realized returns brier/log_loss/ece already use above --
@@ -153,8 +164,8 @@ def walk_forward_evaluate(
                 mean_oos_return_when_long=mean_long,
                 mean_oos_return_when_short=mean_short,
                 hit_rate=bt_metrics.hit_rate(signal_returns),
-                psr=probabilistic_sharpe_ratio(signal_returns)
-                if signal_returns.size >= 3
+                psr=probabilistic_sharpe_ratio(signal_returns, n_effective=n_effective)
+                if n_effective >= 3.0
                 else float("nan"),
                 oos_predictions=oos,
                 oos_forecasts=oos_forecasts,
@@ -162,6 +173,8 @@ def walk_forward_evaluate(
                 pinball_by_quantile=pinball_by_quantile,
                 coverage_90=coverage_90,
                 coverage_50=coverage_50,
+                n_effective=n_effective,
+                mean_oos_signal_return=mean_signal_return,
             )
         )
     return results

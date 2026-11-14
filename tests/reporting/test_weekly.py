@@ -701,7 +701,9 @@ def test_first_champion_is_compared_to_no_trade_without_auto_promotion(
     )
     record_labeled(
         entry_overrides=dict(
-            model_hash="hash-first", signal_id="first_v1", exit_due=date(2026, 8, 18),
+            model_hash="hash-first",
+            signal_id="first_v1",
+            exit_due=date(2026, 8, 18),
             category=Category.ACTIONABLE,
         ),
         label_overrides=dict(realized_selected_pnl=0.02),

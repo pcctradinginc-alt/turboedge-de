@@ -271,10 +271,7 @@ def _matched_economic_edge(
     if not shared:
         return None, None, 0.0
     start = min(key[3].date() for key in shared)
-    windows = [
-        ((key[3].date() - start).days, (key[4] - start).days)
-        for key in shared
-    ]
+    windows = [((key[3].date() - start).days, (key[4] - start).days) for key in shared]
     t0 = np.asarray([w[0] for w in windows], dtype=np.int64)
     t1 = np.asarray([w[1] for w in windows], dtype=np.int64)
     weights = average_uniqueness(t0, t1)
@@ -284,8 +281,7 @@ def _matched_economic_edge(
     )
     win_diff = np.asarray(
         [
-            float(challenger_events[key][0] > 0.0)
-            - float(champion_events[key][0] > 0.0)
+            float(challenger_events[key][0] > 0.0) - float(champion_events[key][0] > 0.0)
             for key in shared
         ],
         dtype=np.float64,
@@ -399,8 +395,7 @@ def run_research_tournament(
         family_weights = family_average_uniqueness_weights(pairs)
         n_eff = float(sum(family_weights.values()))
         reliable = (
-            n >= cfg.min_trades_for_comparison
-            and n_eff >= _MIN_EFFECTIVE_SAMPLE_FOR_SIGNIFICANCE
+            n >= cfg.min_trades_for_comparison and n_eff >= _MIN_EFFECTIVE_SAMPLE_FOR_SIGNIFICANCE
         )
         protected = family == cfg.protected_signal_family
         notes: list[str] = []
@@ -645,13 +640,10 @@ def run_research_tournament(
             and champion_result is not None
             and champion_result.evidence_source == "forward_ledger"
         ):
-            ev_improvement, winrate_improvement, paired_effective_sample = (
-                _matched_economic_edge(challenger_pairs, champion_pairs)
+            ev_improvement, winrate_improvement, paired_effective_sample = _matched_economic_edge(
+                challenger_pairs, champion_pairs
             )
-        elif (
-            champion_entry is None
-            and fam_result.evidence_source == "forward_ledger"
-        ):
+        elif champion_entry is None and fam_result.evidence_source == "forward_ledger":
             # First champion's reference is explicit NO_TRADE (return 0),
             # not a fictitious reference with a made-up hit rate.
             ev_improvement = fam_result.mean_return
@@ -677,8 +669,10 @@ def run_research_tournament(
             and ev_improvement >= cfg.ladder_min_ev_improvement,
             "winrate_improvement>=threshold": (
                 champion_entry is None  # first champion: no artificial champion winrate
-                or (winrate_improvement is not None
-                    and winrate_improvement >= cfg.ladder_min_winrate_improvement)
+                or (
+                    winrate_improvement is not None
+                    and winrate_improvement >= cfg.ladder_min_winrate_improvement
+                )
             ),
         }
         if backtest_only:
@@ -712,8 +706,11 @@ def run_research_tournament(
         if fam_result is None:
             continue
         demotion_reasons: list[str] = []
-        if (fam_result.reliable and fam_result.sharpe is not None
-                and fam_result.sharpe < cfg.demotion_sharpe_threshold):
+        if (
+            fam_result.reliable
+            and fam_result.sharpe is not None
+            and fam_result.sharpe < cfg.demotion_sharpe_threshold
+        ):
             demotion_reasons.append(
                 f"Sharpe {fam_result.sharpe:.3f} < {cfg.demotion_sharpe_threshold:.3f} "
                 "im Beobachtungsfenster (GOVERNANCE.md §6.2)"
@@ -727,8 +724,11 @@ def run_research_tournament(
                 f"mittleres Regret {fam_result.mean_regret:.4f} > "
                 f"{cfg.demotion_regret_threshold:.4f} (GOVERNANCE.md §6.2)"
             )
-        if (fam_result.reliable and fam_result.ece is not None
-                and fam_result.ece > cfg.demotion_ece_threshold):
+        if (
+            fam_result.reliable
+            and fam_result.ece is not None
+            and fam_result.ece > cfg.demotion_ece_threshold
+        ):
             demotion_reasons.append(
                 f"ECE {fam_result.ece:.4f} > {cfg.demotion_ece_threshold:.4f} (GOVERNANCE.md §6.2)"
             )
@@ -767,7 +767,8 @@ def run_research_tournament(
         if all(w > 0.0 for w in current_weights.values()):
             utilities = {
                 m.model_id: (results[m.signal_family].mean_return or 0.0)
-                if (m.signal_family in results
+                if (
+                    m.signal_family in results
                     and results[m.signal_family].evidence_source == "forward_ledger"
                     and results[m.signal_family].n_effective
                     >= _MIN_EFFECTIVE_SAMPLE_FOR_SIGNIFICANCE

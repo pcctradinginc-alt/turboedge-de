@@ -213,10 +213,15 @@ def test_no_state_save_is_loosened_to_always(workflow: dict[str, Any]) -> None:
         for step in spec.get("steps", []):
             uses = str(step.get("uses", ""))
             if "turboedge-state-pack" in uses:
-                assert step.get("if") == "success()", (
+                condition = str(step.get("if", ""))
+                assert condition.startswith("success()") and "always()" not in condition, (
                     f"{name}/{step.get('name')!r} must gate its state save on "
                     "success(), not always()"
                 )
+                if name == "research_capture":
+                    assert condition == "success() && steps.session.outputs.allowed == 'true'"
+                else:
+                    assert condition == "success()"
 
 
 def test_the_watchdog_monitors_exactly_the_jobs_that_move_data(

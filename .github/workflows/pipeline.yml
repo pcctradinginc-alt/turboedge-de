@@ -376,7 +376,7 @@ jobs:
           ]
           allowed = is_session(datetime.now(UTC))
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
-              output.write(f"allowed={str(allowed).lower()}\\n")
+              output.write(f"allowed={str(allowed).lower()}\n")
           if not allowed:
               Path("reports").mkdir(exist_ok=True)
               Path("reports/summary.json").write_text(

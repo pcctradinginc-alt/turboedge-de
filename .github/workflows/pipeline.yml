@@ -552,14 +552,9 @@ jobs:
       # state survive is not a looser condition -- it is that the two
       # fetch steps are `continue-on-error`, so a publisher being down
       # leaves the job successful and the save reachable.
-      - name: Pack and upload state
-        if: success()
-        uses: ./.github/actions/turboedge-state-pack
-        with:
-          state_key: ${{ secrets.TURBOEDGE_STATE_KEY }}
-          push_to_backend: "true"
-
-      # Count-only evidence for the independent External Data Health watchdog.
+      # Before the final state pack: no post-pack steps may invalidate the
+      # existing proven restore-chain invariant. Count-only evidence for
+      # the independent External Data Health watchdog.
       # Keep the stateful Pipeline green to make its saved state restorable:
       # the restore intentionally selects *successful* pipeline runs only.
       # A failed artifact upload is reported by the separate watchdog, not
@@ -573,6 +568,13 @@ jobs:
           path: reports/summary.json
           retention-days: 7
           if-no-files-found: warn
+
+      - name: Pack and upload state
+        if: success()
+        uses: ./.github/actions/turboedge-state-pack
+        with:
+          state_key: ${{ secrets.TURBOEDGE_STATE_KEY }}
+          push_to_backend: "true"
 
   # ---------------------------------------------------------------------
   # research -- Saturday, after the weekly tournament. One cycle of the

@@ -552,6 +552,23 @@ jobs:
       # state survive is not a looser condition -- it is that the two
       # fetch steps are `continue-on-error`, so a publisher being down
       # leaves the job successful and the save reachable.
+      # Before the final state pack: no post-pack steps may invalidate the
+      # existing proven restore-chain invariant. Count-only evidence for
+      # the independent External Data Health watchdog.
+      # Keep the stateful Pipeline green to make its saved state restorable:
+      # the restore intentionally selects *successful* pipeline runs only.
+      # A failed artifact upload is reported by the separate watchdog, not
+      # allowed to invalidate a successfully uploaded state.
+      - name: Publish external ingest health counts
+        if: success()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: turboedge-external-health-${{ github.run_id }}
+          path: reports/summary.json
+          retention-days: 7
+          if-no-files-found: warn
+
       - name: Pack and upload state
         if: success()
         uses: ./.github/actions/turboedge-state-pack

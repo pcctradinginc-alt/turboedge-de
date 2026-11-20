@@ -501,3 +501,20 @@ def test_one_unreadable_archive_does_not_abandon_the_rest(
     assert 'if [ "${unpacked}" -eq 0 ]' in run, (
         "the job must still fail when not one archive could be unpacked"
     )
+
+
+def test_external_health_cannot_invalidate_restorable_pipeline_state(
+    workflow: dict[str, Any],
+) -> None:
+    """Health alarms must live in a separate workflow from the state chain."""
+    steps = workflow["jobs"]["external"]["steps"]
+    pack_idx = next(i for i, step in enumerate(steps) if step["name"] == "Pack and upload state")
+    counters_idx = next(
+        i for i, step in enumerate(steps) if step["name"] == "Publish external ingest health counts"
+    )
+    assert counters_idx < pack_idx
+    assert steps[counters_idx]["continue-on-error"] is True
+    monitor = Path(".github/workflows/external-data-health.yml").read_text(encoding="utf-8")
+    assert "workflow_run:" in monitor
+    assert 'workflows: ["Pipeline"]' in monitor
+    assert "External Data Health" not in workflow["jobs"]

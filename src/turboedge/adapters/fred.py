@@ -98,8 +98,8 @@ import os
 from datetime import UTC, date, datetime, time
 from time import perf_counter
 from typing import Any, Final
-from zoneinfo import ZoneInfo
 from urllib.parse import urlencode
+from zoneinfo import ZoneInfo
 
 import structlog
 

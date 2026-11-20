@@ -559,6 +559,21 @@ jobs:
           state_key: ${{ secrets.TURBOEDGE_STATE_KEY }}
           push_to_backend: "true"
 
+      # Count-only evidence for the independent External Data Health watchdog.
+      # Keep the stateful Pipeline green to make its saved state restorable:
+      # the restore intentionally selects *successful* pipeline runs only.
+      # A failed artifact upload is reported by the separate watchdog, not
+      # allowed to invalidate a successfully uploaded state.
+      - name: Publish external ingest health counts
+        if: success()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: turboedge-external-health-${{ github.run_id }}
+          path: reports/summary.json
+          retention-days: 7
+          if-no-files-found: warn
+
   # ---------------------------------------------------------------------
   # research -- Saturday, after the weekly tournament. One cycle of the
   # autonomous research loop: re-score the queue, decide the next step,

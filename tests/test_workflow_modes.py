@@ -213,10 +213,15 @@ def test_no_state_save_is_loosened_to_always(workflow: dict[str, Any]) -> None:
         for step in spec.get("steps", []):
             uses = str(step.get("uses", ""))
             if "turboedge-state-pack" in uses:
-                assert step.get("if") == "success()", (
+                condition = str(step.get("if", ""))
+                assert condition.startswith("success()") and "always()" not in condition, (
                     f"{name}/{step.get('name')!r} must gate its state save on "
                     "success(), not always()"
                 )
+                if name == "research_capture":
+                    assert condition == "success() && steps.session.outputs.allowed == 'true'"
+                else:
+                    assert condition == "success()"
 
 
 def test_the_watchdog_monitors_exactly_the_jobs_that_move_data(
@@ -518,3 +523,20 @@ def test_external_health_cannot_invalidate_restorable_pipeline_state(
     assert "workflow_run:" in monitor
     assert 'workflows: ["Pipeline"]' in monitor
     assert "External Data Health" not in workflow["jobs"]
+
+
+def test_capture_checks_session_before_restore_and_packing(
+    workflow: dict[str, Any],
+) -> None:
+    """Delayed GitHub cron must not pack stale research state unnecessarily."""
+    steps = workflow["jobs"]["research_capture"]["steps"]
+    gate = next(i for i, step in enumerate(steps) if step["name"].startswith("Gate capture"))
+    restore = next(i for i, step in enumerate(steps) if step["name"] == "Restore TurboEdge state")
+    capture = next(i for i, step in enumerate(steps) if step["name"].startswith("Capture fresh"))
+    pack = next(i for i, step in enumerate(steps) if step["name"] == "Pack and upload state")
+    assert gate < restore < capture < pack
+    assert "is_research_market_session" in steps[gate]["run"]
+    for idx in (restore, capture, pack):
+        assert "steps.session.outputs.allowed == 'true'" in steps[idx]["if"]
+    for cron in ("30 8 * * 1-5", "30 11 * * 1-5", "30 14 * * 1-5"):
+        assert _mode_for_cron(_resolver_script(workflow), cron) == "research_capture"

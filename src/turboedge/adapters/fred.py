@@ -98,6 +98,7 @@ import os
 from datetime import UTC, date, datetime, time
 from time import perf_counter
 from typing import Any, Final
+from zoneinfo import ZoneInfo
 from urllib.parse import urlencode
 
 import structlog
@@ -120,6 +121,15 @@ _MISSING_VALUE_MARKER = "."
 #: is the literal default `observation_start` FRED's docs give (the series
 #: doesn't need to actually start then; it just means "no lower bound").
 _EARLIEST_REALTIME_START: Final = date(1776, 7, 4)
+# FRED explicitly permits this max sentinel even when a client is in a
+# timezone whose calendar date is ahead of the St. Louis API's 'today'.
+_FRED_REALTIME_MAX: Final = date(9999, 12, 31)
+_FRED_TIME_ZONE: Final = ZoneInfo("America/Chicago")
+
+
+def _fred_today() -> date:
+    """Use the upstream's local day, not UTC (which can already be tomorrow)."""
+    return datetime.now(_FRED_TIME_ZONE).date()
 
 #: Errors expected from a malformed/unexpected upstream payload; anything
 #: else is a programming error and should propagate rather than be swallowed.
@@ -445,11 +455,10 @@ class FredAdapter:
         `observation_start` only -- it can only return *more* periods than
         `since` onward would need, never fewer, satisfying the protocol's
         "never return less than since onwards"."""
-        today = datetime.now(UTC).date()
         return self._fetch(
             spec,
             realtime_start=_EARLIEST_REALTIME_START,
-            realtime_end=today,
+            realtime_end=_FRED_REALTIME_MAX,
             since=since,
             vintage_aware=True,
         )
@@ -459,7 +468,7 @@ class FredAdapter:
         revision history. Not the point-in-time-safe path; use `fetch()` or
         `fetch_vintages()` for research that must reconstruct history
         honestly. See module docstring "VINTAGE SEMANTICS"."""
-        today = datetime.now(UTC).date()
+        today = _fred_today()
         return self._fetch(
             spec, realtime_start=today, realtime_end=today, since=since, vintage_aware=False
         )

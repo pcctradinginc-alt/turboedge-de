@@ -503,7 +503,6 @@ def test_one_unreadable_archive_does_not_abandon_the_rest(
     )
 
 
-
 def test_external_health_cannot_invalidate_restorable_pipeline_state(
     workflow: dict[str, Any],
 ) -> None:

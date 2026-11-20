@@ -231,6 +231,19 @@ def _resolve_time_code(time_code: str, time_lookup: dict[str, dict[str, str]]) -
     return _parse_time_label(time_code)
 
 
+def _is_annual_or_fiscal_aggregate(time_code: str, time_lookup: dict[str, dict[str, str]]) -> bool:
+    """Classify from e-Stat's own period label, never an inferred raw-code date.
+
+    The CPI table includes monthly, calendar-year and fiscal-year observations
+    together. A monthly series must not import a year average as January, or
+    declare itself BLOCKED merely because a fiscal-year label cannot be
+    represented as a monthly observation.
+    """
+    entry = time_lookup.get(time_code)
+    name = entry.get("@name", "") if entry is not None else ""
+    return bool(re.fullmatch(r"\d{4}(?:年|年平均|年度)", name.strip()))
+
+
 def parse_stats_data(
     content: bytes,
     spec: SeriesSpec,
@@ -329,6 +342,11 @@ def parse_stats_data(
             continue
 
         time_code = row["@time"]
+        if spec.frequency == "monthly" and _is_annual_or_fiscal_aggregate(time_code, time_lookup):
+            # The monthly CPI table also publishes annual/fiscal aggregates.
+            # Preserve genuine monthly points without coercing aggregates
+            # into a fabricated January observation or a parse failure.
+            continue
         observation_day = _resolve_time_code(time_code, time_lookup)
         if observation_day is None:
             warnings.append(

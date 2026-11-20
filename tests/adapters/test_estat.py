@@ -81,6 +81,47 @@ def test_parse_resolves_time_class_name_to_calendar_date() -> None:
     assert days == {date(2024, 1, 1), date(2025, 1, 1)}
 
 
+def test_monthly_cpi_ignores_metadata_confirmed_year_and_fiscal_periods() -> None:
+    """The live CPI feed mixes monthly points with annual/fiscal aggregates."""
+    payload = json.loads(_fixture_bytes("population_by_prefecture_success"))
+    data = payload["GET_STATS_DATA"]["STATISTICAL_DATA"]
+    time_class = next(item for item in data["CLASS_INF"]["CLASS_OBJ"] if item["@id"] == "time")
+    time_class["CLASS"] = [
+        {"@code": "2025000000", "@name": "2025年", "@level": "1"},
+        {"@code": "2025100000", "@name": "2025年度", "@level": "1"},
+        {"@code": "2025000101", "@name": "2025年1月", "@level": "4"},
+    ]
+    data["DATA_INF"]["VALUE"] = [
+        {"@time": "2025000000", "$": "107.8"},
+        {"@time": "2025100000", "$": "108.3"},
+        {"@time": "2025000101", "$": "107.1"},
+    ]
+    result = parse_stats_data(
+        json.dumps(payload).encode("utf-8"),
+        _spec(frequency="monthly"),
+        retrieved_at=_RETRIEVED_AT,
+    )
+    assert result.warnings == ()
+    assert len(result.observations) == 1
+    assert result.observations[0].observation_time.date() == date(2025, 1, 1)
+    assert result.observations[0].value == pytest.approx(107.1)
+
+
+def test_unidentified_time_codes_remain_explicit_warnings() -> None:
+    """Do not guess an annual period just because a raw code resembles one."""
+    payload = json.loads(_fixture_bytes("population_by_prefecture_success"))
+    data = payload["GET_STATS_DATA"]["STATISTICAL_DATA"]
+    data["CLASS_INF"] = {}
+    data["DATA_INF"]["VALUE"] = [{"@time": "2025100000", "$": "108.3"}]
+    result = parse_stats_data(
+        json.dumps(payload).encode("utf-8"),
+        _spec(frequency="monthly"),
+        retrieved_at=_RETRIEVED_AT,
+    )
+    assert result.observations == []
+    assert any("could not resolve" in warning for warning in result.warnings)
+
+
 def test_parse_disambiguates_series_id_by_varying_non_time_dimension() -> None:
     """The fixture varies `@area` (Tokyo vs Osaka) in addition to `@time` --
     both must survive as distinct series, not collide under one series_id."""

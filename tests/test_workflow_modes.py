@@ -518,3 +518,20 @@ def test_external_health_cannot_invalidate_restorable_pipeline_state(
     assert "workflow_run:" in monitor
     assert 'workflows: ["Pipeline"]' in monitor
     assert "External Data Health" not in workflow["jobs"]
+
+
+def test_capture_checks_session_before_restore_and_packing(
+    workflow: dict[str, Any],
+) -> None:
+    """Delayed GitHub cron must not pack stale research state unnecessarily."""
+    steps = workflow["jobs"]["research_capture"]["steps"]
+    gate = next(i for i, step in enumerate(steps) if step["name"].startswith("Gate capture"))
+    restore = next(i for i, step in enumerate(steps) if step["name"] == "Restore TurboEdge state")
+    capture = next(i for i, step in enumerate(steps) if step["name"].startswith("Capture fresh"))
+    pack = next(i for i, step in enumerate(steps) if step["name"] == "Pack and upload state")
+    assert gate < restore < capture < pack
+    assert "is_research_market_session" in steps[gate]["run"]
+    for idx in (restore, capture, pack):
+        assert "steps.session.outputs.allowed == 'true'" in steps[idx]["if"]
+    for cron in ("30 8 * * 1-5", "30 11 * * 1-5", "30 14 * * 1-5"):
+        assert _mode_for_cron(_resolver_script(workflow), cron) == "research_capture"

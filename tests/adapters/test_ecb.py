@@ -115,6 +115,15 @@ def test_healthcheck_fail_on_http_error() -> None:
     result = adapter.healthcheck()
     assert result.ok is False
     assert result.status == HealthStatus.FAIL
+    assert "AdapterHttpError" in result.message
+
+
+@respx.mock
+def test_healthcheck_exposes_schema_problem_instead_of_generic_failure() -> None:
+    respx.get(SERIES_URL).mock(return_value=httpx.Response(200, json={"unexpected": True}))
+    result = _adapter().healthcheck()
+    assert result.status == HealthStatus.FAIL
+    assert "unexpected ECB SDMX-JSON structure" in result.message
 
 
 def test_metadata() -> None:

@@ -85,6 +85,10 @@ on:
     - cron: "10 18 * * 1-5" # scan
     # Mid-afternoon UTC stays within local German trading hours in CET/CEST.
     # Separate mode avoids slowing live scan and EOD label/learn.
+    # Three opportunities improve capture availability when GitHub cron
+    # starts hours late; market-time guard below prevents stale observations.
+    - cron: "30 8 * * 1-5" # research_capture
+    - cron: "30 11 * * 1-5" # research_capture
     - cron: "30 14 * * 1-5" # research_capture
     - cron: "40 21 * * 1-5" # eod
     # One hour after eod, deliberately its own run rather than another job
@@ -179,7 +183,7 @@ jobs:
               case "$SCHEDULE_CRON" in
                 "40 7 * * 1-5"|"10 10 * * 1-5"|"45 13 * * 1-5"|"50 15 * * 1-5"|"10 18 * * 1-5")
                   mode="scan" ;;
-                "30 14 * * 1-5") mode="research_capture" ;;
+                "30 8 * * 1-5"|"30 11 * * 1-5"|"30 14 * * 1-5") mode="research_capture" ;;
                 "40 21 * * 1-5") mode="eod" ;;
                 "40 22 * * 1-5") mode="external" ;;
                 "0 6 * * 6") mode="weekly" ;;
@@ -354,7 +358,38 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # On 18/19 Nov the 14:30 UTC capture cron ran after 22:00 UTC:
+      # CLOSED_SESSION, no new research quotes, yet each run downloaded and
+      # repacked hundreds of MB of state. Check actual market time FIRST.
+      - name: Gate capture on actual German market session
+        id: session
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import runpy
+          from datetime import UTC, datetime
+          from pathlib import Path
+
+          is_session = runpy.run_path("src/turboedge/research/market_session.py")[
+              "is_research_market_session"
+          ]
+          allowed = is_session(datetime.now(UTC))
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"allowed={str(allowed).lower()}\\n")
+          if not allowed:
+              Path("reports").mkdir(exist_ok=True)
+              Path("reports/summary.json").write_text(
+                  json.dumps(
+                      {"mode": "research_capture", "counts": {"closed_session_skipped": 1}}
+                  ),
+                  encoding="utf-8",
+              )
+              print("Research capture: CLOSED_SESSION (no state restore, fetch or pack)")
+          PY
+
       - name: Restore TurboEdge state
+        if: steps.session.outputs.allowed == 'true'
         id: state
         uses: ./.github/actions/turboedge-state
         with:
@@ -364,6 +399,7 @@ jobs:
           github_token: ${{ github.token }}
 
       - name: Capture fresh matched issuer quotes and audit archived PIT tape
+        if: steps.session.outputs.allowed == 'true'
         env:
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
@@ -379,7 +415,7 @@ jobs:
           state_note: ${{ steps.state.outputs.state_note }}
 
       - name: Pack and upload state
-        if: success()
+        if: success() && steps.session.outputs.allowed == 'true'
         uses: ./.github/actions/turboedge-state-pack
         with:
           state_key: ${{ secrets.TURBOEDGE_STATE_KEY }}

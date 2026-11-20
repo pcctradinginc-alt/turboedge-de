@@ -512,7 +512,7 @@ def test_external_health_cannot_invalidate_restorable_pipeline_state(
     counters_idx = next(
         i for i, step in enumerate(steps) if step["name"] == "Publish external ingest health counts"
     )
-    assert pack_idx < counters_idx
+    assert counters_idx < pack_idx
     assert steps[counters_idx]["continue-on-error"] is True
     monitor = Path(".github/workflows/external-data-health.yml").read_text(encoding="utf-8")
     assert "workflow_run:" in monitor

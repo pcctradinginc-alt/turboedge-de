@@ -6,7 +6,9 @@ from turboedge.monitoring.external_health import evaluate_report
 
 
 def test_clean_ingest_is_healthy() -> None:
-    healthy, _ = evaluate_report({"mode": "external_ingest", "counts": {"series": 12, "failures": 0}})
+    healthy, _ = evaluate_report(
+        {"mode": "external_ingest", "counts": {"series": 12, "failures": 0}}
+    )
     assert healthy
 
 
@@ -31,7 +33,10 @@ def test_missing_counts_and_invalid_shapes_fail_closed() -> None:
 
 def test_intentionally_skipped_optional_sources_are_not_ingest_failures() -> None:
     healthy, _ = evaluate_report(
-        {"mode": "external_ingest", "counts": {"series": 0, "failures": 0},
-         "skipped": {"entsoe": "AUTH_MISSING"}}
+        {
+            "mode": "external_ingest",
+            "counts": {"series": 0, "failures": 0},
+            "skipped": {"entsoe": "AUTH_MISSING"},
+        }
     )
     assert healthy

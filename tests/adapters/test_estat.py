@@ -85,9 +85,7 @@ def test_monthly_cpi_ignores_metadata_confirmed_year_and_fiscal_periods() -> Non
     """The live CPI feed mixes monthly points with annual/fiscal aggregates."""
     payload = json.loads(_fixture_bytes("population_by_prefecture_success"))
     data = payload["GET_STATS_DATA"]["STATISTICAL_DATA"]
-    time_class = next(
-        item for item in data["CLASS_INF"]["CLASS_OBJ"] if item["@id"] == "time"
-    )
+    time_class = next(item for item in data["CLASS_INF"]["CLASS_OBJ"] if item["@id"] == "time")
     time_class["CLASS"] = [
         {"@code": "2025000000", "@name": "2025年", "@level": "1"},
         {"@code": "2025100000", "@name": "2025年度", "@level": "1"},

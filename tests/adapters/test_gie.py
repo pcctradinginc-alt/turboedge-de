@@ -212,18 +212,24 @@ def test_parse_alsi_inventory() -> None:
 def test_parse_alsi_live_structured_inventory_gwh() -> None:
     """Live ALSI may return both LNG volume and energy under inventory."""
     spec = _spec(
-        source="alsi", series_id="ALSI.DE_LNG_INVENTORY", country="DE",
-        field="inventory", unit="gwh"
+        source="alsi",
+        series_id="ALSI.DE_LNG_INVENTORY",
+        country="DE",
+        field="inventory",
+        unit="gwh",
     )
-    payload = json.dumps({
-        "data": [{
-            "code": "DE", "gasDayStart": "2026-11-18",
-            "inventory": {"gwh": "1463.68", "lng": "222.09"},
-        }]
-    }).encode("utf-8")
-    result = parse_gie_payload(
-        payload, spec, retrieved_at=_RETRIEVED_AT, source_id="alsi"
-    )
+    payload = json.dumps(
+        {
+            "data": [
+                {
+                    "code": "DE",
+                    "gasDayStart": "2026-11-18",
+                    "inventory": {"gwh": "1463.68", "lng": "222.09"},
+                }
+            ]
+        }
+    ).encode("utf-8")
+    result = parse_gie_payload(payload, spec, retrieved_at=_RETRIEVED_AT, source_id="alsi")
     assert result.warnings == ()
     assert len(result.observations) == 1
     assert result.observations[0].value == pytest.approx(1463.68)
@@ -231,18 +237,24 @@ def test_parse_alsi_live_structured_inventory_gwh() -> None:
 
 def test_parse_alsi_structured_inventory_unknown_unit_fails_closed() -> None:
     spec = _spec(
-        source="alsi", series_id="ALSI.DE_LNG_INVENTORY", country="DE",
-        field="inventory", unit="km3"
+        source="alsi",
+        series_id="ALSI.DE_LNG_INVENTORY",
+        country="DE",
+        field="inventory",
+        unit="km3",
     )
-    payload = json.dumps({
-        "data": [{
-            "code": "DE", "gasDayStart": "2026-11-18",
-            "inventory": {"gwh": "1463.68", "lng": "222.09"},
-        }]
-    }).encode("utf-8")
-    result = parse_gie_payload(
-        payload, spec, retrieved_at=_RETRIEVED_AT, source_id="alsi"
-    )
+    payload = json.dumps(
+        {
+            "data": [
+                {
+                    "code": "DE",
+                    "gasDayStart": "2026-11-18",
+                    "inventory": {"gwh": "1463.68", "lng": "222.09"},
+                }
+            ]
+        }
+    ).encode("utf-8")
+    result = parse_gie_payload(payload, spec, retrieved_at=_RETRIEVED_AT, source_id="alsi")
     assert result.observations == []
     assert any("unparseable value" in warning for warning in result.warnings)
 

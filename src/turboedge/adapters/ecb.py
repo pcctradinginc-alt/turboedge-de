@@ -155,15 +155,20 @@ class EcbEstrAdapter:
         checked_at = datetime.now(UTC)
         start = time.monotonic()
         try:
-            latest = self.fetch_latest()
+            # Unlike the price path's intentionally silent fallback,
+            # monitoring must retain the *reason* a source is unavailable.
+            # The previous healthcheck called fetch_latest(), which converted
+            # all network/schema errors to None and emitted a generic FAIL.
+            observations = self.normalize(self.fetch(last_n_observations=5))
+            latest = max(observations, key=lambda obs: obs.period) if observations else None
         except Exception as exc:  # defensive: healthcheck must never raise
             return HealthCheckResult(
                 source=_SOURCE_NAME,
                 status=HealthStatus.FAIL,
                 ok=False,
-                latency_ms=None,
+                latency_ms=(time.monotonic() - start) * 1000,
                 checked_at=checked_at,
-                message=f"unexpected error: {exc}",
+                message=f"EST fetch/parse failed ({type(exc).__name__}): {str(exc)[:180]}",
             )
         latency_ms = (time.monotonic() - start) * 1000
         if latest is None:

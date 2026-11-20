@@ -1,0 +1,49 @@
+# This workflow is intentionally separate from the state-changing Pipeline.
+# A failed health verdict must NEVER turn a packed, valid state artifact into
+# an unreachable one (the state restore selects successful Pipeline runs).
+name: External Data Health
+
+on:
+  workflow_run:
+    workflows: ["Pipeline"]
+    types: [completed]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  verify:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout the verified monitor
+        uses: actions/checkout@v4
+
+      - name: Check published external ingest results
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PIPELINE_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          # Most Pipeline runs are scan, EOD, weekly, etc.; judge only
+          # completed external jobs. The existing Health Watch handles
+          # failures/cancellations of entire Pipeline jobs.
+          external_count=$(gh api "repos/${GH_REPO}/actions/runs/${PIPELINE_RUN_ID}/jobs" \
+            --jq '[.jobs[] | select(.name == "external" and .conclusion == "success")] | length')
+          if [[ "${external_count}" == "0" ]]; then
+            echo "No successful external job in this run; job health is handled elsewhere."
+            exit 0
+          fi
+          mkdir -p "${RUNNER_TEMP}/external-ingest-health"
+          # If the counts were not uploaded, that is also an alarm: do not
+          # silently turn missing measurements into a healthy outcome.
+          gh run download "${PIPELINE_RUN_ID}" \
+            --repo "${GH_REPO}" \
+            --name "turboedge-external-health-${PIPELINE_RUN_ID}" \
+            --dir "${RUNNER_TEMP}/external-ingest-health"
+          python3 src/turboedge/monitoring/external_health.py \
+            "${RUNNER_TEMP}/external-ingest-health/summary.json" \
+            | tee -a "${GITHUB_STEP_SUMMARY}"

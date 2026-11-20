@@ -43,7 +43,12 @@ jobs:
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           TURBOEDGE_EMAIL_TO: ${{ secrets.TURBOEDGE_EMAIL_TO }}
-        run: uv run turboedge --log-format json sources health --json-out reports/source_health.json --email-on-fail
+        # This job is read-only and has no state artifact to protect. A critical
+        # source FAIL must be visible as a failed GitHub check, after the
+        # CLI attempts the existing deduplicated failure notification.
+        run: >-
+          uv run turboedge --log-format json sources health
+          --json-out reports/source_health.json --email-on-fail --fail-on-error
 
       # No report artifact upload (public repo -- see pipeline.yml's header
       # comment): the JSON written above stays local to the runner and is

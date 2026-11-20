@@ -392,6 +392,14 @@ def parse_gie_payload(
             skipped_no_value += 1
             continue
 
+        # ALSI's live country-level inventory response may be a unit-tagged
+        # object, e.g. {"gwh": "1463.68", "lng": "222.09"}, rather than
+        # the scalar recorded in older fixtures. Select only the explicitly
+        # configured GWh component. Never coerce the LNG volume into energy
+        # or silently pick a number from an unfamiliar response shape.
+        if source_id == "alsi" and field == "inventory" and isinstance(raw_value, dict):
+            raw_value = raw_value.get("gwh") if spec.unit.lower() == "gwh" else None
+
         value = _parse_number(raw_value)
         if value is None:
             warnings.append(

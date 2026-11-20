@@ -315,6 +315,7 @@ def test_fetch_sends_wide_realtime_window_and_api_key_to_server(
     assert sent.url.params["api_key"] == "test-key-should-never-be-archived"
     assert sent.url.params["series_id"] == "INDPRO"
     assert sent.url.params["realtime_start"] == "1776-07-04"
+    assert sent.url.params["realtime_end"] == "9999-12-31"
     assert sent.url.params["file_type"] == "json"
     assert isinstance(payload, FetchedPayload)
     assert payload.source == "fred"
@@ -335,6 +336,27 @@ def test_fetch_current_uses_narrow_realtime_window(monkeypatch: pytest.MonkeyPat
     sent = respx.calls.last.request
     assert sent.url.params["realtime_start"] == sent.url.params["realtime_end"]
     assert payload.dataset == "INDPRO:current"
+
+
+def test_us_market_date_is_not_prematurely_advanced_by_utc() -> None:
+    """2026-11-20 03:44 UTC was still Nov 19 in St. Louis (live 400)."""
+    utc_instant = datetime(2026, 11, 20, 3, 44, tzinfo=UTC)
+    assert utc_instant.date() == date(2026, 11, 20)
+    assert utc_instant.astimezone(fred._FRED_TIME_ZONE).date() == date(2026, 11, 19)
+
+
+@respx.mock
+def test_fetch_current_uses_upstream_local_date(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FRED_API_KEY", "test-key")
+    monkeypatch.setattr(fred, "_fred_today", lambda: date(2026, 11, 19))
+    respx.get(_BASE_URL).mock(
+        return_value=httpx.Response(200, content=_fixture_bytes("indpro_current"))
+    )
+    FredAdapter(HttpClient(user_agent="turboedge-test/1.0")).fetch_current(_spec())
+
+    sent = respx.calls.last.request
+    assert sent.url.params["realtime_start"] == "2026-11-19"
+    assert sent.url.params["realtime_end"] == "2026-11-19"
 
 
 @respx.mock

@@ -131,6 +131,7 @@ def _fred_today() -> date:
     """Use the upstream's local day, not UTC (which can already be tomorrow)."""
     return datetime.now(_FRED_TIME_ZONE).date()
 
+
 #: Errors expected from a malformed/unexpected upstream payload; anything
 #: else is a programming error and should propagate rather than be swallowed.
 _PARSE_ERROR_TYPES = (ValueError, KeyError, TypeError, IndexError)

@@ -7,8 +7,6 @@ import pytest
 from turboedge.monitoring.pipeline_wakeup import should_dispatch_scan
 
 
-
-
 def _now(iso: str) -> datetime:
     return datetime.fromisoformat(iso.replace("Z", "+00:00"))
 

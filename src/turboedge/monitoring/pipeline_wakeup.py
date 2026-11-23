@@ -8,13 +8,12 @@ from __future__ import annotations
 
 import argparse
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 
 BERLIN = ZoneInfo("Europe/Berlin")
-UTC = timezone.utc
 
 
 def should_dispatch_scan(

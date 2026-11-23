@@ -1,13 +1,12 @@
 """Protect the wake-up guard against redundant or off-hours scans."""
 
-from datetime import datetime, timezone
+from datetime import datetime
 
 import pytest
 
 from turboedge.monitoring.pipeline_wakeup import should_dispatch_scan
 
 
-UTC = timezone.utc
 
 
 def _now(iso: str) -> datetime:

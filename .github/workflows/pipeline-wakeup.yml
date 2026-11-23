@@ -1,0 +1,140 @@
+# Independent fail-closed wake-up path for silent pipeline cron outages.
+# No state reset, no overnight synthetic scan, no changes to trading logic.
+name: Pipeline Wakeup
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/pipeline-wakeup.yml"
+  workflow_run:
+    workflows: ["Source Health Check"]
+    types: [completed]
+  schedule:
+    # Independent weekday checkpoints; UTC, market-hours gate is in Python.
+    - cron: "25 8 * * 1-5"
+    - cron: "35 13 * * 1-5"
+    - cron: "20 15 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: turboedge-pipeline-wakeup
+  cancel-in-progress: false
+
+jobs:
+  wakeup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Verify Pipeline is enabled
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          state=$(gh api "repos/$GH_REPO/actions/workflows/pipeline.yml" --jq '.state')
+          echo "Pipeline workflow state: $state"
+          if [[ "$state" != "active" ]]; then
+            if [[ "$state" != "disabled_manually" && "$state" != "disabled_inactivity" ]]; then
+              echo "::error::Unexpected Pipeline workflow state: $state"
+              exit 1
+            fi
+            gh workflow enable pipeline.yml
+            state=$(gh api "repos/$GH_REPO/actions/workflows/pipeline.yml" --jq '.state')
+            [[ "$state" == "active" ]] || {
+              echo "::error::Pipeline could not be re-enabled (state: $state)"
+              exit 1
+            }
+            echo "::notice::Pipeline workflow re-enabled"
+          fi
+
+      - name: Recover one missing in-session scan when safe
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh run list --workflow pipeline.yml --limit 50             --json databaseId,createdAt,status,conclusion > recent-pipeline-runs.json
+          decision=$(python3 src/turboedge/monitoring/pipeline_wakeup.py             --runs-file recent-pipeline-runs.json)
+          echo "Conservative wake-up decision: $decision"
+          if [[ "$decision" == "dispatch" ]]; then
+            # No explicit fresh-state option: the pipeline's normal restore
+            # refuses an empty replacement if it cannot load old history.
+            gh workflow run pipeline.yml --ref main               -f mode=scan -f allow_fresh_state=false
+            echo "::notice::Queued fallback scan with allow_fresh_state=false"
+          elif [[ "$decision" != "skip" ]]; then
+            echo "::error::Unknown wake-up decision"
+            exit 1
+          fi
+          {
+            echo "## Pipeline wake-up"
+            echo "- Pipeline workflow enabled and API-accessible"
+            echo "- Fallback scan decision: $decision"
+            echo "- No state reset was permitted"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  state-audit:
+    # Bootstrap once on merge; repeat only on explicit manual dispatch.
+    # Never touches the live state chain or uploads a new state artifact.
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    needs: wakeup
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read
+    concurrency:
+      group: turboedge-state
+      cancel-in-progress: false
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Restore newest encrypted state read-only
+        uses: ./.github/actions/turboedge-state
+        with:
+          state_key: ${{ secrets.TURBOEDGE_STATE_KEY }}
+          mode: audit
+          allow_fresh_state: "false"
+          github_token: ${{ github.token }}
+
+      - name: Check restored database and learning-history tables
+        run: |
+          set -euo pipefail
+          test -s state/turboedge.duckdb || {
+            echo "::error::Restored DuckDB file is absent or empty"
+            exit 1
+          }
+          uv run turboedge --state-dir ./state db info
+          uv run python - <<'PY'
+          from pathlib import Path
+
+          import duckdb
+
+          path = Path("state/turboedge.duckdb")
+          connection = duckdb.connect(str(path), read_only=True)
+          tables = [
+              row[0] for row in connection.execute(
+                  "SELECT table_name FROM information_schema.tables "
+                  "WHERE table_schema = 'main' ORDER BY table_name"
+              ).fetchall()
+          ]
+          if not tables:
+              raise SystemExit("Restored database contains no tables")
+          print(f"Restored database opens read-only: {len(tables)} tables")
+          tokens = ("trial", "ledger", "learn", "model", "posterior", "snapshot")
+          tracked = [table for table in tables if any(token in table.lower() for token in tokens)]
+          for table in tracked:
+              escaped = table.replace('"', '""')
+              count = connection.execute(f'SELECT COUNT(*) FROM "{escaped}"').fetchone()[0]
+              print(f"{table}: {count} rows")
+          print(f"Learning-history candidate tables: {len(tracked)}")
+          print("State inspected read-only; no state artifact was overwritten.")
+          PY

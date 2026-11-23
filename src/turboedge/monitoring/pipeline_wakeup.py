@@ -12,7 +12,6 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-
 BERLIN = ZoneInfo("Europe/Berlin")
 
 

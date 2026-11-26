@@ -48,8 +48,17 @@ _ZSCORE_WINDOW = 3 * _WEEKS_PER_YEAR
 _PERCENTILE_WINDOW = 5 * _WEEKS_PER_YEAR
 
 
-def _history(observations: Sequence[ExternalObservation], series_id: str) -> list[float]:
-    return [o.value for o in observations if o.series_id == series_id]
+def _history(
+    observations: Sequence[ExternalObservation], series_id: str
+) -> dict[datetime, float]:
+    latest: dict[datetime, ExternalObservation] = {}
+    for obs in observations:
+        if obs.series_id != series_id:
+            continue
+        previous = latest.get(obs.observation_time)
+        if previous is None or obs.available_at > previous.available_at:
+            latest[obs.observation_time] = obs
+    return {moment: obs.value for moment, obs in latest.items()}
 
 
 def _zscore(history: Sequence[float], window: int) -> float | None:
@@ -98,13 +107,9 @@ def build_cftc_features(
 
     for group in GROUPS:
         net = _history(available, f"{prefix}.{group.upper()}_NET")
-        # Share of open interest, aligned pairwise: both series come from the
-        # same rows, so a length mismatch means one leg was skipped for a
-        # week and the pairing would silently shift.
-        n = min(len(net), len(oi))
-        share = [
-            net[len(net) - n + i] / oi[len(oi) - n + i] for i in range(n) if oi[len(oi) - n + i] > 0
-        ]
+        # Join by observation time, never by array position.
+        moments = sorted(net.keys() & oi.keys())
+        share = [net[moment] / oi[moment] for moment in moments if oi[moment] > 0]
         base = f"cftc_{prefix.lower()}_{group}"
         out[f"{base}_share_of_oi"] = float(share[-1]) if share else None
         out[f"{base}_zscore_3y"] = _zscore(share, _ZSCORE_WINDOW)

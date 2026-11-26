@@ -105,3 +105,35 @@ def test_future_quote_cannot_change_selection_when_entry_quote_was_stale() -> No
         }
     )
     assert probe(rows).candidate_days == 0
+
+
+def test_knockout_after_valid_exit_does_not_change_outcome() -> None:
+    rows = sample(days=1)
+    rows.append(
+        quote(
+            rows[1].isin,
+            rows[1].issuer,
+            _START + timedelta(days=1, hours=12),
+            bid=0.0,
+            knocked_out=True,
+        )
+    )
+    result = probe(rows)
+    assert result.complete_days == 1
+    assert result.mean_net_return is not None and result.mean_net_return > 0
+
+
+def test_knockout_before_valid_exit_is_terminal() -> None:
+    rows = sample(days=1)
+    rows.append(
+        quote(
+            rows[1].isin,
+            rows[1].issuer,
+            _START + timedelta(hours=12),
+            bid=0.0,
+            knocked_out=True,
+        )
+    )
+    result = probe(rows)
+    assert result.complete_days == 1
+    assert result.mean_net_return is not None and result.mean_net_return < -1.0

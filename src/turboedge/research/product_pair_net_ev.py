@@ -142,15 +142,16 @@ def probe(snapshots: list[ProductSnapshot]) -> NetEVProbe:
         assert entry.ask is not None
         open_at = entry.retrieved_at
         later = [s for s in by_isin[entry.isin] if open_at < s.retrieved_at <= open_at + EXIT_UNTIL]
-        # A documented KO takes precedence over any later apparent quote.
-        if any(s.knocked_out for s in later):
-            return -1.0 - EXECUTION_BUFFER_BPS / 10_000.0
-        exits = [s for s in later if s.retrieved_at >= open_at + EXIT_AFTER and _fresh_exit(s)]
-        if not exits:
-            return None
-        bid = exits[0].bid
-        assert bid is not None
-        return float(bid / entry.ask - 1 - EXECUTION_BUFFER_BPS / 10_000.0)
+        # Stop at the first terminal event; later observations cannot
+        # change a position already exited at a valid bid.
+        for s in later:
+            if s.knocked_out and s.available_at <= s.retrieved_at:
+                return -1.0 - EXECUTION_BUFFER_BPS / 10_000.0
+            if s.retrieved_at >= open_at + EXIT_AFTER and _fresh_exit(s):
+                bid = s.bid
+                assert bid is not None
+                return float(bid / entry.ask - 1 - EXECUTION_BUFFER_BPS / 10_000.0)
+        return None
 
     values: list[float] = []
     differences: list[float] = []

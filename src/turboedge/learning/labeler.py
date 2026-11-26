@@ -36,6 +36,7 @@ from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from turboedge.research.market_session import is_conservative_market_day
 from turboedge.storage.duckdb import Store
 from turboedge.storage.schemas import (
     Direction,
@@ -58,10 +59,7 @@ class LabelerConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    # "letzter Snapshot <= exit_due + 2 Handelstage" (Build Contract v2 W6
-    # requirement 3). Weekend-only trading-day approximation (Saturday/
-    # Sunday skipped) -- this module has no exchange holiday calendar, so a
-    # public holiday is not skipped; documented assumption.
+    # Grace period uses the existing conservative German market calendar.
     exit_quote_grace_trading_days: int = Field(default=2, ge=0)
 
 
@@ -101,18 +99,13 @@ class ExitResolution:
     mae: float | None
 
 
-def _is_weekend(d: date) -> bool:
-    return d.weekday() >= 5  # 5=Sat, 6=Sun
-
-
 def _add_trading_days(d: date, n: int) -> date:
-    """``d`` plus ``n`` trading days, skipping Saturdays/Sundays only (no
-    exchange holiday calendar available here -- documented approximation)."""
+    """Add days using the conservative German market calendar."""
     current = d
     remaining = n
     while remaining > 0:
         current += timedelta(days=1)
-        if not _is_weekend(current):
+        if is_conservative_market_day(current):
             remaining -= 1
     return current
 

@@ -624,7 +624,7 @@ class BnpParibasTurboAdapter:
         self._partial_universe: dict[str, tuple[int, int]] = {}
         self._index_cache: dict[str, int] | None = None
 
-@property
+    @property
     def partial_universe(self) -> dict[str, tuple[int, int]]:
         """Coverage shortfalls measured by the last fetch, without new requests."""
         return dict(self._partial_universe)
@@ -1291,7 +1291,7 @@ class CitiFirstTurboAdapter:
         self.last_errors: list[IssuerRowError] = []
         self._partial_universe: dict[str, tuple[int, int]] = {}
 
-@property
+    @property
     def partial_universe(self) -> dict[str, tuple[int, int]]:
         """Coverage shortfalls measured by the last fetch, without new requests."""
         return dict(self._partial_universe)

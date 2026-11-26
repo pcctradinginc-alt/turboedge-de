@@ -75,7 +75,7 @@ def _valid_quote(s: ProductSnapshot) -> bool:
         return False
     if (s.retrieved_at - ref).total_seconds() > MAX_QUOTE_AGE_S:
         return False
-    return s.ask is not None and s.bid is not None and 0 <= s.bid <= s.ask
+    return s.ask is not None and s.ask > 0 and s.bid is not None and 0 <= s.bid <= s.ask
 
 
 def _fresh_exit(s: ProductSnapshot) -> bool:
@@ -120,6 +120,9 @@ def probe(snapshots: list[ProductSnapshot]) -> NetEVProbe:
             by_minute[(s.isin, minute)].append(s)
     for history in by_isin.values():
         history.sort(key=lambda s: (s.retrieved_at, s.observation_time))
+
+    for options in by_minute.values():
+        options.sort(key=lambda s: (s.retrieved_at, s.observation_time, s.raw_hash))
 
     # Select the FIRST eligible matched pair per day, irrespective of whether
     # either product later survives. This rules out ex-post survivor selection.

@@ -4,7 +4,7 @@ from datetime import UTC, date, datetime
 
 import pytest
 
-from turboedge.learning.labeler import label_due_entries
+from turboedge.learning.labeler import _add_trading_days, label_due_entries
 from turboedge.learning.ledger import ForwardLedger
 from turboedge.storage.schemas import Direction, ExitReason, LedgerEntryStatus, ProductType
 
@@ -356,3 +356,8 @@ def test_later_knockout_does_not_override_horizon_exit(
     assert label is not None
     assert label.exit_reason == ExitReason.HORIZON
     assert label.exit_bid == 5.10
+
+
+def test_grace_period_skips_good_friday_and_easter_monday() -> None:
+    assert _add_trading_days(date(2026, 4, 2), 1) == date(2026, 4, 7)
+    assert _add_trading_days(date(2026, 4, 2), 2) == date(2026, 4, 8)

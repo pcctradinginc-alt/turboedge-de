@@ -26,6 +26,7 @@ from turboedge.storage.schemas import Direction, ProductSnapshot
 
 MIN_INDEPENDENT_DAYS = 30
 EXECUTION_BUFFER_BPS = 10.0
+COST_SCENARIOS_BPS = (0, 10, 25, 50)
 MIN_NET_EDGE = 0.001  # 10 bp, existing promotion ladder; not a promotion
 MAX_QUOTE_AGE_S = 300
 MIN_QUALITY = 0.8
@@ -44,6 +45,8 @@ class NetEVProbe:
     lower_ci_net_return: float | None
     mean_excess_over_naive: float | None
     lower_ci_excess_over_naive: float | None
+    cost_sensitivity: dict[int, float | None]
+    cost_sensitivity_lower_bound: dict[int, float | None]
 
     @property
     def verdict(self) -> str:
@@ -177,21 +180,33 @@ def probe(snapshots: list[ProductSnapshot]) -> NetEVProbe:
                 s.isin,
             ),
         )
-        selected_return = observed_return(selected)
-        naive_return = observed_return(naive)
-        if selected_return is None or naive_return is None:
+        left_return = observed_return(left)
+        right_return = observed_return(right)
+        if left_return is None or right_return is None:
             missing += 1
             continue
+        selected_return = left_return if selected is left else right_return
+        naive_return = left_return if naive is left else right_return
         values.append(selected_return)
         differences.append(selected_return - naive_return)
+    mean = float(np.mean(values)) if values else None
+    lower = _lower_bound(values)
     return NetEVProbe(
         candidate_days=len(entries),
         complete_days=len(values),
         missing_exit_days=missing,
-        mean_net_return=float(np.mean(values)) if values else None,
-        lower_ci_net_return=_lower_bound(values),
+        mean_net_return=mean,
+        lower_ci_net_return=lower,
         mean_excess_over_naive=float(np.mean(differences)) if differences else None,
         lower_ci_excess_over_naive=_lower_bound(differences),
+        cost_sensitivity={
+            bps: None if mean is None else mean + (EXECUTION_BUFFER_BPS - bps) / 10_000
+            for bps in COST_SCENARIOS_BPS
+        },
+        cost_sensitivity_lower_bound={
+            bps: None if lower is None else lower + (EXECUTION_BUFFER_BPS - bps) / 10_000
+            for bps in COST_SCENARIOS_BPS
+        },
     )
 
 

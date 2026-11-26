@@ -52,3 +52,15 @@ independent sessions, issuer/liquidity plausibility, and a formal cost/risk
 approval. The only allowed automatic output is a research report.
 
 Run manually: `uv run turboedge research product-pair-net-ev`
+
+## Audit amendment (2026-11-26; exploratory only)
+
+Both matched products must have an observed terminal outcome, even when the
+spread rule and alphabetical rule select the same product. The primary
+10 bp execution buffer and verdict remain unchanged. Report mean and lower
+bound sensitivity at fixed additional costs of 0, 10, 25 and 50 bp; these
+are hypothetical common cost shifts, not measured fees or independent tests.
+A common cost shift cancels in the paired excess return. The lower bound
+uses the minimum across moving-block bootstrap lengths 3, 5 and 10 cohorts
+(3000 replicates per length); it has no guaranteed coverage. Calendar-day
+counts are not proof of independence. No promotion is authorized.

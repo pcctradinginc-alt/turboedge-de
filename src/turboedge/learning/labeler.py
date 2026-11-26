@@ -212,9 +212,7 @@ def resolve_exit(
     # Do not include later events in an already closed position.
     if first_exit is not None and first_exit.quote_timestamp is not None:
         exit_at = first_exit.quote_timestamp
-        snapshots = [
-            s for s in snapshots if (s.quote_timestamp or s.observation_time) <= exit_at
-        ]
+        snapshots = [s for s in snapshots if (s.quote_timestamp or s.observation_time) <= exit_at]
     with_bid = [s for s in snapshots if s.bid is not None]
 
     # -- MFE/MAE on product value relative to entry_ask, from every snapshot

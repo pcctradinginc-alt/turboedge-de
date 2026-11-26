@@ -1054,6 +1054,60 @@ def research_product_pair_net_ev_cmd(
     )
 
 
+def research_ablation_cmd(
+    ctx: typer.Context,
+    underlying: str = typer.Option("DAX", "--underlying"),
+    json_out: str = typer.Option("reports/weekly/ablation.json", "--json-out"),
+) -> None:
+    """Exploratory complete-case cross-asset leave-one-feature-out audit."""
+    from turboedge.backtest.ablation import compare
+    from turboedge.models.challengers import CrossAssetLeadLag, CrossAssetLeadLagConfig
+
+    app_ctx = ctx.obj
+    fcfg = app_ctx.cfg.forecast
+    uid = resolve_underlying_id(underlying)
+    if uid is None:
+        raise typer.Exit(code=2)
+    with Store(app_ctx.db_path) as store:
+        store.init_schema()
+        bars = store.latest_underlying_bars(uid, 1500)
+        aux = [store.latest_underlying_bars(x, 1500) for x in ("SPX", "NDX", "VIX", "EURUSD", "TNX")]
+    names = ("spx_ret_1d", "ndx_ret_1d", "vix_chg_1d", "eurusd_ret_1d", "tnx_chg_1d")
+    reports: list[dict[str, Any]] = []
+
+    def run(omit: tuple[str, ...]) -> Any:
+        return walk_forward_evaluate(
+            lambda: CrossAssetLeadLag(*aux, config=CrossAssetLeadLagConfig(omit_features=omit)),
+            bars,
+            fcfg.horizons,
+            min_train=fcfg.min_train,
+            step=fcfg.step,
+            embargo=fcfg.embargo,
+        )
+
+    status = "EXPLORATORY_ONLY"
+    try:
+        full = run(())
+        for name in names:
+            reduced = run((name,))
+            for a, b in zip(full, reduced, strict=True):
+                reports.append({"feature": name, "horizon": a.horizon_days, **asdict(compare(a, b))})
+    except ValueError as exc:
+        logger.warning("ablation_incomplete", error=str(exc))
+        status = "INCOMPLETE_DATA_OR_EVALUATION"
+    path = Path(json_out)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {"status": status, "underlying": uid, "promotion_allowed": False, "effects": reports},
+            indent=2,
+            allow_nan=False,
+        ),
+        encoding="utf-8",
+    )
+    _write_summary("research_ablation", {"effects": len(reports)}, status=status)
+
+
 def research_queue_cmd(
     ctx: typer.Context,
     limit: int = typer.Option(10, "--limit", help="How many entries to show"),
@@ -2370,6 +2424,7 @@ def register_learn_commands(app: typer.Typer, position_app: typer.Typer) -> None
 
     research_app = typer.Typer(help="Research governance")
     research_app.command("queue")(research_queue_cmd)
+    research_app.command("ablation")(research_ablation_cmd)
     research_app.command("excursion")(research_excursion_cmd)
     research_app.command("synthetic-ev")(research_synthetic_ev_cmd)
     research_app.command("approve")(research_approve_cmd)

@@ -876,6 +876,7 @@ class CrossAssetLeadLagConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     model_id: str = "cross_asset_leadlag_v1"
+    omit_features: tuple[str, ...] = ()
     ridge_alpha: float = 1.0
     min_train_samples: int = 80
     calibration_folds: int = 4
@@ -950,6 +951,16 @@ class CrossAssetLeadLag:
         self, eligible: Sequence[UnderlyingBar]
     ) -> Callable[[npt.NDArray[np.int64], int], npt.NDArray[np.float64]]:
         feat = self._features(eligible)
+        omitted = self._config.omit_features
+        if set(omitted) - set(self._feature_names):
+            raise ValueError("unknown ablation feature")
+        keep = [i for i, name in enumerate(self._feature_names) if name not in omitted]
+        if not keep:
+            raise ValueError("cannot omit every feature")
+        # Keep identical complete-case support in full and reduced variants.
+        valid = np.isfinite(feat).all(axis=1)
+        feat = feat[:, keep]
+        feat[~valid] = np.nan
 
         def feature_fn(t_idx: npt.NDArray[np.int64], h: int) -> npt.NDArray[np.float64]:
             return feat[t_idx]
@@ -1003,7 +1014,7 @@ class CrossAssetLeadLag:
             class_name="CrossAssetLeadLag",
             hyperparams=self._config.model_dump(mode="json"),
             training_end=self._training_end,
-            feature_names=self._feature_names,
+            feature_names=[n for n in self._feature_names if n not in self._config.omit_features],
             coefficients=_ridge_coefficients_for_hash(self._fits),
         )
 

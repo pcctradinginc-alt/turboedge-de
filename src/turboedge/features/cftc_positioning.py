@@ -78,6 +78,18 @@ def _percentile(history: Sequence[float], window: int) -> float | None:
     return float((tail <= tail[-1]).mean())
 
 
+def _calendar_change(
+    by_date: dict[datetime, float], lag: int, offset: int = 0
+) -> float | None:
+    if not by_date:
+        return None
+    end = max(by_date) - timedelta(weeks=offset)
+    start = end - timedelta(weeks=lag)
+    if end not in by_date or start not in by_date:
+        return None
+    return by_date[end] - by_date[start]
+
+
 def build_cftc_features(
     observations: Sequence[ExternalObservation],
     prediction_time: datetime,
@@ -107,22 +119,13 @@ def build_cftc_features(
         out[f"{base}_share_of_oi"] = float(share[-1]) if share else None
         out[f"{base}_zscore_3y"] = _zscore(share, _ZSCORE_WINDOW)
         out[f"{base}_percentile_5y"] = _percentile(share, _PERCENTILE_WINDOW)
-        def calendar_change(lag: int, offset: int = 0) -> float | None:
-            if not by_date:
-                return None
-            end = max(by_date) - timedelta(weeks=offset)
-            start = end - timedelta(weeks=lag)
-            if end not in by_date or start not in by_date:
-                return None
-            return by_date[end] - by_date[start]
-
-        out[f"{base}_change_1w"] = calendar_change(1)
-        out[f"{base}_change_4w"] = calendar_change(4)
+        out[f"{base}_change_1w"] = _calendar_change(by_date, 1)
+        out[f"{base}_change_4w"] = _calendar_change(by_date, 4)
         # Velocity is the 1-week change; acceleration is its own change, i.e.
         # whether the move is speeding up or fading. Both on the normalised
         # share, so neither tracks book growth.
-        velocity = calendar_change(1)
-        prev_velocity = calendar_change(1, offset=1)
+        velocity = _calendar_change(by_date, 1)
+        prev_velocity = _calendar_change(by_date, 1, offset=1)
         out[f"{base}_velocity"] = velocity
         out[f"{base}_acceleration"] = (
             velocity - prev_velocity if velocity is not None and prev_velocity is not None else None

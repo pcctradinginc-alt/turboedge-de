@@ -224,6 +224,14 @@ def _run_universe_body(
                 source_errors[adapter.name] = str(exc)
                 continue
             counts_by_source[adapter.name] = len(products)
+            coverage = getattr(adapter, "partial_universe", {})
+            if coverage:
+                detail = ", ".join(
+                    f"{uid}: {covered}/{total}"
+                    for uid, (covered, total) in sorted(coverage.items())
+                )
+                source_errors[adapter.name] = f"partial_universe: {detail}"
+                logger.warning("universe_source_partial", source=adapter.name, coverage=detail)
             per_source_snapshots.append(products)
             logger.info(
                 "universe_source_ok",

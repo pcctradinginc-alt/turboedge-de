@@ -95,8 +95,15 @@ def _lower_bound(values: list[float]) -> float | None:
         return None
     a = np.asarray(values, dtype=np.float64)
     rng = np.random.default_rng(BOOTSTRAP_SEED)
-    means = np.mean(a[rng.integers(0, len(a), size=(BOOTSTRAP_REPS, len(a)))], axis=1)
-    return float(np.quantile(means, 0.05))
+    # Sensitivity across contiguous cohort blocks; preserve local dependence.
+    bounds = []
+    for block in (3, 5, 10):
+        count = (len(a) + block - 1) // block
+        starts = rng.integers(0, len(a) - block + 1, size=(BOOTSTRAP_REPS, count))
+        indices = (starts[:, :, None] + np.arange(block)).reshape(BOOTSTRAP_REPS, -1)
+        means = np.mean(a[indices[:, : len(a)]], axis=1)
+        bounds.append(float(np.quantile(means, 0.05)))
+    return min(bounds)
 
 
 def probe(snapshots: list[ProductSnapshot]) -> NetEVProbe:

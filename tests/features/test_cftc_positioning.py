@@ -28,4 +28,4 @@ def test_missing_week_joins_by_observation_time() -> None:
                 )
     result = build_cftc_features(rows, start + timedelta(weeks=3), market="SPX")
     assert result["cftc_spx_dealer_share_of_oi"] == 0.1
-    assert result["cftc_spx_dealer_change_1w"] == 0.0
+    assert result["cftc_spx_dealer_change_1w"] is None

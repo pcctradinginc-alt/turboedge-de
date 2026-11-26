@@ -95,14 +95,16 @@ def record_capture_attempt(
     *,
     now: datetime,
     result: TapeCapture,
+    started_at: datetime | None = None,
 ) -> CaptureMonitorReport:
     """Validate new archive, persist attempt, and expose alert decision.
 
     A pair can be observable even if the 3-day cohort spacing forbids writing
     a new entry. This is not misclassified as a broken data source.
     """
-    if not is_research_market_session(now):
-        raise ValueError("capture monitoring is only allowed during an open session")
+    session_time = started_at if started_at is not None else now
+    if not is_research_market_session(session_time) or session_time > now:
+        raise ValueError("capture monitoring is only allowed for a valid open-session start")
     before = _read_state(state_dir)
     after = verify_restored_tape(state_dir, now=now)
     if result.quotes_written and after.quote_rows <= before.expected_quotes:
@@ -115,7 +117,7 @@ def record_capture_attempt(
     # failed independent capture. It may still add real quotes to the tape.
     # Friday is a deliberate follow-up-only day, not a missed new-pair
     # acquisition. Nor should market closures consume the failure budget.
-    entry_expected = is_research_market_session(now, entry=True)
+    entry_expected = is_research_market_session(session_time, entry=True)
     streak = (
         0
         if result.eligible_pair_found

@@ -168,3 +168,12 @@ def test_pipeline_separates_capture_eod_and_live_scan() -> None:
     assert "turboedge-state-pack" in capture
     assert "archive products" not in eod.split("  external:", 1)[0]
     assert "position reevaluate --email" in eod
+
+
+def test_capture_monitor_accepts_completion_after_session(tmp_path: Path) -> None:
+    start = datetime(2026, 11, 26, 20, 23, tzinfo=UTC)
+    end = start + timedelta(minutes=13)
+    report = record_capture_attempt(
+        tmp_path, now=end, started_at=start, result=_MISSING
+    )
+    assert report.consecutive_no_pair == 1

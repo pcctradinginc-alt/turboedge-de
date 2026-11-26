@@ -1059,9 +1059,20 @@ def research_ablation_cmd(
     underlying: str = typer.Option("DAX", "--underlying"),
     json_out: str = typer.Option("reports/weekly/ablation.json", "--json-out"),
 ) -> None:
-    """Exploratory complete-case cross-asset leave-one-feature-out audit."""
+    """Exploratory paired walk-forward and ledger policy audit."""
+    from collections.abc import Callable
+
     from turboedge.backtest.ablation import compare
-    from turboedge.models.challengers import CrossAssetLeadLag, CrossAssetLeadLagConfig
+    from turboedge.backtest.walkforward import WalkForwardResult
+    from turboedge.models.challengers import (
+        CrossAssetLeadLag,
+        CrossAssetLeadLagConfig,
+        LowVolRegimeTrend,
+        LowVolRegimeTrendConfig,
+        VixTermStructure,
+        VixTermStructureConfig,
+    )
+    from turboedge.research.filter_evaluation import evaluate_filters
 
     app_ctx = ctx.obj
     fcfg = app_ctx.cfg.forecast
@@ -1071,37 +1082,68 @@ def research_ablation_cmd(
     with Store(app_ctx.db_path) as store:
         store.init_schema()
         bars = store.latest_underlying_bars(uid, 1500)
-        aux = [store.latest_underlying_bars(x, 1500) for x in ("SPX", "NDX", "VIX", "EURUSD", "TNX")]
+        aux = [store.latest_underlying_bars(x, 1500) for x in (
+            "SPX", "NDX", "VIX", "EURUSD", "TNX", "VIX9D", "VIX3M"
+        )]
+        filters = evaluate_filters(store.list_ledger_entries(underlying=uid), as_of=datetime.now(UTC))
     names = ("spx_ret_1d", "ndx_ret_1d", "vix_chg_1d", "eurusd_ret_1d", "tnx_chg_1d")
     reports: list[dict[str, Any]] = []
+    failures: list[str] = []
 
-    def run(omit: tuple[str, ...]) -> Any:
+    def run(factory: Callable[[], ForecastModel]) -> list[WalkForwardResult]:
         return walk_forward_evaluate(
-            lambda: CrossAssetLeadLag(*aux, config=CrossAssetLeadLagConfig(omit_features=omit)),
-            bars,
-            fcfg.horizons,
-            min_train=fcfg.min_train,
-            step=fcfg.step,
-            embargo=fcfg.embargo,
+            factory, bars, fcfg.horizons,
+            min_train=fcfg.min_train, step=fcfg.step, embargo=fcfg.embargo,
         )
 
-    status = "EXPLORATORY_ONLY"
-    try:
-        full = run(())
-        for name in names:
-            reduced = run((name,))
-            for a, b in zip(full, reduced, strict=True):
-                reports.append({"feature": name, "horizon": a.horizon_days, **asdict(compare(a, b))})
-    except ValueError as exc:
-        logger.warning("ablation_incomplete", error=str(exc))
-        status = "INCOMPLETE_DATA_OR_EVALUATION"
+    def cross(name: str = "") -> ForecastModel:
+        return CrossAssetLeadLag(
+            aux[0], aux[1], aux[2], aux[3], aux[4],
+            config=CrossAssetLeadLagConfig(omit_features=(name,) if name else ()),
+        )
+
+    def vix(omit: bool = False) -> ForecastModel:
+        return VixTermStructure(
+            aux[2], aux[5], aux[6], config=VixTermStructureConfig(omit_term_structure=omit)
+        )
+
+    families: list[tuple[Callable[[], ForecastModel], dict[str, Callable[[], ForecastModel]]]] = [
+        (cross, {name: (lambda name=name: cross(name)) for name in names}),
+        (vix, {"vix_term_structure": lambda: vix(True)}),
+        (LowVolRegimeTrend, {
+            "low_vol_regime_gate": lambda: LowVolRegimeTrend(
+                LowVolRegimeTrendConfig(omit_regime_gate=True)
+            )
+        }),
+    ]
+    tests = 2 * 7 * len(fcfg.horizons)
+    for factory, variants in families:
+        try:
+            full = run(factory)
+        except ValueError as exc:
+            failures.append(f"{factory().model_id}: {exc}")
+            continue
+        for name, reduced_factory in variants.items():
+            try:
+                reduced = run(reduced_factory)
+                for a, b in zip(full, reduced, strict=True):
+                    reports.append({
+                        "feature": name, "horizon": a.horizon_days,
+                        **asdict(compare(a, b, tests=tests)),
+                    })
+            except ValueError as exc:
+                failures.append(f"{name}: {exc}")
+    status = "INCOMPLETE_DATA_OR_EVALUATION" if failures else "EXPLORATORY_ONLY"
     path = Path(json_out)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(
-            {"status": status, "underlying": uid, "promotion_allowed": False, "effects": reports},
-            indent=2,
-            allow_nan=False,
+            {
+                "status": status, "underlying": uid, "promotion_allowed": False,
+                "planned_tests": tests, "failures": failures, "effects": reports,
+                "ledger_filter_diagnostics": filters,
+            },
+            indent=2, allow_nan=False,
         ),
         encoding="utf-8",
     )

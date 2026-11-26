@@ -22,7 +22,7 @@ class PairedEffect:
     gross_return_interval: tuple[float, float] | None
 
 
-def _interval(values: list[float], horizon: int) -> tuple[float, float] | None:
+def _interval(values: list[float], horizon: int, tests: int) -> tuple[float, float] | None:
     # Overlapping labels are not independent. Vary contiguous block length.
     if len(values) < max(60, 10 * horizon):
         return None
@@ -34,12 +34,14 @@ def _interval(values: list[float], horizon: int) -> tuple[float, float] | None:
         starts = rng.integers(0, len(arr) - block + 1, size=(1000, count))
         indices = (starts[:, :, None] + np.arange(block)).reshape(1000, -1)
         means = arr[indices[:, : len(arr)]].mean(axis=1)
-        intervals.append((float(np.quantile(means, 0.025)), float(np.quantile(means, 0.975))))
+        intervals.append((float(np.quantile(means, 0.025 / tests)), float(np.quantile(means, 1 - 0.025 / tests))))
     return min(x[0] for x in intervals), max(x[1] for x in intervals)
 
 
-def compare(full: WalkForwardResult, reduced: WalkForwardResult) -> PairedEffect:
+def compare(full: WalkForwardResult, reduced: WalkForwardResult, *, tests: int = 1) -> PairedEffect:
     """Positive gains favor the full model; no inference on unmatched rows."""
+    if tests < 1:
+        raise ValueError("tests must be positive")
     if full.horizon_days != reduced.horizon_days:
         raise ValueError("horizon mismatch")
 
@@ -68,6 +70,6 @@ def compare(full: WalkForwardResult, reduced: WalkForwardResult) -> PairedEffect
         matched_rows=len(brier),
         brier_gain=float(np.mean(brier)) if brier else None,
         gross_return_gain=float(np.mean(gross)) if gross else None,
-        brier_interval=_interval(brier, full.horizon_days),
-        gross_return_interval=_interval(gross, full.horizon_days),
+        brier_interval=_interval(brier, full.horizon_days, tests),
+        gross_return_interval=_interval(gross, full.horizon_days, tests),
     )

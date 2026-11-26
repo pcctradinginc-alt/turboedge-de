@@ -517,6 +517,7 @@ class LowVolRegimeTrendConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     model_id: str = "lowvol_regime_trend_v1"
+    omit_regime_gate: bool = False
     lookbacks: tuple[int, ...] = _TSMOM_LOOKBACKS
     clip: float = _TSMOM_CLIP
     ewma_lambda: float = _EWMA_LAMBDA
@@ -567,6 +568,8 @@ class LowVolRegimeTrend:
     ) -> Callable[[npt.NDArray[np.int64], int], npt.NDArray[np.float64]]:
         score, sigma, gate = self._score_sigma_gate(eligible)
         x_raw = score * gate
+        if self._config.omit_regime_gate:
+            x_raw = np.where(np.isfinite(gate), score, np.nan)
 
         def feature_fn(t_idx: npt.NDArray[np.int64], h: int) -> npt.NDArray[np.float64]:
             return (x_raw[t_idx] * sigma[t_idx] * np.sqrt(h)).reshape(-1, 1)
@@ -741,6 +744,7 @@ class VixTermStructureConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     model_id: str = "vix_term_structure_v1"
+    omit_term_structure: bool = False
     lookbacks: tuple[int, ...] = _TSMOM_LOOKBACKS
     clip: float = _TSMOM_CLIP
     ewma_lambda: float = _EWMA_LAMBDA
@@ -811,7 +815,10 @@ class VixTermStructure:
 
         def feature_fn(t_idx: npt.NDArray[np.int64], h: int) -> npt.NDArray[np.float64]:
             trend_col = score[t_idx] * sigma[t_idx] * np.sqrt(h)
-            return np.column_stack([trend_col, term_short[t_idx], term_long[t_idx]])
+            full = np.column_stack([trend_col, term_short[t_idx], term_long[t_idx]])
+            if self._config.omit_term_structure:
+                return np.where(np.isfinite(full).all(axis=1), trend_col, np.nan).reshape(-1, 1)
+            return full
 
         return feature_fn
 
@@ -862,7 +869,9 @@ class VixTermStructure:
             class_name="VixTermStructure",
             hyperparams=self._config.model_dump(mode="json"),
             training_end=self._training_end,
-            feature_names=self._feature_names,
+            feature_names=(
+                self._feature_names[:1] if self._config.omit_term_structure else self._feature_names
+            ),
             coefficients=_ridge_coefficients_for_hash(self._fits),
         )
 

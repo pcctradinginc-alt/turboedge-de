@@ -643,7 +643,13 @@ def test_partial_source_coverage_is_reported_without_discarding_quotes(
     make_product_adapter: Callable[..., Any],
     dax_product_factory: Callable[..., ProductSnapshot],
 ) -> None:
-    product = dax_product_factory(isin="DE000LONG001", quote_timestamp=_NOW)
+    product = dax_product_factory(
+        isin="DE000LONG001",
+        issuer="BankA",
+        direction=Direction.LONG,
+        financing_level=20000.0,
+        quote_timestamp=_NOW,
+    )
     adapter = make_product_adapter("partial", products=[product])
     adapter.partial_universe = {"DAX": (1, 2)}
     result = run_universe(cfg, store, tmp_path, [adapter], ["DAX"], run_id=new_run_id())

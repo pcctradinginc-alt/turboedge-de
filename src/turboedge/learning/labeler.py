@@ -196,6 +196,25 @@ def resolve_exit(
     window_end = datetime.combine(window_end_date, time(23, 59, 59), tzinfo=UTC)
 
     snapshots = store.product_snapshots_in_range(isin, entry_quote_timestamp, window_end)
+    snapshots = sorted(snapshots, key=lambda s: s.quote_timestamp or s.observation_time)
+    deadline = _exit_due_quote_deadline_utc(exit_due)
+    first_exit = next(
+        (
+            s
+            for s in snapshots
+            if s.bid is not None
+            and not s.knocked_out
+            and s.quote_timestamp is not None
+            and s.quote_timestamp >= deadline
+        ),
+        None,
+    )
+    # Do not include later events in an already closed position.
+    if first_exit is not None and first_exit.quote_timestamp is not None:
+        exit_at = first_exit.quote_timestamp
+        snapshots = [
+            s for s in snapshots if (s.quote_timestamp or s.observation_time) <= exit_at
+        ]
     with_bid = [s for s in snapshots if s.bid is not None]
 
     # -- MFE/MAE on product value relative to entry_ask, from every snapshot
@@ -271,7 +290,6 @@ def resolve_exit(
         )
 
     # -- Not knocked out: look for a real exit quote.
-    deadline = _exit_due_quote_deadline_utc(exit_due)
     preferred = next(
         (s for s in with_bid if s.quote_timestamp is not None and s.quote_timestamp >= deadline),
         None,

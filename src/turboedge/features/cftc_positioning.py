@@ -78,9 +78,7 @@ def _percentile(history: Sequence[float], window: int) -> float | None:
     return float((tail <= tail[-1]).mean())
 
 
-def _calendar_change(
-    by_date: dict[datetime, float], lag: int, offset: int = 0
-) -> float | None:
+def _calendar_change(by_date: dict[datetime, float], lag: int, offset: int = 0) -> float | None:
     if not by_date:
         return None
     end = max(by_date) - timedelta(weeks=offset)

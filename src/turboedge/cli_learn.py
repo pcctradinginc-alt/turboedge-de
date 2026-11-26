@@ -1756,6 +1756,7 @@ def archive_products_cmd(
         capture_monitor = record_capture_attempt(
             app_ctx.state_dir,
             now=finished_at,
+            started_at=started_at,
             result=TapeCapture(
                 quotes_written=result.research_quotes_archived,
                 entry_pairs=result.research_entry_pairs,

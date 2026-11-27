@@ -65,6 +65,7 @@ def evaluate_counterfactual(
     underlying_bars: Sequence[UnderlyingBar],
     selected_realized_pnl: float | None,
     config: LabelerConfig | None = None,
+    as_of: datetime | None = None,
 ) -> CounterfactualResult:
     """Evaluate `entry.alternatives` under the same exit rules as the
     selected product (`learning/labeler.py`'s `resolve_exit_with_fallback`),
@@ -106,8 +107,9 @@ def evaluate_counterfactual(
             underlying_bars=underlying_bars,
             product_type=alt_product_type,
             config=config,
+            as_of=as_of,
         )
-        if resolution.realized_pnl is not None:
+        if resolution.realized_pnl is not None and not resolution.ambiguous_path:
             realized_returns.append(resolution.realized_pnl)
 
     if not realized_returns:

@@ -1925,8 +1925,9 @@ class Store:
         row = self._conn.execute(
             f"SELECT {', '.join(_PRODUCT_SNAPSHOT_COLUMNS)} FROM product_snapshots "
             "WHERE isin = ? AND COALESCE(quote_timestamp, observation_time) <= ? "
+            "AND available_at <= ? AND retrieved_at <= ? AND observation_time <= ? "
             "ORDER BY COALESCE(quote_timestamp, observation_time) DESC LIMIT 1",
-            [isin, _to_utc(as_of)],
+            [isin, _to_utc(as_of), _to_utc(as_of), _to_utc(as_of), _to_utc(as_of)],
         ).fetchone()
         return _row_to_product_snapshot(row) if row is not None else None
 

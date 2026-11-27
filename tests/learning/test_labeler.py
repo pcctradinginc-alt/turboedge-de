@@ -64,7 +64,7 @@ def test_normal_horizon_exit_uses_snapshot_at_or_after_deadline(
         ],
     )
 
-    result = label_due_entries(store, _utc(2026, 9, 11), price_bars_lookup=lambda u: bars)
+    result = label_due_entries(store, _utc(2026, 9, 15), price_bars_lookup=lambda u: bars)
     assert result.labeled == 1
     assert result.ko == 0
     assert result.ambiguous == 0
@@ -104,7 +104,7 @@ def test_ko_detected_via_underlying_bars_barrier_touch(
         ],
     )
 
-    result = label_due_entries(store, _utc(2026, 9, 11), price_bars_lookup=lambda u: bars)
+    result = label_due_entries(store, _utc(2026, 9, 15), price_bars_lookup=lambda u: bars)
     assert result.labeled == 1
     assert result.ko == 1
 
@@ -142,7 +142,7 @@ def test_ko_via_gap_through_open(store, make_ledger_entry, make_underlying_bar) 
         ],
     )
 
-    result = label_due_entries(store, _utc(2026, 9, 11), price_bars_lookup=lambda u: bars)
+    result = label_due_entries(store, _utc(2026, 9, 15), price_bars_lookup=lambda u: bars)
     assert result.ko == 1
     label = store.get_ledger_label(entry.entry_id)
     assert label is not None
@@ -194,7 +194,7 @@ def test_mini_future_ko_uses_post_ko_snapshot_bid(
         ],
     )
 
-    label_due_entries(store, _utc(2026, 9, 11), price_bars_lookup=lambda u: bars)
+    label_due_entries(store, _utc(2026, 9, 15), price_bars_lookup=lambda u: bars)
     label = store.get_ledger_label(entry.entry_id)
     assert label is not None
     assert label.exit_reason == ExitReason.KO
@@ -227,7 +227,7 @@ def test_missing_quotes_falls_back_to_conservative_ambiguous(
         ],
     )
 
-    result = label_due_entries(store, _utc(2026, 9, 13), price_bars_lookup=lambda u: bars)
+    result = label_due_entries(store, _utc(2026, 9, 15), price_bars_lookup=lambda u: bars)
     assert result.labeled == 1
     assert result.ambiguous == 1
     assert result.missing_data == 0
@@ -253,7 +253,7 @@ def test_expired_no_data_when_absolutely_nothing_available(store, make_ledger_en
     )
     ForwardLedger(store).record([entry])
 
-    result = label_due_entries(store, _utc(2026, 9, 13), price_bars_lookup=lambda u: [])
+    result = label_due_entries(store, _utc(2026, 9, 15), price_bars_lookup=lambda u: [])
     assert result.labeled == 0
     assert result.missing_data == 1
 
@@ -271,7 +271,7 @@ def test_entry_not_yet_due_is_not_labeled(store, make_ledger_entry) -> None:
     entry = make_ledger_entry(exit_due=date(2026, 12, 31))
     ForwardLedger(store).record([entry])
 
-    result = label_due_entries(store, _utc(2026, 9, 11), price_bars_lookup=lambda u: [])
+    result = label_due_entries(store, _utc(2026, 9, 15), price_bars_lookup=lambda u: [])
     assert result.labeled == 0
     assert result.missing_data == 0
     fetched = store.get_ledger_entry(entry.entry_id)
@@ -316,7 +316,7 @@ def test_predeadline_exit_quote_is_ambiguous(
         ],
     )
 
-    label_due_entries(store, _utc(2026, 9, 13), price_bars_lookup=lambda u: bars)
+    label_due_entries(store, _utc(2026, 9, 15), price_bars_lookup=lambda u: bars)
     label = store.get_ledger_label(entry.entry_id)
     assert label is not None
     assert label.exit_reason == ExitReason.HORIZON
@@ -378,7 +378,7 @@ def test_entry_day_bar_touch_is_not_confirmed_ko(
     )
     ForwardLedger(store).record([entry])
     bars = _bars(make_underlying_bar, [(date(2026, 9, 1), 18000, 18100, 17800, 18050)])
-    label_due_entries(store, _utc(2026, 9, 11), price_bars_lookup=lambda u: bars)
+    label_due_entries(store, _utc(2026, 9, 15), price_bars_lookup=lambda u: bars)
     label = store.get_ledger_label(entry.entry_id)
     assert label is not None
     assert label.ambiguous_path is True
@@ -405,8 +405,16 @@ def test_changed_observed_barrier_can_trigger_only_ambiguous_ko(
         ]
     )
     bars = _bars(make_underlying_bar, [(date(2026, 9, 10), 18000, 18100, 17800, 18050)])
-    label_due_entries(store, _utc(2026, 9, 11), price_bars_lookup=lambda u: bars)
+    label_due_entries(store, _utc(2026, 9, 15), price_bars_lookup=lambda u: bars)
     label = store.get_ledger_label(entry.entry_id)
     assert label is not None
     assert label.exit_reason == ExitReason.KO
     assert label.ambiguous_path is True
+
+
+def test_unresolved_outcome_waits_for_grace_window(store, make_ledger_entry) -> None:
+    entry = make_ledger_entry(exit_due=date(2026, 9, 10))
+    ForwardLedger(store).record([entry])
+    result = label_due_entries(store, _utc(2026, 9, 11), price_bars_lookup=lambda u: [])
+    assert result.skipped_not_due == 1
+    assert store.get_ledger_label(entry.entry_id) is None

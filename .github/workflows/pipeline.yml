@@ -825,6 +825,11 @@ jobs:
           uv run turboedge --log-format json research product-pair-net-ev \
             --json-out reports/weekly/product_pair_net_ev.json
 
+      - name: Exploratory ablation audit (bounded, read only)
+        continue-on-error: true
+        timeout-minutes: 8
+        run: uv run turboedge --log-format json research ablation --underlying DAX
+
       - name: Re-score the research queue
         run: uv run turboedge --log-format json research queue --limit 14
 

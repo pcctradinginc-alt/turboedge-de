@@ -4,7 +4,7 @@ from datetime import UTC, date, datetime
 
 import pytest
 
-from turboedge.learning.labeler import label_due_entries
+from turboedge.learning.labeler import _add_trading_days, label_due_entries
 from turboedge.learning.ledger import ForwardLedger
 from turboedge.storage.schemas import Direction, ExitReason, LedgerEntryStatus, ProductType
 
@@ -319,3 +319,45 @@ def test_fallback_exit_quote_within_grace_window_is_horizon_not_ambiguous(
     assert label.exit_reason == ExitReason.HORIZON
     assert label.ambiguous_path is False
     assert label.exit_bid == 5.00
+
+
+def test_later_knockout_does_not_override_horizon_exit(
+    store, make_ledger_entry, make_product_snapshot
+) -> None:
+    entry = make_ledger_entry(
+        entry_ask=4.86,
+        entry_quote_timestamp=_utc(2026, 9, 1, 15, 30),
+        entry_underlying_timestamp=_utc(2026, 9, 1, 15, 30),
+        exit_due=date(2026, 9, 10),
+        barrier_entry=17000.0,
+        direction=Direction.LONG,
+    )
+    ForwardLedger(store).record([entry])
+    store.append_product_snapshots(
+        [
+            make_product_snapshot(
+                isin=entry.selected_isin,
+                bid=5.10,
+                ask=5.16,
+                observation_time=_utc(2026, 9, 10, 15, 30),
+                quote_timestamp=_utc(2026, 9, 10, 15, 30),
+            ),
+            make_product_snapshot(
+                isin=entry.selected_isin,
+                bid=0.0,
+                knocked_out=True,
+                observation_time=_utc(2026, 9, 11, 10),
+                quote_timestamp=_utc(2026, 9, 11, 10),
+            ),
+        ]
+    )
+    label_due_entries(store, _utc(2026, 9, 14), price_bars_lookup=lambda u: [])
+    label = store.get_ledger_label(entry.entry_id)
+    assert label is not None
+    assert label.exit_reason == ExitReason.HORIZON
+    assert label.exit_bid == 5.10
+
+
+def test_grace_period_skips_good_friday_and_easter_monday() -> None:
+    assert _add_trading_days(date(2026, 4, 2), 1) == date(2026, 4, 7)
+    assert _add_trading_days(date(2026, 4, 2), 2) == date(2026, 4, 8)

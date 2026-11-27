@@ -634,3 +634,24 @@ def test_run_universe_adapters_actually_run_concurrently(
     # SEQUENTIAL ones would each individually time out after
     # barrier_timeout_s, so a regression would take >= 3 * 5s = 15s here.
     assert elapsed < barrier_timeout_s
+
+
+def test_partial_source_coverage_is_reported_without_discarding_quotes(
+    cfg: TurboEdgeConfig,
+    store: Store,
+    tmp_path: Path,
+    make_product_adapter: Callable[..., Any],
+    dax_product_factory: Callable[..., ProductSnapshot],
+) -> None:
+    product = dax_product_factory(
+        isin="DE000LONG001",
+        issuer="BankA",
+        direction=Direction.LONG,
+        financing_level=20000.0,
+        quote_timestamp=_NOW,
+    )
+    adapter = make_product_adapter("partial", products=[product])
+    adapter.partial_universe = {"DAX": (1, 2)}
+    result = run_universe(cfg, store, tmp_path, [adapter], ["DAX"], run_id=new_run_id())
+    assert len(result.products) == 1
+    assert result.source_errors == {"partial": "partial_universe: DAX: 1/2"}

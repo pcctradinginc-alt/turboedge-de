@@ -1054,6 +1054,130 @@ def research_product_pair_net_ev_cmd(
     )
 
 
+def research_ablation_cmd(
+    ctx: typer.Context,
+    underlying: str = typer.Option("DAX", "--underlying"),
+    json_out: str = typer.Option("reports/weekly/ablation.json", "--json-out"),
+) -> None:
+    """Exploratory paired walk-forward and ledger policy audit."""
+    from collections.abc import Callable
+
+    from turboedge.backtest.ablation import compare
+    from turboedge.backtest.walkforward import WalkForwardResult
+    from turboedge.models.challengers import (
+        CrossAssetLeadLag,
+        CrossAssetLeadLagConfig,
+        LowVolRegimeTrend,
+        LowVolRegimeTrendConfig,
+        VixTermStructure,
+        VixTermStructureConfig,
+    )
+    from turboedge.research.filter_evaluation import evaluate_filters
+
+    app_ctx = ctx.obj
+    fcfg = app_ctx.cfg.forecast
+    uid = resolve_underlying_id(underlying)
+    if uid is None:
+        raise typer.Exit(code=2)
+    with Store(app_ctx.db_path) as store:
+        store.init_schema()
+        bars = store.latest_underlying_bars(uid, 1500)
+        aux = [
+            store.latest_underlying_bars(x, 1500)
+            for x in ("SPX", "NDX", "VIX", "EURUSD", "TNX", "VIX9D", "VIX3M")
+        ]
+        filters = evaluate_filters(
+            store.list_ledger_entries(underlying=uid), as_of=datetime.now(UTC)
+        )
+    names = ("spx_ret_1d", "ndx_ret_1d", "vix_chg_1d", "eurusd_ret_1d", "tnx_chg_1d")
+    reports: list[dict[str, Any]] = []
+    failures: list[str] = []
+
+    def run(factory: Callable[[], ForecastModel]) -> list[WalkForwardResult]:
+        return walk_forward_evaluate(
+            factory,
+            bars,
+            fcfg.horizons,
+            min_train=fcfg.min_train,
+            step=fcfg.step,
+            embargo=fcfg.embargo,
+        )
+
+    def cross(name: str = "") -> ForecastModel:
+        return CrossAssetLeadLag(
+            aux[0],
+            aux[1],
+            aux[2],
+            aux[3],
+            aux[4],
+            config=CrossAssetLeadLagConfig(omit_features=(name,) if name else ()),
+        )
+
+    def vix(omit: bool = False) -> ForecastModel:
+        return VixTermStructure(
+            aux[2], aux[5], aux[6], config=VixTermStructureConfig(omit_term_structure=omit)
+        )
+
+    def cross_without(name: str) -> Callable[[], ForecastModel]:
+        def factory() -> ForecastModel:
+            return cross(name)
+
+        return factory
+
+    families: list[tuple[Callable[[], ForecastModel], dict[str, Callable[[], ForecastModel]]]] = [
+        (cross, {name: cross_without(name) for name in names}),
+        (vix, {"vix_term_structure": lambda: vix(True)}),
+        (
+            LowVolRegimeTrend,
+            {
+                "low_vol_regime_gate": lambda: LowVolRegimeTrend(
+                    LowVolRegimeTrendConfig(omit_regime_gate=True)
+                )
+            },
+        ),
+    ]
+    tests = 2 * 7 * len(fcfg.horizons)
+    for factory, variants in families:
+        try:
+            full = run(factory)
+        except ValueError as exc:
+            failures.append(f"{factory().model_id}: {exc}")
+            continue
+        for name, reduced_factory in variants.items():
+            try:
+                reduced = run(reduced_factory)
+                for a, b in zip(full, reduced, strict=True):
+                    reports.append(
+                        {
+                            "feature": name,
+                            "horizon": a.horizon_days,
+                            **asdict(compare(a, b, tests=tests)),
+                        }
+                    )
+            except ValueError as exc:
+                failures.append(f"{name}: {exc}")
+    status = "INCOMPLETE_DATA_OR_EVALUATION" if failures else "EXPLORATORY_ONLY"
+    path = Path(json_out)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "status": status,
+                "underlying": uid,
+                "promotion_allowed": False,
+                "planned_tests": tests,
+                "failures": failures,
+                "effects": reports,
+                "ledger_filter_diagnostics": filters,
+            },
+            indent=2,
+            allow_nan=False,
+        ),
+        encoding="utf-8",
+    )
+    _write_summary("research_ablation", {"effects": len(reports)}, status=status)
+
+
 def research_queue_cmd(
     ctx: typer.Context,
     limit: int = typer.Option(10, "--limit", help="How many entries to show"),
@@ -1756,6 +1880,7 @@ def archive_products_cmd(
         capture_monitor = record_capture_attempt(
             app_ctx.state_dir,
             now=finished_at,
+            started_at=started_at,
             result=TapeCapture(
                 quotes_written=result.research_quotes_archived,
                 entry_pairs=result.research_entry_pairs,
@@ -2369,6 +2494,7 @@ def register_learn_commands(app: typer.Typer, position_app: typer.Typer) -> None
 
     research_app = typer.Typer(help="Research governance")
     research_app.command("queue")(research_queue_cmd)
+    research_app.command("ablation")(research_ablation_cmd)
     research_app.command("excursion")(research_excursion_cmd)
     research_app.command("synthetic-ev")(research_synthetic_ev_cmd)
     research_app.command("approve")(research_approve_cmd)

@@ -625,6 +625,11 @@ class BnpParibasTurboAdapter:
         self._index_cache: dict[str, int] | None = None
 
     @property
+    def partial_universe(self) -> dict[str, tuple[int, int]]:
+        """Coverage shortfalls measured by the last fetch, without new requests."""
+        return dict(self._partial_universe)
+
+    @property
     def name(self) -> str:
         return _BNP_SOURCE_NAME
 
@@ -1285,6 +1290,11 @@ class CitiFirstTurboAdapter:
         self._clock = clock if clock is not None else lambda: datetime.now(UTC)
         self.last_errors: list[IssuerRowError] = []
         self._partial_universe: dict[str, tuple[int, int]] = {}
+
+    @property
+    def partial_universe(self) -> dict[str, tuple[int, int]]:
+        """Coverage shortfalls measured by the last fetch, without new requests."""
+        return dict(self._partial_universe)
 
     @property
     def name(self) -> str:

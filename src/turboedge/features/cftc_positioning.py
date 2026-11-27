@@ -24,7 +24,7 @@ count as independent evidence.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import numpy as np
 
@@ -48,8 +48,15 @@ _ZSCORE_WINDOW = 3 * _WEEKS_PER_YEAR
 _PERCENTILE_WINDOW = 5 * _WEEKS_PER_YEAR
 
 
-def _history(observations: Sequence[ExternalObservation], series_id: str) -> list[float]:
-    return [o.value for o in observations if o.series_id == series_id]
+def _history(observations: Sequence[ExternalObservation], series_id: str) -> dict[datetime, float]:
+    latest: dict[datetime, ExternalObservation] = {}
+    for obs in observations:
+        if obs.series_id != series_id:
+            continue
+        previous = latest.get(obs.observation_time)
+        if previous is None or obs.available_at > previous.available_at:
+            latest[obs.observation_time] = obs
+    return {moment: obs.value for moment, obs in latest.items()}
 
 
 def _zscore(history: Sequence[float], window: int) -> float | None:
@@ -71,10 +78,14 @@ def _percentile(history: Sequence[float], window: int) -> float | None:
     return float((tail <= tail[-1]).mean())
 
 
-def _change(history: Sequence[float], lag: int) -> float | None:
-    if len(history) <= lag:
+def _calendar_change(by_date: dict[datetime, float], lag: int, offset: int = 0) -> float | None:
+    if not by_date:
         return None
-    return float(history[-1] - history[-1 - lag])
+    end = max(by_date) - timedelta(weeks=offset)
+    start = end - timedelta(weeks=lag)
+    if end not in by_date or start not in by_date:
+        return None
+    return by_date[end] - by_date[start]
 
 
 def build_cftc_features(
@@ -98,24 +109,21 @@ def build_cftc_features(
 
     for group in GROUPS:
         net = _history(available, f"{prefix}.{group.upper()}_NET")
-        # Share of open interest, aligned pairwise: both series come from the
-        # same rows, so a length mismatch means one leg was skipped for a
-        # week and the pairing would silently shift.
-        n = min(len(net), len(oi))
-        share = [
-            net[len(net) - n + i] / oi[len(oi) - n + i] for i in range(n) if oi[len(oi) - n + i] > 0
-        ]
+        # Join by observation time, never by array position.
+        moments = sorted(net.keys() & oi.keys())
+        by_date = {moment: net[moment] / oi[moment] for moment in moments if oi[moment] > 0}
+        share = list(by_date.values())
         base = f"cftc_{prefix.lower()}_{group}"
         out[f"{base}_share_of_oi"] = float(share[-1]) if share else None
         out[f"{base}_zscore_3y"] = _zscore(share, _ZSCORE_WINDOW)
         out[f"{base}_percentile_5y"] = _percentile(share, _PERCENTILE_WINDOW)
-        out[f"{base}_change_1w"] = _change(share, 1)
-        out[f"{base}_change_4w"] = _change(share, 4)
+        out[f"{base}_change_1w"] = _calendar_change(by_date, 1)
+        out[f"{base}_change_4w"] = _calendar_change(by_date, 4)
         # Velocity is the 1-week change; acceleration is its own change, i.e.
         # whether the move is speeding up or fading. Both on the normalised
         # share, so neither tracks book growth.
-        velocity = _change(share, 1)
-        prev_velocity = _change(share[:-1], 1) if len(share) > 2 else None
+        velocity = _calendar_change(by_date, 1)
+        prev_velocity = _calendar_change(by_date, 1, offset=1)
         out[f"{base}_velocity"] = velocity
         out[f"{base}_acceleration"] = (
             velocity - prev_velocity if velocity is not None and prev_velocity is not None else None

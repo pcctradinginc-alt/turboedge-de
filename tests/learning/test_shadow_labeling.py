@@ -72,6 +72,8 @@ def test_shadow_horizon_exit_matches_real_ledger_entry_exactly(
         bid=4.80,
         ask=4.86,
         observation_time=_utc(2026, 9, 1, 15, 30),
+        available_at=_utc(2026, 9, 1, 15, 30),
+        retrieved_at=_utc(2026, 9, 1, 15, 30),
         quote_timestamp=_utc(2026, 9, 1, 15, 30),
     )
     store.append_product_snapshots([entry_snapshot])
@@ -132,9 +134,8 @@ def test_shadow_horizon_exit_matches_real_ledger_entry_exactly(
 def test_shadow_ko_matches_real_ledger_entry_exactly(
     store, make_ledger_entry, make_product_snapshot, make_underlying_bar
 ) -> None:
-    """A barrier touch in the underlying bars must knock out the shadow
-    position exactly like the real ledger entry -- same conservative 0
-    residual (turbo), same -1.0 realized return."""
+    """An ambiguous bar touch is recorded conservatively in the ledger,
+    but must not become a verified shadow return."""
     isin = "DE000ABC1234"
     entry = make_ledger_entry(
         selected_isin=isin,
@@ -155,6 +156,8 @@ def test_shadow_ko_matches_real_ledger_entry_exactly(
         bid=4.80,
         ask=4.86,
         observation_time=_utc(2026, 9, 1, 15, 30),
+        available_at=_utc(2026, 9, 1, 15, 30),
+        retrieved_at=_utc(2026, 9, 1, 15, 30),
         quote_timestamp=_utc(2026, 9, 1, 15, 30),
     )
     store.append_product_snapshots([entry_snapshot])
@@ -186,17 +189,17 @@ def test_shadow_ko_matches_real_ledger_entry_exactly(
         ],
     )
 
-    result = label_due_entries(store, _utc(2026, 9, 11), price_bars_lookup=lambda u: bars)
+    result = label_due_entries(store, _utc(2026, 9, 15), price_bars_lookup=lambda u: bars)
     assert result.ko == 1
-    assert result.shadow_positions_labeled == 1
+    assert result.shadow_positions_labeled == 0
 
     label = store.get_ledger_label(entry.entry_id)
     assert label is not None
     assert label.realized_selected_pnl == -1.0
 
     shadow_rows = store.list_shadow_positions(run_id="run-2")
-    assert shadow_rows[0].realized_net_return == -1.0
-    assert shadow_rows[0].realized_net_return == label.realized_selected_pnl
+    assert label.ambiguous_path is True
+    assert shadow_rows[0].realized_net_return is None
 
 
 def test_shadow_position_with_no_resolvable_data_stays_unlabeled_never_optimistic(
@@ -218,6 +221,8 @@ def test_shadow_position_with_no_resolvable_data_stays_unlabeled_never_optimisti
         ask=4.86,
         bid_only=True,
         observation_time=_utc(2026, 9, 1, 15, 30),
+        available_at=_utc(2026, 9, 1, 15, 30),
+        retrieved_at=_utc(2026, 9, 1, 15, 30),
         quote_timestamp=_utc(2026, 9, 1, 15, 30),
     )
     store.append_product_snapshots([entry_snapshot])
@@ -257,6 +262,8 @@ def test_not_yet_due_shadow_position_is_not_labeled(store, make_product_snapshot
         bid=4.80,
         ask=4.86,
         observation_time=_utc(2026, 9, 1, 15, 30),
+        available_at=_utc(2026, 9, 1, 15, 30),
+        retrieved_at=_utc(2026, 9, 1, 15, 30),
         quote_timestamp=_utc(2026, 9, 1, 15, 30),
     )
     store.append_product_snapshots([entry_snapshot])
@@ -291,6 +298,8 @@ def test_already_labeled_shadow_position_is_not_reprocessed(store, make_product_
         bid=4.80,
         ask=4.86,
         observation_time=_utc(2026, 9, 1, 15, 30),
+        available_at=_utc(2026, 9, 1, 15, 30),
+        retrieved_at=_utc(2026, 9, 1, 15, 30),
         quote_timestamp=_utc(2026, 9, 1, 15, 30),
     )
     store.append_product_snapshots([entry_snapshot])

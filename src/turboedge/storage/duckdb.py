@@ -608,7 +608,8 @@ _DDL_STATEMENTS: tuple[str, ...] = (
         mae DOUBLE,
         ko_hit BOOLEAN NOT NULL,
         time_to_ko_days INTEGER,
-        ambiguous_path BOOLEAN NOT NULL
+        ambiguous_path BOOLEAN NOT NULL,
+        outcome_version VARCHAR
     )
     """,
     """
@@ -1925,8 +1926,9 @@ class Store:
         row = self._conn.execute(
             f"SELECT {', '.join(_PRODUCT_SNAPSHOT_COLUMNS)} FROM product_snapshots "
             "WHERE isin = ? AND COALESCE(quote_timestamp, observation_time) <= ? "
+            "AND available_at <= ? AND retrieved_at <= ? AND observation_time <= ? "
             "ORDER BY COALESCE(quote_timestamp, observation_time) DESC LIMIT 1",
-            [isin, _to_utc(as_of)],
+            [isin, _to_utc(as_of), _to_utc(as_of), _to_utc(as_of), _to_utc(as_of)],
         ).fetchone()
         return _row_to_product_snapshot(row) if row is not None else None
 
@@ -3469,6 +3471,7 @@ _LEDGER_LABEL_COLUMNS: tuple[str, ...] = (
     "ko_hit",
     "time_to_ko_days",
     "ambiguous_path",
+    "outcome_version",
 )
 
 
@@ -3490,6 +3493,7 @@ def _ledger_label_row(label: LedgerLabel) -> tuple[Any, ...]:
         label.ko_hit,
         label.time_to_ko_days,
         label.ambiguous_path,
+        label.outcome_version,
     )
 
 
@@ -3511,6 +3515,7 @@ def _row_to_ledger_label(row: tuple[Any, ...]) -> LedgerLabel:
         ko_hit=row[13],
         time_to_ko_days=row[14],
         ambiguous_path=row[15],
+        outcome_version=row[16] or "LEGACY_UNVERIFIED",
     )
 
 

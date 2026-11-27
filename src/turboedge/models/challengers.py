@@ -392,6 +392,7 @@ class VolTargetedTsmomConfig(BaseModel):
     lookbacks: tuple[int, ...] = _TSMOM_LOOKBACKS
     clip: float = _TSMOM_CLIP
     ewma_lambda: float = _EWMA_LAMBDA
+    omit_vol_target: bool = False
     vol_multiplier_min: float = 0.3
     vol_multiplier_max: float = 3.0
     ridge_alpha: float = 1.0
@@ -440,6 +441,8 @@ class VolTargetedTsmom:
                 target_vol / sigma, self._config.vol_multiplier_min, self._config.vol_multiplier_max
             )
         invalid_sigma = ~np.isfinite(sigma) | (sigma <= 0.0)
+        if self._config.omit_vol_target:
+            multiplier = np.ones_like(sigma)
         multiplier[invalid_sigma] = np.nan
         x_raw = score * multiplier
 
@@ -637,6 +640,7 @@ class ShortHorizonReversalConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     model_id: str = "reversal_short_horizon_v1"
+    omit_reversal: bool = False
     reversal_window: int = 3
     clip: float = 3.0
     ewma_lambda: float = _EWMA_LAMBDA
@@ -677,6 +681,9 @@ class ShortHorizonReversal:
         self, eligible: Sequence[UnderlyingBar]
     ) -> Callable[[npt.NDArray[np.int64], int], npt.NDArray[np.float64]]:
         score, sigma = self._score_and_sigma(eligible)
+
+        if self._config.omit_reversal:
+            score = np.where(np.isfinite(score), 0.0, np.nan)
 
         def feature_fn(t_idx: npt.NDArray[np.int64], h: int) -> npt.NDArray[np.float64]:
             return (score[t_idx] * sigma[t_idx] * np.sqrt(h)).reshape(-1, 1)
@@ -1064,6 +1071,7 @@ class SeasonalityTurnOfMonthConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     model_id: str = "seasonality_turn_of_month_v1"
+    omit_calendar_bucket: bool = False
     min_train_samples: int = 20
 
 
@@ -1107,6 +1115,8 @@ class SeasonalityTurnOfMonth:
                         f"insufficient samples for horizon {h}d bucket={bucket}: "
                         f"{int(np.sum(mask))} < {self._config.min_train_samples}"
                     )
+                if self._config.omit_calendar_bucket:
+                    mask = np.ones_like(mask, dtype=bool)
                 yb = y[mask]
                 wb = weights_all[mask]
                 bucket_stats[bucket] = _SeasonalBucketStats(

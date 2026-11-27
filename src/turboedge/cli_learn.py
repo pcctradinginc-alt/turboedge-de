@@ -91,11 +91,11 @@ from turboedge.research.data_audit import (
     quote_freshness,
     snapshot_staleness_advantage,
 )
-from turboedge.research.data_factory import TapeCapture, audit_research_tape
+from turboedge.research.data_factory import TapeCapture, audit_research_tape, load_research_tape
 from turboedge.research.lottery_pricing import MIN_INDEPENDENT_DAYS
 from turboedge.research.lottery_pricing import evaluate as evaluate_lottery_pricing
 from turboedge.research.market_session import is_research_market_session
-from turboedge.research.product_pair_net_ev import probe as probe_product_pair_net_ev
+from turboedge.research.product_pair_net_ev import probe_tape
 from turboedge.research.product_pairs import ComparabilityCriteria, census
 from turboedge.research.step import run_research_step
 from turboedge.simulation.ko_calibration import build_ko_calibration_dataset
@@ -1026,14 +1026,15 @@ def research_product_pair_net_ev_cmd(
     pre-declared probe. Incomplete exits fail closed; no promotion or orders.
     """
     app_ctx = ctx.obj
-    with Store(app_ctx.db_path) as store:
-        store.init_schema()
-        snapshots = store.list_product_snapshots(underlying_id="DAX")
-    result = probe_product_pair_net_ev(snapshots)
+    now = datetime.now(UTC)
+    quotes = load_research_tape(app_ctx.state_dir, as_of=now)
+    result = probe_tape(quotes, as_of=now)
     payload = asdict(result)
     payload["verdict"] = result.verdict
     payload["research_stage"] = "EXPLORATORY_ONLY"
     payload["baseline"] = "NO_TRADE_0"
+    payload["data_source"] = "FROZEN_RESEARCH_TAPE"
+    payload["as_of"] = now.isoformat()
     path = Path(json_out)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -1069,10 +1070,21 @@ def research_ablation_cmd(
         CrossAssetLeadLagConfig,
         LowVolRegimeTrend,
         LowVolRegimeTrendConfig,
+        SeasonalityTurnOfMonth,
+        SeasonalityTurnOfMonthConfig,
+        ShortHorizonReversal,
+        ShortHorizonReversalConfig,
         VixTermStructure,
         VixTermStructureConfig,
+        VolTargetedTsmom,
+        VolTargetedTsmomConfig,
     )
-    from turboedge.research.filter_evaluation import evaluate_filters
+    from turboedge.research.filter_evaluation import (
+        evaluate_filters,
+        evaluate_gate_replay,
+        evaluate_lcb,
+    )
+    from turboedge.research.report_checkpoint import write_checkpoint
 
     app_ctx = ctx.obj
     fcfg = app_ctx.cfg.forecast
@@ -1086,9 +1098,11 @@ def research_ablation_cmd(
             store.latest_underlying_bars(x, 1500)
             for x in ("SPX", "NDX", "VIX", "EURUSD", "TNX", "VIX9D", "VIX3M")
         ]
-        filters = evaluate_filters(
-            store.list_ledger_entries(underlying=uid), as_of=datetime.now(UTC)
-        )
+        rows = store.list_ledger_entries(underlying=uid)
+        cutoff = datetime.now(UTC)
+        filters = evaluate_filters(rows, as_of=cutoff)
+        lcb = evaluate_lcb(rows, as_of=cutoff)
+        gate_replay = evaluate_gate_replay(rows, as_of=cutoff)
     names = ("spx_ret_1d", "ndx_ret_1d", "vix_chg_1d", "eurusd_ret_1d", "tnx_chg_1d")
     reports: list[dict[str, Any]] = []
     failures: list[str] = []
@@ -1135,13 +1149,61 @@ def research_ablation_cmd(
                 )
             },
         ),
+        (
+            VolTargetedTsmom,
+            {
+                "vol_target_multiplier": lambda: VolTargetedTsmom(
+                    VolTargetedTsmomConfig(omit_vol_target=True)
+                )
+            },
+        ),
+        (
+            ShortHorizonReversal,
+            {
+                "reversal_score": lambda: ShortHorizonReversal(
+                    ShortHorizonReversalConfig(omit_reversal=True)
+                )
+            },
+        ),
+        (
+            SeasonalityTurnOfMonth,
+            {
+                "turn_of_month_bucket": lambda: SeasonalityTurnOfMonth(
+                    SeasonalityTurnOfMonthConfig(omit_calendar_bucket=True)
+                )
+            },
+        ),
     ]
-    tests = 2 * 7 * len(fcfg.horizons)
+    planned_features = [name for _, variants in families for name in variants]
+    tests = 2 * len(planned_features) * len(fcfg.horizons)
+    path = Path(json_out)
+
+    def checkpoint(status: str) -> None:
+        write_checkpoint(
+            path,
+            {
+                "status": status,
+                "underlying": uid,
+                "promotion_allowed": False,
+                "planned_tests": tests,
+                "planned_features": planned_features,
+                "completed_comparisons": len(reports),
+                "failures": failures,
+                "effects": reports,
+                "ledger_filter_diagnostics": filters,
+                "lcb_diagnostics": lcb,
+                "gate_replay": gate_replay,
+                "as_of": cutoff.isoformat(),
+            },
+        )
+
+    checkpoint("PARTIAL")
     for factory, variants in families:
         try:
             full = run(factory)
         except ValueError as exc:
             failures.append(f"{factory().model_id}: {exc}")
+            checkpoint("PARTIAL")
             continue
         for name, reduced_factory in variants.items():
             try:
@@ -1156,25 +1218,13 @@ def research_ablation_cmd(
                     )
             except ValueError as exc:
                 failures.append(f"{name}: {exc}")
-    status = "INCOMPLETE_DATA_OR_EVALUATION" if failures else "EXPLORATORY_ONLY"
-    path = Path(json_out)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(
-            {
-                "status": status,
-                "underlying": uid,
-                "promotion_allowed": False,
-                "planned_tests": tests,
-                "failures": failures,
-                "effects": reports,
-                "ledger_filter_diagnostics": filters,
-            },
-            indent=2,
-            allow_nan=False,
-        ),
-        encoding="utf-8",
+            checkpoint("PARTIAL")
+    status = (
+        "INCOMPLETE_DATA_OR_EVALUATION"
+        if failures or len(reports) != len(planned_features) * len(fcfg.horizons)
+        else "EXPLORATORY_ONLY"
     )
+    checkpoint(status)
     _write_summary("research_ablation", {"effects": len(reports)}, status=status)
 
 

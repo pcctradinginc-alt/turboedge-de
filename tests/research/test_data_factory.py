@@ -18,6 +18,7 @@ from turboedge.research.data_factory import (
     capture_daily_research_tape,
     load_research_tape,
 )
+from turboedge.research.product_pair_net_ev import probe_tape
 from turboedge.state.archive import (
     LEAN_INCLUDE_DIRS,
     ArchiveConfig,
@@ -82,7 +83,7 @@ def test_daily_deep_archive_keeps_entry_and_48h_followups(
 
     # The next day's quotes complete yesterday's issuer comparison. They
     # are NOT allowed to become a second "new entry" on that day.
-    next_time = _START + timedelta(days=1)
+    next_time = _START + timedelta(days=1, minutes=1)
     b = capture_daily_research_tape(
         root,
         products=_pair(make_product_snapshot, next_time, exit_bid=True),
@@ -258,3 +259,52 @@ def test_followup_cannot_be_promoted_to_new_entry_by_discovery(
     sessions = _candidate_sessions(quotes, now=_START + timedelta(days=3))
     assert len(sessions) == 1
     assert sessions[0].day == _START.date()
+
+
+def test_tape_probe_requires_joint_exit_and_never_reuses_followups(
+    tmp_path: Path, make_product_snapshot: Callable[..., ProductSnapshot]
+) -> None:
+    root = tmp_path / "state"
+    capture_daily_research_tape(
+        root,
+        products=_pair(make_product_snapshot, _START),
+        now=_START + timedelta(minutes=2),
+    )
+    next_day = _START + timedelta(days=1, minutes=1)
+    left = _pair(make_product_snapshot, next_day, exit_bid=True)[0]
+    right = _pair(make_product_snapshot, next_day + timedelta(minutes=5), exit_bid=True)[1]
+    capture_daily_research_tape(root, products=[left, right], now=next_day + timedelta(minutes=6))
+    cutoff = _START + timedelta(days=3)
+    rows = load_research_tape(root, as_of=cutoff)
+    result = probe_tape(rows, as_of=cutoff)
+    assert result.candidate_days == 1
+    assert result.complete_days == 0
+    assert result.missing_exit_days == 1
+    assert result.verdict == "INCOMPLETE_EXITS"
+
+
+def test_tape_probe_pending_then_complete(
+    tmp_path: Path, make_product_snapshot: Callable[..., ProductSnapshot]
+) -> None:
+    root = tmp_path / "state"
+    capture_daily_research_tape(
+        root,
+        products=_pair(make_product_snapshot, _START),
+        now=_START + timedelta(minutes=2),
+    )
+    # Both issuer quote timestamps must be after the common 24h deadline.
+    next_day = _START + timedelta(days=1, minutes=1)
+    capture_daily_research_tape(
+        root,
+        products=_pair(make_product_snapshot, next_day, exit_bid=True),
+        now=next_day + timedelta(minutes=2),
+    )
+    pending_at = next_day + timedelta(minutes=3)
+    pending = probe_tape(load_research_tape(root, as_of=pending_at), as_of=pending_at)
+    assert pending.pending_days == 1
+    assert pending.complete_days == 0
+    cutoff = _START + timedelta(days=3)
+    result = probe_tape(load_research_tape(root, as_of=cutoff), as_of=cutoff)
+    assert result.candidate_days == 1
+    assert result.complete_days == 1
+    assert result.missing_exit_days == 0

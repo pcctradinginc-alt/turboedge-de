@@ -14,7 +14,8 @@ are not lowered to manufacture suggestions.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from math import isfinite
 
 from turboedge.pricing.integrity import IntegrityReport
 from turboedge.storage.schemas import Category, FieldReliability
@@ -279,3 +280,38 @@ def evaluate_gates(inp: GateInput, th: GateThresholds) -> tuple[Category, list[s
     if not watch_reasons:
         watch_reasons.append("watch_default")
     return Category.WATCH, watch_reasons
+
+
+def research_gate_replay_flags(inp: GateInput, th: GateThresholds) -> dict[str, float]:
+    """Freeze isolated counterfactual eligibility; never change live classification."""
+    flags = {"gate_replay_v2": 1.0}
+    category, _ = evaluate_gates(inp, th)
+    if category is Category.ACTIONABLE:
+        return flags
+    variants: dict[str, tuple[GateInput, GateThresholds]] = {}
+    if inp.lcb_ev is not None and isfinite(inp.lcb_ev) and inp.lcb_ev <= 0:
+        variants["lcb_ev_not_positive"] = (replace(inp, lcb_ev=1e-12), th)
+    if inp.spread_pct is not None and isfinite(inp.spread_pct) and inp.spread_pct >= 0:
+        variants["spread_too_high"] = (
+            inp,
+            replace(th, max_spread_pct=max(th.max_spread_pct, inp.spread_pct)),
+        )
+    if inp.leverage is not None and isfinite(inp.leverage) and inp.leverage > 0:
+        variants["leverage_out_of_range"] = (
+            inp,
+            replace(
+                th,
+                min_leverage=min(th.min_leverage, inp.leverage),
+                max_leverage=max(th.max_leverage, inp.leverage),
+            ),
+        )
+    distance = inp.distance_to_barrier_sigma
+    if distance is not None and isfinite(distance) and distance > 0:
+        variants["barrier_distance_too_small"] = (
+            inp,
+            replace(th, min_distance_to_barrier_sigma=min(th.min_distance_to_barrier_sigma, distance)),
+        )
+    for name, (candidate, thresholds) in variants.items():
+        result, _ = evaluate_gates(candidate, thresholds)
+        flags[f"gate_replay_v2:{name}"] = float(result is Category.ACTIONABLE)
+    return flags

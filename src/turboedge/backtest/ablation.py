@@ -31,10 +31,15 @@ def _interval(values: list[float], horizon: int, tests: int) -> tuple[float, flo
     intervals = []
     for block in (horizon, 2 * horizon):
         count = (len(arr) + block - 1) // block
-        starts = rng.integers(0, len(arr) - block + 1, size=(1000, count))
-        indices = (starts[:, :, None] + np.arange(block)).reshape(1000, -1)
-        means = arr[indices[:, : len(arr)]].mean(axis=1)
         tail = 0.025 / tests
+        # At least 20 expected tail draws; bounded batches avoid a huge index matrix.
+        reps = max(3000, 800 * tests)
+        means = np.empty(reps)
+        for start in range(0, reps, 256):
+            size = min(256, reps - start)
+            starts = rng.integers(0, len(arr) - block + 1, size=(size, count))
+            indices = (starts[:, :, None] + np.arange(block)).reshape(size, -1)
+            means[start : start + size] = arr[indices[:, : len(arr)]].mean(axis=1)
         intervals.append((float(np.quantile(means, tail)), float(np.quantile(means, 1 - tail))))
     return min(x[0] for x in intervals), max(x[1] for x in intervals)
 

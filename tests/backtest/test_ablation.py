@@ -8,7 +8,11 @@ import pytest
 
 from turboedge.backtest.ablation import compare
 from turboedge.backtest.walkforward import WalkForwardResult
-from turboedge.research.filter_evaluation import evaluate_filters
+from turboedge.research.filter_evaluation import (
+    evaluate_filters,
+    evaluate_gate_replay,
+    evaluate_lcb,
+)
 
 
 def _result(p: float, ret: float = 0.01) -> WalkForwardResult:
@@ -37,6 +41,19 @@ def test_mismatched_outcome_fails_closed() -> None:
 
 def test_empty_ledger_does_not_invent_economics() -> None:
     result = evaluate_filters([], as_of=datetime(2026, 11, 26, tzinfo=UTC))
+    assert result["status"] == "INSUFFICIENT_DATA"
     assert result["eligible_rows"] == 0
     assert result["effects"] == []
     assert result["causal_filter_ablation"] is False
+
+
+def test_empty_lcb_has_no_coverage_claim() -> None:
+    result = evaluate_lcb([], as_of=datetime(2026, 11, 26, tzinfo=UTC))
+    assert result["status"] == "INSUFFICIENT_DATA"
+    assert result["formal_coverage_claim"] is False
+
+
+def test_gate_replay_requires_archived_decisions() -> None:
+    result = evaluate_gate_replay([], as_of=datetime(2026, 11, 26, tzinfo=UTC))
+    assert result["status"] == "NO_ARCHIVED_GATE_INPUTS"
+    assert result["promotion_allowed"] is False

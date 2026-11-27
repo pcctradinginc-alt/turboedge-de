@@ -309,8 +309,8 @@ def test_the_labeler_and_the_diagnostic_agree_on_what_is_due(
     # The labeler acted on exactly that one, whatever outcome it reached.
     # `labeled` is the total; `ko`, `ambiguous` and `missing_data` are
     # breakdowns of it and overlap with it rather than partitioning it.
-    assert result.labeled == health.due_now
-    assert result.skipped_not_due == 0
+    assert result.labeled + result.skipped_not_due == health.due_now
+    assert result.skipped_not_due == 1
 
 
 def test_the_diagnostic_never_creates_or_changes_a_label(

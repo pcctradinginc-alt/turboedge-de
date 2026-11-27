@@ -17,7 +17,7 @@ Exit resolution, in order:
    conservative 0.
 2. Normal horizon exit: a real product-snapshot bid quote is found --
    preferably the first one at/after `exit_due` 15:30 Europe/Berlin, else
-   the last one available within `exit_due + 2 trading days`.
+   the last available bid (marked ambiguous if before the deadline).
 3. Neither of the above: no snapshot at all in the window. Falls back to
    the last known bid (from the window, or the entry's own `entry_bid`),
    discounted by the entry's own spread (`* (1 - entry_spread)`) --
@@ -143,6 +143,19 @@ def _barrier_touch_date(
     return None
 
 
+def _available_snapshots(
+    store: Store, isin: str, start: datetime, end: datetime, as_of: datetime | None
+) -> list[ProductSnapshot]:
+    if as_of is not None:
+        end = min(end, as_of)
+    return [
+        s
+        for s in store.product_snapshots_in_range(isin, start, end)
+        if as_of is None
+        or (s.available_at <= as_of and s.retrieved_at <= as_of and s.observation_time <= as_of)
+    ]
+
+
 def resolve_exit(
     store: Store,
     *,
@@ -157,6 +170,7 @@ def resolve_exit(
     underlying_bars: Sequence[UnderlyingBar],
     product_type: ProductType | None,
     config: LabelerConfig | None = None,
+    as_of: datetime | None = None,
 ) -> ExitResolution:
     """Resolve one product's exit for one ledger entry (or one counterfactual
     alternative), per the module docstring's rules.
@@ -188,8 +202,10 @@ def resolve_exit(
     window_end_date = _add_trading_days(exit_due, cfg.exit_quote_grace_trading_days)
     window_end = datetime.combine(window_end_date, time(23, 59, 59), tzinfo=UTC)
 
-    snapshots = store.product_snapshots_in_range(isin, entry_quote_timestamp, window_end)
+    snapshots = _available_snapshots(store, isin, entry_quote_timestamp, window_end, as_of)
     snapshots = sorted(snapshots, key=lambda s: s.quote_timestamp or s.observation_time)
+    if as_of is not None:
+        underlying_bars = [b for b in underlying_bars if b.available_at <= as_of]
     deadline = _exit_due_quote_deadline_utc(exit_due)
     first_exit = next(
         (
@@ -197,6 +213,8 @@ def resolve_exit(
             for s in snapshots
             if s.bid is not None
             and not s.knocked_out
+            and not s.is_stale
+            and s.bid >= 0
             and s.quote_timestamp is not None
             and s.quote_timestamp >= deadline
         ),
@@ -206,7 +224,7 @@ def resolve_exit(
     if first_exit is not None and first_exit.quote_timestamp is not None:
         exit_at = first_exit.quote_timestamp
         snapshots = [s for s in snapshots if (s.quote_timestamp or s.observation_time) <= exit_at]
-    with_bid = [s for s in snapshots if s.bid is not None]
+    with_bid = [s for s in snapshots if s.bid is not None and s.bid >= 0 and not s.is_stale]
 
     # -- MFE/MAE on product value relative to entry_ask, from every snapshot
     # with a bid seen in the window (Build Contract v2 W6 requirement 3).
@@ -220,14 +238,27 @@ def resolve_exit(
 
     # -- KO detection: product feed flag, or bars crossing the barrier.
     ko_snapshot: ProductSnapshot | None = next((s for s in snapshots if s.knocked_out), None)
+    # Daily extrema do not identify the intraday touch time. For dynamic
+    # barriers, snapshots also do not establish a continuous effective history.
+    # Use observed barrier levels as conservative scenarios, never as proof
+    # that a particular barrier was in force at the time of a daily extremum.
     bars_touch_date: date | None = None
-    if barrier is not None and underlying_bars:
+    end_day = (
+        first_exit.quote_timestamp.date()
+        if first_exit is not None and first_exit.quote_timestamp is not None
+        else window_end_date
+    )
+    levels = [s.knockout_barrier for s in snapshots if s.knockout_barrier is not None]
+    if barrier is not None:
+        levels.append(barrier)
+    if levels and underlying_bars:
+        conservative_barrier = max(levels) if direction is Direction.LONG else min(levels)
         bars_touch_date = _barrier_touch_date(
             underlying_bars,
             direction=direction,
-            barrier=barrier,
-            start=entry_underlying_date,
-            end=exit_due,
+            barrier=conservative_barrier,
+            start=entry_quote_timestamp.date(),
+            end=end_day,
         )
     ko_hit = ko_snapshot is not None or bars_touch_date is not None
 
@@ -274,7 +305,7 @@ def resolve_exit(
             exit_reason=ExitReason.KO,
             realized_pnl=realized_pnl,
             ko_hit=True,
-            ambiguous_path=False,  # KO information here is unambiguous by construction
+            ambiguous_path=ko_snapshot is None or product_type is ProductType.MINI_FUTURE,
             time_to_ko_days=time_to_ko_days,
             mfe=mfe,
             mae=mae,
@@ -296,7 +327,7 @@ def resolve_exit(
             exit_reason=ExitReason.HORIZON,
             realized_pnl=realized_pnl,
             ko_hit=False,
-            ambiguous_path=False,
+            ambiguous_path=preferred is None,
             time_to_ko_days=None,
             mfe=mfe,
             mae=mae,
@@ -335,6 +366,7 @@ def resolve_exit_with_fallback(
     underlying_bars: Sequence[UnderlyingBar],
     product_type: ProductType | None,
     config: LabelerConfig | None = None,
+    as_of: datetime | None = None,
 ) -> ExitResolution:
     """Wraps :func:`resolve_exit`, adding the last-known-bid conservative
     fallback (case 3 in the module docstring) when it returns
@@ -353,6 +385,7 @@ def resolve_exit_with_fallback(
         underlying_bars=underlying_bars,
         product_type=product_type,
         config=config,
+        as_of=as_of,
     )
     if resolution.exit_reason is not ExitReason.EXPIRED_NO_DATA:
         return resolution
@@ -360,7 +393,7 @@ def resolve_exit_with_fallback(
     cfg = config if config is not None else LabelerConfig()
     window_end_date = _add_trading_days(exit_due, cfg.exit_quote_grace_trading_days)
     window_end = datetime.combine(window_end_date, time(23, 59, 59), tzinfo=UTC)
-    snapshots = store.product_snapshots_in_range(isin, entry_quote_timestamp, window_end)
+    snapshots = _available_snapshots(store, isin, entry_quote_timestamp, window_end, as_of)
     with_bid = [s for s in snapshots if s.bid is not None]
     last_known_bid = with_bid[-1].bid if with_bid else entry_bid
     if last_known_bid is None:
@@ -452,6 +485,8 @@ def label_due_shadow_positions(
     bars_cache: dict[str, Sequence[UnderlyingBar]] = {}
     labeled = 0
     for position in positions:
+        if as_of < _exit_due_quote_deadline_utc(position.exit_due):
+            continue
         terms = _shadow_entry_terms(store, position.isin, position.created_at)
         if terms is None:
             continue
@@ -479,8 +514,9 @@ def label_due_shadow_positions(
             underlying_bars=bars,
             product_type=product_type,
             config=config,
+            as_of=as_of,
         )
-        if resolution.realized_pnl is None:
+        if resolution.realized_pnl is None or resolution.ambiguous_path:
             continue
         store.update_shadow_position_realized_return(
             position.run_id,
@@ -528,9 +564,12 @@ def label_due_entries(
     bars_cache: dict[str, Sequence[UnderlyingBar]] = {}
 
     for entry in entries:
+        if as_of < _exit_due_quote_deadline_utc(entry.exit_due):
+            result.skipped_not_due += 1
+            continue
         bars = bars_cache.get(entry.underlying)
         if bars is None:
-            bars = price_bars_lookup(entry.underlying)
+            bars = [b for b in price_bars_lookup(entry.underlying) if b.available_at <= as_of]
             bars_cache[entry.underlying] = bars
 
         instrument = store.get_instrument(entry.selected_isin)
@@ -550,7 +589,13 @@ def label_due_entries(
             underlying_bars=bars,
             product_type=product_type,
             config=config,
+            as_of=as_of,
         )
+
+        grace_end = _add_trading_days(entry.exit_due, cfg.exit_quote_grace_trading_days)
+        if resolution.ambiguous_path and as_of.date() <= grace_end:
+            result.skipped_not_due += 1
+            continue
 
         underlying_pnl = _underlying_log_return(
             bars,
@@ -574,8 +619,9 @@ def label_due_entries(
             store,
             entry,
             underlying_bars=bars,
-            selected_realized_pnl=resolution.realized_pnl,
+            selected_realized_pnl=None if resolution.ambiguous_path else resolution.realized_pnl,
             config=cfg,
+            as_of=as_of,
         )
 
         label = LedgerLabel(
@@ -595,6 +641,7 @@ def label_due_entries(
             ko_hit=resolution.ko_hit,
             time_to_ko_days=resolution.time_to_ko_days,
             ambiguous_path=resolution.ambiguous_path,
+            outcome_version="PIT_V2",
         )
         store.attach_ledger_label(label)
 

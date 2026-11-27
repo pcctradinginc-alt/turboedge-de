@@ -40,6 +40,8 @@ from turboedge.research.product_pair_net_ev import (
     MAX_QUOTE_AGE_S,
     _fresh_exit,
     _valid_quote,
+    common_entry,
+    synchronized_returns,
 )
 from turboedge.research.product_pairs import ComparabilityCriteria, census
 from turboedge.research.step import EXECUTED_SCREEN_STATUSES, SCREEN_KIND
@@ -187,6 +189,29 @@ def _candidate_sessions(snapshots: list[ProductSnapshot], *, now: datetime) -> l
         # selection from the prior day's deliberately tracked instruments.
         and (not isinstance(s, ResearchQuote) or s.quote_role == "entry")
     ]
+    if any(isinstance(s, ResearchQuote) for s in snapshots):
+        frozen: dict[date, list[ResearchQuote]] = defaultdict(list)
+        for s in eligible:
+            if isinstance(s, ResearchQuote):
+                frozen[s.cohort_day].append(s)
+        sessions: list[PairDay] = []
+        previous: date | None = None
+        for day, entries in sorted(frozen.items()):
+            if len(entries) != 2:
+                continue
+            first, second_quote = entries
+            opened = common_entry(first, second_quote)
+            if (
+                opened is None
+                or opened.astimezone(UTC).date() != day
+                or (previous is not None and (day - previous).days < MIN_DAY_SPACING)
+                or not census(entries, criteria=ComparabilityCriteria()).pairs
+            ):
+                continue
+            sessions.append(PairDay(day=day, left=first, right=second_quote))
+            previous = day
+        return sessions
+
     by_quote: dict[tuple[str, datetime], list[ProductSnapshot]] = defaultdict(list)
     for s in eligible:
         if s.quote_timestamp is None:
@@ -375,8 +400,36 @@ def evaluate(
             key=lambda x: (x[0], x[1].issuer, x[1].isin),
         )[1]
         naive = min((pair.left, pair.right), key=lambda s: (s.issuer, s.isin))
-        selected_result = _exit_return(selected, histories=histories)
-        naive_result = _exit_return(naive, histories=histories)
+        selected_result: float | None
+        naive_result: float | None
+        if isinstance(pair.left, ResearchQuote) or isinstance(pair.right, ResearchQuote):
+            opened = common_entry(pair.left, pair.right)
+            observed = (
+                synchronized_returns(
+                    pair.left,
+                    pair.right,
+                    [
+                        q
+                        for entry in (pair.left, pair.right)
+                        for q in histories.get(entry.isin, [])
+                        if isinstance(q, ResearchQuote)
+                        and q.quote_role == "followup"
+                        and q.cohort_day == pair.day
+                    ],
+                    opened=opened,
+                )
+                if opened is not None and opened + EXIT_LATEST <= now
+                else None
+            )
+            if observed is None:
+                missing_exit += 1
+                continue
+            selected_result = observed[0] if selected is pair.left else observed[1]
+            naive_result = observed[0] if naive is pair.left else observed[1]
+        else:
+            # Legacy synthetic/retrospective input is not the production tape.
+            selected_result = _exit_return(selected, histories=histories)
+            naive_result = _exit_return(naive, histories=histories)
         if selected_result is None or naive_result is None:
             missing_exit += 1
             continue

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
@@ -49,6 +49,8 @@ def test_normal_horizon_exit_uses_snapshot_at_or_after_deadline(
                 isin=entry.selected_isin,
                 bid=5.10,
                 ask=5.16,
+                knockout_barrier=17000.0,
+                financing_level=17000.0,
                 observation_time=_utc(2026, 9, 10, 15, 30),
                 quote_timestamp=_utc(2026, 9, 10, 15, 30),
             )
@@ -62,7 +64,7 @@ def test_normal_horizon_exit_uses_snapshot_at_or_after_deadline(
         ],
     )
 
-    result = label_due_entries(store, _utc(2026, 9, 11), price_bars_lookup=lambda u: bars)
+    result = label_due_entries(store, _utc(2026, 9, 15), price_bars_lookup=lambda u: bars)
     assert result.labeled == 1
     assert result.ko == 0
     assert result.ambiguous == 0
@@ -102,7 +104,7 @@ def test_ko_detected_via_underlying_bars_barrier_touch(
         ],
     )
 
-    result = label_due_entries(store, _utc(2026, 9, 11), price_bars_lookup=lambda u: bars)
+    result = label_due_entries(store, _utc(2026, 9, 15), price_bars_lookup=lambda u: bars)
     assert result.labeled == 1
     assert result.ko == 1
 
@@ -110,7 +112,7 @@ def test_ko_detected_via_underlying_bars_barrier_touch(
     assert label is not None
     assert label.exit_reason == ExitReason.KO
     assert label.ko_hit is True
-    assert label.ambiguous_path is False
+    assert label.ambiguous_path is True
     # turbo (default instrument lookup is None -> conservative 0 residual)
     assert label.exit_bid == 0.0
     assert label.realized_selected_pnl == pytest.approx(-1.0)
@@ -140,7 +142,7 @@ def test_ko_via_gap_through_open(store, make_ledger_entry, make_underlying_bar) 
         ],
     )
 
-    result = label_due_entries(store, _utc(2026, 9, 11), price_bars_lookup=lambda u: bars)
+    result = label_due_entries(store, _utc(2026, 9, 15), price_bars_lookup=lambda u: bars)
     assert result.ko == 1
     label = store.get_ledger_label(entry.entry_id)
     assert label is not None
@@ -192,7 +194,7 @@ def test_mini_future_ko_uses_post_ko_snapshot_bid(
         ],
     )
 
-    label_due_entries(store, _utc(2026, 9, 11), price_bars_lookup=lambda u: bars)
+    label_due_entries(store, _utc(2026, 9, 15), price_bars_lookup=lambda u: bars)
     label = store.get_ledger_label(entry.entry_id)
     assert label is not None
     assert label.exit_reason == ExitReason.KO
@@ -225,7 +227,7 @@ def test_missing_quotes_falls_back_to_conservative_ambiguous(
         ],
     )
 
-    result = label_due_entries(store, _utc(2026, 9, 13), price_bars_lookup=lambda u: bars)
+    result = label_due_entries(store, _utc(2026, 9, 15), price_bars_lookup=lambda u: bars)
     assert result.labeled == 1
     assert result.ambiguous == 1
     assert result.missing_data == 0
@@ -251,7 +253,7 @@ def test_expired_no_data_when_absolutely_nothing_available(store, make_ledger_en
     )
     ForwardLedger(store).record([entry])
 
-    result = label_due_entries(store, _utc(2026, 9, 13), price_bars_lookup=lambda u: [])
+    result = label_due_entries(store, _utc(2026, 9, 15), price_bars_lookup=lambda u: [])
     assert result.labeled == 0
     assert result.missing_data == 1
 
@@ -269,7 +271,7 @@ def test_entry_not_yet_due_is_not_labeled(store, make_ledger_entry) -> None:
     entry = make_ledger_entry(exit_due=date(2026, 12, 31))
     ForwardLedger(store).record([entry])
 
-    result = label_due_entries(store, _utc(2026, 9, 11), price_bars_lookup=lambda u: [])
+    result = label_due_entries(store, _utc(2026, 9, 15), price_bars_lookup=lambda u: [])
     assert result.labeled == 0
     assert result.missing_data == 0
     fetched = store.get_ledger_entry(entry.entry_id)
@@ -277,11 +279,10 @@ def test_entry_not_yet_due_is_not_labeled(store, make_ledger_entry) -> None:
     assert fetched.status == LedgerEntryStatus.OPEN
 
 
-def test_fallback_exit_quote_within_grace_window_is_horizon_not_ambiguous(
+def test_predeadline_exit_quote_is_ambiguous(
     store, make_ledger_entry, make_product_snapshot, make_underlying_bar
 ) -> None:
-    """No snapshot at/after the exact deadline, but one within the grace
-    window -- still a real quote, so exit_reason is HORIZON, not ambiguous."""
+    """A real but predeadline bid is not a confirmed horizon outcome."""
     entry = make_ledger_entry(
         entry_ask=4.86,
         entry_quote_timestamp=_utc(2026, 9, 1, 15, 30),
@@ -300,6 +301,8 @@ def test_fallback_exit_quote_within_grace_window_is_horizon_not_ambiguous(
                 isin=entry.selected_isin,
                 bid=5.00,
                 ask=5.06,
+                knockout_barrier=15000.0,
+                financing_level=15000.0,
                 observation_time=_utc(2026, 9, 9, 10, 0),
                 quote_timestamp=_utc(2026, 9, 9, 10, 0),
             )
@@ -313,11 +316,11 @@ def test_fallback_exit_quote_within_grace_window_is_horizon_not_ambiguous(
         ],
     )
 
-    label_due_entries(store, _utc(2026, 9, 13), price_bars_lookup=lambda u: bars)
+    label_due_entries(store, _utc(2026, 9, 15), price_bars_lookup=lambda u: bars)
     label = store.get_ledger_label(entry.entry_id)
     assert label is not None
     assert label.exit_reason == ExitReason.HORIZON
-    assert label.ambiguous_path is False
+    assert label.ambiguous_path is True
     assert label.exit_bid == 5.00
 
 
@@ -361,3 +364,122 @@ def test_later_knockout_does_not_override_horizon_exit(
 def test_grace_period_skips_good_friday_and_easter_monday() -> None:
     assert _add_trading_days(date(2026, 4, 2), 1) == date(2026, 4, 7)
     assert _add_trading_days(date(2026, 4, 2), 2) == date(2026, 4, 8)
+
+
+def test_entry_day_bar_touch_is_not_confirmed_ko(
+    store, make_ledger_entry, make_underlying_bar
+) -> None:
+    entry = make_ledger_entry(
+        entry_quote_timestamp=_utc(2026, 9, 1, 15, 30),
+        entry_underlying_timestamp=_utc(2026, 9, 1, 15, 30),
+        exit_due=date(2026, 9, 10),
+        barrier_entry=17900.0,
+        direction=Direction.LONG,
+    )
+    ForwardLedger(store).record([entry])
+    bars = _bars(make_underlying_bar, [(date(2026, 9, 1), 18000, 18100, 17800, 18050)])
+    label_due_entries(store, _utc(2026, 9, 15), price_bars_lookup=lambda u: bars)
+    label = store.get_ledger_label(entry.entry_id)
+    assert label is not None
+    assert label.ambiguous_path is True
+
+
+def test_changed_observed_barrier_can_trigger_only_ambiguous_ko(
+    store, make_ledger_entry, make_product_snapshot, make_underlying_bar
+) -> None:
+    entry = make_ledger_entry(
+        entry_quote_timestamp=_utc(2026, 9, 1, 15, 30),
+        entry_underlying_timestamp=_utc(2026, 9, 1, 15, 30),
+        exit_due=date(2026, 9, 10),
+        barrier_entry=17000.0,
+        direction=Direction.LONG,
+    )
+    ForwardLedger(store).record([entry])
+    store.append_product_snapshots(
+        [
+            make_product_snapshot(
+                isin=entry.selected_isin,
+                knockout_barrier=17900.0,
+                financing_level=17900.0,
+            )
+        ]
+    )
+    bars = _bars(make_underlying_bar, [(date(2026, 9, 10), 18000, 18100, 17800, 18050)])
+    label_due_entries(store, _utc(2026, 9, 15), price_bars_lookup=lambda u: bars)
+    label = store.get_ledger_label(entry.entry_id)
+    assert label is not None
+    assert label.exit_reason == ExitReason.KO
+    assert label.ambiguous_path is True
+
+
+def test_unresolved_outcome_waits_for_grace_window(store, make_ledger_entry) -> None:
+    entry = make_ledger_entry(exit_due=date(2026, 9, 10))
+    ForwardLedger(store).record([entry])
+    result = label_due_entries(store, _utc(2026, 9, 11), price_bars_lookup=lambda u: [])
+    assert result.skipped_not_due == 1
+    assert store.get_ledger_label(entry.entry_id) is None
+
+
+def test_gate_replay_costs_and_missing_outcomes(make_ledger_entry) -> None:
+    from turboedge.research.filter_evaluation import evaluate_gate_replay
+    from turboedge.storage.schemas import Category, ExitReason, LedgerLabel
+
+    cutoff = datetime(2026, 11, 26, tzinfo=UTC)
+    entry = make_ledger_entry(
+        prediction_time=cutoff - timedelta(days=10),
+        exit_due=(cutoff - timedelta(days=5)).date(),
+        category=Category.WATCH,
+        is_shadow=True,
+        feature_snapshot={
+            "gate_archive_v1": 1.0,
+            "gate_failure_count": 1.0,
+            "gate_reason:lcb_ev_not_positive": 1.0,
+        },
+    )
+    label = LedgerLabel(
+        entry_id=entry.entry_id,
+        labeled_at=cutoff - timedelta(days=1),
+        exit_reason=ExitReason.HORIZON,
+        realized_selected_pnl=0.1,
+        ko_hit=False,
+        ambiguous_path=False,
+    )
+    result = evaluate_gate_replay([(entry, label)], as_of=cutoff)
+    assert result["status"] == "DESCRIPTIVE_ONLY"
+    missing = evaluate_gate_replay([(entry, None)], as_of=cutoff)
+    assert missing["status"] == "INCOMPLETE_OUTCOMES"
+    multiple = entry.model_copy(
+        update={"feature_snapshot": {**entry.feature_snapshot, "gate_failure_count": 2.0}}
+    )
+    assert evaluate_gate_replay([(multiple, label)], as_of=cutoff)["status"] == "NO_AFFECTED_ROWS"
+
+
+def test_future_available_quote_not_used(store, make_ledger_entry, make_product_snapshot) -> None:
+    entry = make_ledger_entry(barrier_entry=15000.0)
+    ForwardLedger(store).record([entry])
+    store.append_product_snapshots(
+        [
+            make_product_snapshot(
+                isin=entry.selected_isin,
+                available_at=_utc(2026, 9, 12),
+                retrieved_at=_utc(2026, 9, 12),
+            )
+        ]
+    )
+    result = label_due_entries(store, _utc(2026, 9, 11), price_bars_lookup=lambda u: [])
+    assert result.skipped_not_due == 1
+    assert store.get_ledger_label(entry.entry_id) is None
+    result = label_due_entries(store, _utc(2026, 9, 12, 16), price_bars_lookup=lambda u: [])
+    assert result.labeled == 1
+    label = store.get_ledger_label(entry.entry_id)
+    assert label is not None
+    assert label.outcome_version == "PIT_V2"
+
+
+def test_entry_snapshot_must_be_available_at_decision(store, make_product_snapshot) -> None:
+    snapshot = make_product_snapshot()
+    store.append_product_snapshots([snapshot])
+    before = store.latest_product_snapshot_at_or_before(snapshot.isin, snapshot.observation_time)
+    after = store.latest_product_snapshot_at_or_before(snapshot.isin, snapshot.retrieved_at)
+    assert before is None
+    assert after is not None

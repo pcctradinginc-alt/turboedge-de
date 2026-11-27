@@ -8,7 +8,13 @@ from datetime import datetime
 from math import isfinite
 from statistics import mean
 
-from turboedge.research.execution_costs import COST_SCENARIOS, NOTIONALS_EUR
+from turboedge.research.execution_costs import (
+    COST_SCENARIOS,
+    NOTIONALS_EUR,
+    PRIMARY_NOTIONAL_EUR,
+    PRIMARY_SCENARIO,
+    research_net_return,
+)
 from turboedge.storage.schemas import Category, ExitReason, LedgerEntry, LedgerLabel
 
 
@@ -273,9 +279,137 @@ def evaluate_gate_replay(
         "archived_rows": len(archived),
         "legacy_rows": len(eligible) - len(archived),
         "effects": effects,
+        "policy_replay_v2": evaluate_ranked_policy_replay(eligible, as_of=as_of),
         "non_replayed_safety_or_missing_input_gates": list(_NON_REPLAY_GATES),
         "promotion_allowed": False,
         "cost_basis": "hypothetical_execution_costs_on_observed_bid_ask",
         "scope": "archived_candidates_only_not_full_policy_replay",
         "statistical_significance_claimed": False,
+    }
+
+
+_POLICY_GATES = (
+    "lcb_ev_not_positive",
+    "spread_too_high",
+    "leverage_out_of_range",
+    "barrier_distance_too_small",
+)
+
+
+def evaluate_ranked_policy_replay(
+    rows: Sequence[tuple[LedgerEntry, LedgerLabel | None]], *, as_of: datetime
+) -> dict[str, object]:
+    """Top-one fixed-notional choice, conditional on archived priced candidates.
+
+    Keep risk and alpha gates fixed. No claim about unarchived pre-EV rejects,
+    actual execution, portfolio path, or changed subsequent cluster exposure.
+    """
+    cohorts: dict[
+        tuple[str, datetime, str, str, int, str, str],
+        list[tuple[LedgerEntry, LedgerLabel | None]],
+    ] = defaultdict(list)
+    for entry, label in rows:
+        if entry.prediction_time > as_of or entry.exit_due >= as_of.date():
+            continue
+        key = (
+            entry.run_id,
+            entry.prediction_time,
+            entry.underlying,
+            entry.direction.value,
+            entry.horizon_days,
+            entry.model_hash,
+            entry.config_hash,
+        )
+        cohorts[key].append((entry, label))
+
+    def choose(
+        candidates: list[tuple[LedgerEntry, LedgerLabel | None]], gate: str | None
+    ) -> tuple[LedgerEntry, LedgerLabel | None] | None:
+        eligible = [
+            row
+            for row in candidates
+            if row[0].category is Category.ACTIONABLE
+            or (
+                gate is not None
+                and row[0].feature_snapshot.get(f"gate_replay_v2:{gate}") == 1.0
+            )
+        ]
+        return min(
+            eligible, key=lambda row: (-row[0].lcb_ev, row[0].selected_isin, row[0].entry_id),
+            default=None,
+        )
+
+    def outcome(row: tuple[LedgerEntry, LedgerLabel | None] | None) -> float | None:
+        if row is None:
+            return 0.0  # explicit abstention, not missing outcome
+        _, label = row
+        if (
+            label is None
+            or label.outcome_version != "PIT_V2"
+            or label.labeled_at > as_of
+            or label.ambiguous_path
+            or label.exit_reason not in (ExitReason.HORIZON, ExitReason.KO)
+            or label.realized_selected_pnl is None
+            or not isfinite(label.realized_selected_pnl)
+            or label.realized_selected_pnl < -1
+        ):
+            return None
+        return research_net_return(label.realized_selected_pnl)
+
+    complete = [
+        (key, group)
+        for key, group in cohorts.items()
+        if all(
+            entry.feature_snapshot.get("gate_replay_v2") == 1.0 and isfinite(entry.lcb_ev)
+            for entry, _ in group
+        )
+        and len({entry.selected_isin for entry, _ in group}) == len(group)
+    ]
+    effects: list[dict[str, object]] = []
+    for gate in _POLICY_GATES:
+        grouped: dict[tuple[str, str, int, str, str], list[tuple[float | None, float | None, bool]]] = (
+            defaultdict(list)
+        )
+        for key, group in complete:
+            baseline = choose(group, None)
+            variant = choose(group, gate)
+            changed = (baseline[0].entry_id if baseline else None) != (
+                variant[0].entry_id if variant else None
+            )
+            grouped[key[2:]].append((outcome(baseline), outcome(variant), changed))
+        for (underlying, direction, horizon, model, config), observations in sorted(grouped.items()):
+            pairs = [(a, b) for a, b, _ in observations if a is not None and b is not None]
+            missing = len(observations) - len(pairs)
+            effects.append(
+                {
+                    "gate": gate,
+                    "underlying": underlying,
+                    "direction": direction,
+                    "horizon": horizon,
+                    "model_hash": model,
+                    "config_hash": config,
+                    "cohorts": len(observations),
+                    "changed_choices": sum(changed for _, _, changed in observations),
+                    "missing_selected_outcomes": missing,
+                    "baseline_net_mean": mean(a for a, _ in pairs) if pairs and not missing else None,
+                    "variant_net_mean": mean(b for _, b in pairs) if pairs and not missing else None,
+                    "net_gain": mean(b - a for a, b in pairs) if pairs and not missing else None,
+                }
+            )
+    return {
+        "status": (
+            "NO_COMPLETE_ARCHIVED_COHORTS"
+            if not complete
+            else "INCOMPLETE_OUTCOMES"
+            if any(effect["missing_selected_outcomes"] for effect in effects)
+            else "DESCRIPTIVE_ONLY"
+        ),
+        "cohorts": len(cohorts),
+        "fully_flagged_cohorts": len(complete),
+        "excluded_cohorts": len(cohorts) - len(complete),
+        "effects": effects,
+        "scenario": PRIMARY_SCENARIO,
+        "notional_eur": PRIMARY_NOTIONAL_EUR,
+        "promotion_allowed": False,
+        "scope": "one_choice_per_archived_priced_cohort_not_full_portfolio",
     }

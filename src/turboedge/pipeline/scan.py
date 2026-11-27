@@ -111,7 +111,12 @@ from turboedge.ranking.cluster import ClusterConfig, OpenClusterPosition
 from turboedge.ranking.cluster import cluster_risk as compute_cluster_risk
 from turboedge.ranking.cluster import cluster_risk_pass as compute_cluster_risk_pass
 from turboedge.ranking.ev import ProductHorizonEvaluation, evaluate_product_horizons
-from turboedge.ranking.gates import GateInput, GateThresholds, evaluate_gates
+from turboedge.ranking.gates import (
+    GateInput,
+    GateThresholds,
+    evaluate_gates,
+    research_gate_replay_flags,
+)
 from turboedge.ranking.liquidity import liquidity_factor, quote_size_coverage, spread_quality
 from turboedge.ranking.shrinkage import leverage_bucket_for
 from turboedge.simulation.payoff import ProductTerms
@@ -2379,6 +2384,7 @@ def _run_ev_pipeline(
             sum(reason != "all_gates_passed" for reason in gate_reasons)
         )
         feature_snapshot.update({f"gate_reason:{reason}": 1.0 for reason in gate_reasons})
+        feature_snapshot.update(research_gate_replay_flags(gate_input, thresholds))
         ledger_entries.append(
             LedgerEntry(
                 run_id=run_id,

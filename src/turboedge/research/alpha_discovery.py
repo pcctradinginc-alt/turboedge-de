@@ -199,8 +199,8 @@ def _candidate_sessions(snapshots: list[ProductSnapshot], *, now: datetime) -> l
         for day, entries in sorted(frozen.items()):
             if len(entries) != 2:
                 continue
-            first, second = entries
-            opened = common_entry(first, second)
+            first, second_quote = entries
+            opened = common_entry(first, second_quote)
             if (
                 opened is None
                 or opened.astimezone(UTC).date() != day
@@ -208,7 +208,7 @@ def _candidate_sessions(snapshots: list[ProductSnapshot], *, now: datetime) -> l
                 or not census(entries, criteria=ComparabilityCriteria()).pairs
             ):
                 continue
-            sessions.append(PairDay(day=day, left=first, right=second))
+            sessions.append(PairDay(day=day, left=first, right=second_quote))
             previous = day
         return sessions
 
@@ -400,6 +400,8 @@ def evaluate(
             key=lambda x: (x[0], x[1].issuer, x[1].isin),
         )[1]
         naive = min((pair.left, pair.right), key=lambda s: (s.issuer, s.isin))
+        selected_result: float | None
+        naive_result: float | None
         if isinstance(pair.left, ResearchQuote) or isinstance(pair.right, ResearchQuote):
             opened = common_entry(pair.left, pair.right)
             observed = (

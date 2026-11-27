@@ -1164,7 +1164,8 @@ def research_ablation_cmd(
                 "effects": reports,
                 "ledger_filter_diagnostics": filters,
             },
-            indent=2, allow_nan=False,
+            indent=2,
+            allow_nan=False,
         ),
         encoding="utf-8",
     )

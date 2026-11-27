@@ -6,6 +6,7 @@ from collections import defaultdict
 from collections.abc import Sequence
 from datetime import datetime
 from math import isfinite
+from statistics import mean
 
 from turboedge.storage.schemas import Category, ExitReason, LedgerEntry, LedgerLabel
 
@@ -80,4 +81,59 @@ def evaluate_filters(
         "effects": effects,
         "cost_basis": "observed_bid_ask_proxy_before_broker_costs",
         "causal_filter_ablation": False,
+    }
+
+
+def evaluate_lcb(
+    rows: Sequence[tuple[LedgerEntry, LedgerLabel | None]], *, as_of: datetime
+) -> dict[str, object]:
+    """Descriptive ranking diagnostics, not confidence-interval coverage."""
+    groups: dict[tuple[int, str, str], dict[str, list[float]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
+    missing = eligible = 0
+    for entry, label in rows:
+        if entry.exit_due >= as_of.date() or entry.prediction_time > as_of:
+            continue
+        eligible += 1
+        if (
+            label is None
+            or label.labeled_at > as_of
+            or label.ambiguous_path
+            or label.exit_reason not in (ExitReason.HORIZON, ExitReason.KO)
+            or label.realized_selected_pnl is None
+            or not isfinite(label.realized_selected_pnl)
+            or not isfinite(entry.lcb_ev)
+        ):
+            missing += 1
+            continue
+        # Separate model/config versions and horizons; aggregate by day first.
+        group = groups[(entry.horizon_days, entry.model_hash, entry.config_hash)]
+        bucket = "positive" if entry.lcb_ev > 0 else "nonpositive"
+        key = f"{bucket}:{entry.prediction_time.date().isoformat()}"
+        group[key].append(label.realized_selected_pnl)
+    effects = []
+    for (horizon, model, config), days in sorted(groups.items()):
+        positive = [mean(v) for k, v in days.items() if k.startswith("positive:")]
+        negative = [mean(v) for k, v in days.items() if k.startswith("nonpositive:")]
+        effects.append(
+            {
+                "horizon": horizon,
+                "model_hash": model,
+                "config_hash": config,
+                "positive_days": len(positive),
+                "nonpositive_days": len(negative),
+                "positive_mean": mean(positive) if positive else None,
+                "nonpositive_mean": mean(negative) if negative else None,
+            }
+        )
+    status = "INCOMPLETE_OUTCOMES" if missing else (
+        "DESCRIPTIVE_ONLY" if effects else "INSUFFICIENT_DATA"
+    )
+    return {
+        "status": status,
+        "eligible_rows": eligible,
+        "missing_rows": missing,
+        "effects": effects,
+        "formal_coverage_claim": False,
     }

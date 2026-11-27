@@ -8,7 +8,7 @@ import pytest
 
 from turboedge.backtest.ablation import compare
 from turboedge.backtest.walkforward import WalkForwardResult
-from turboedge.research.filter_evaluation import evaluate_filters
+from turboedge.research.filter_evaluation import evaluate_filters, evaluate_lcb
 
 
 def _result(p: float, ret: float = 0.01) -> WalkForwardResult:
@@ -41,3 +41,9 @@ def test_empty_ledger_does_not_invent_economics() -> None:
     assert result["eligible_rows"] == 0
     assert result["effects"] == []
     assert result["causal_filter_ablation"] is False
+
+
+def test_empty_lcb_has_no_coverage_claim() -> None:
+    result = evaluate_lcb([], as_of=datetime(2026, 11, 26, tzinfo=UTC))
+    assert result["status"] == "INSUFFICIENT_DATA"
+    assert result["formal_coverage_claim"] is False

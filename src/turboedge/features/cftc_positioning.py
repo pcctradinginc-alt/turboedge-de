@@ -112,8 +112,18 @@ def build_cftc_features(
         # Join by observation time, never by array position.
         moments = sorted(net.keys() & oi.keys())
         by_date = {moment: net[moment] / oi[moment] for moment in moments if oi[moment] > 0}
-        share = list(by_date.values())
         base = f"cftc_{prefix.lower()}_{group}"
+        # A newer unmatched report must not masquerade as a current feature.
+        # Two weeks allows normal weekly publication lag and holiday delays.
+        if (
+            not by_date
+            or max(by_date) != max(net, default=prediction_time)
+            or max(by_date) != max(oi, default=prediction_time)
+            or prediction_time - max(by_date) > timedelta(days=14)
+        ):
+            out.update({f"{base}_{suffix}": None for suffix in FEATURE_SUFFIXES})
+            continue
+        share = list(by_date.values())
         out[f"{base}_share_of_oi"] = float(share[-1]) if share else None
         out[f"{base}_zscore_3y"] = _zscore(share, _ZSCORE_WINDOW)
         out[f"{base}_percentile_5y"] = _percentile(share, _PERCENTILE_WINDOW)
@@ -132,6 +142,11 @@ def build_cftc_features(
     return out
 
 
+def independent_feature_names_for(market: str) -> list[str]:
+    """Canonical model inputs, excluding the legacy alias velocity."""
+    return [name for name in feature_names_for(market) if not name.endswith("_velocity")]
+
+
 def feature_names_for(market: str) -> list[str]:
     prefix = market.lower()
     return [f"cftc_{prefix}_{g}_{s}" for g in GROUPS for s in FEATURE_SUFFIXES]
@@ -142,4 +157,5 @@ __all__ = [
     "GROUPS",
     "build_cftc_features",
     "feature_names_for",
+    "independent_feature_names_for",
 ]

@@ -1073,7 +1073,7 @@ def research_ablation_cmd(
         VixTermStructure,
         VixTermStructureConfig,
     )
-    from turboedge.research.filter_evaluation import evaluate_filters
+    from turboedge.research.filter_evaluation import evaluate_filters, evaluate_lcb
 
     app_ctx = ctx.obj
     fcfg = app_ctx.cfg.forecast
@@ -1087,9 +1087,10 @@ def research_ablation_cmd(
             store.latest_underlying_bars(x, 1500)
             for x in ("SPX", "NDX", "VIX", "EURUSD", "TNX", "VIX9D", "VIX3M")
         ]
-        filters = evaluate_filters(
-            store.list_ledger_entries(underlying=uid), as_of=datetime.now(UTC)
-        )
+        rows = store.list_ledger_entries(underlying=uid)
+        cutoff = datetime.now(UTC)
+        filters = evaluate_filters(rows, as_of=cutoff)
+        lcb = evaluate_lcb(rows, as_of=cutoff)
     names = ("spx_ret_1d", "ndx_ret_1d", "vix_chg_1d", "eurusd_ret_1d", "tnx_chg_1d")
     reports: list[dict[str, Any]] = []
     failures: list[str] = []
@@ -1170,6 +1171,8 @@ def research_ablation_cmd(
                 "failures": failures,
                 "effects": reports,
                 "ledger_filter_diagnostics": filters,
+                "lcb_diagnostics": lcb,
+                "as_of": cutoff.isoformat(),
             },
             indent=2,
             allow_nan=False,

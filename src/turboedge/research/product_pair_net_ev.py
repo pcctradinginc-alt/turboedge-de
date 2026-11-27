@@ -4,7 +4,8 @@ One pre-declared rule on DAX LONG: at the first eligible comparable issuer pair
 per calendar day, buy the product with the smaller observed relative bid/ask
 spread; compare realised next-day Bid/entry Ask against NO_TRADE (zero) and
 a fixed issuer-alphabetical baseline. Fees/slippage are conservatively reserved
-as an additional 10 bps. A missing exit is never assumed profitable, and a
+as an additional 10 bps in legacy metrics only; the verdict uses the shared
+medium scenario at EUR 1000. A missing exit is never assumed profitable, and a
 positive verdict is impossible if any selected observation has missing exits.
 
 This is NOT confirmation or permission to trade. Historical data may already
@@ -23,7 +24,13 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from turboedge.research.execution_costs import COST_SCENARIOS, NOTIONALS_EUR
+from turboedge.research.execution_costs import (
+    COST_SCENARIOS,
+    NOTIONALS_EUR,
+    PRIMARY_NOTIONAL_EUR,
+    PRIMARY_SCENARIO,
+    research_net_return,
+)
 from turboedge.research.market_session import (
     is_research_market_session,
     observed_research_exit_is_market_quote,
@@ -60,6 +67,10 @@ class NetEVProbe:
     pending_days: int = 0
     invalid_entry_days: int = 0
     notional_cost_sensitivity: list[dict[str, object]] = field(default_factory=list)
+    primary_cost_scenario: str = PRIMARY_SCENARIO
+    primary_notional_eur: int = PRIMARY_NOTIONAL_EUR
+    primary_lower_net: float | None = None
+    primary_lower_excess: float | None = None
 
     @property
     def verdict(self) -> str:
@@ -69,9 +80,9 @@ class NetEVProbe:
             return "INCOMPLETE_EXITS"
         if self.complete_days < MIN_INDEPENDENT_DAYS:
             return "INSUFFICIENT_SAMPLE"
-        if self.lower_ci_net_return is None or self.lower_ci_excess_over_naive is None:
+        if self.primary_lower_net is None or self.primary_lower_excess is None:
             return "INSUFFICIENT_SAMPLE"
-        if self.lower_ci_net_return > MIN_NET_EDGE and self.lower_ci_excess_over_naive > 0.0:
+        if self.primary_lower_net > MIN_NET_EDGE and self.primary_lower_excess > 0.0:
             return "EXPLORATORY_CANDIDATE_NOT_CONFIRMED"
         return "NO_DEMONSTRATED_NET_ALPHA"
 
@@ -217,6 +228,11 @@ def _summarize(
 ) -> NetEVProbe:
     mean = float(np.mean(values)) if values else None
     lower = _lower_bound(values)
+    excess_lower = _lower_bound(differences)
+    costs = COST_SCENARIOS[PRIMARY_SCENARIO]
+    scale = (1 - costs.slippage_bps_per_side / 10_000) * (
+        1 - costs.variable_bps_per_order / 10_000
+    )
     return NetEVProbe(
         candidate_days=candidate_days,
         complete_days=len(values),
@@ -227,7 +243,13 @@ def _summarize(
         notional_cost_sensitivity=_notional_sensitivity(values, differences),
         lower_ci_net_return=lower,
         mean_excess_over_naive=float(np.mean(differences)) if differences else None,
-        lower_ci_excess_over_naive=_lower_bound(differences),
+        lower_ci_excess_over_naive=excess_lower,
+        primary_lower_net=(
+            research_net_return(max(-1.0, lower + EXECUTION_BUFFER_BPS / 10_000))
+            if lower is not None
+            else None
+        ),
+        primary_lower_excess=scale * excess_lower if excess_lower is not None else None,
         cost_sensitivity={
             bps: None if mean is None else mean + (EXECUTION_BUFFER_BPS - bps) / 10_000
             for bps in COST_SCENARIOS_BPS
@@ -243,7 +265,7 @@ def _notional_sensitivity(values: list[float], differences: list[float]) -> list
     # Undo the legacy flat reserve exactly once before applying a scenario.
     # The affine transformation permits reuse of the same block-bootstrap
     # bounds, rather than rerunning the expensive resampling for each size.
-    raw = [v + EXECUTION_BUFFER_BPS / 10_000 for v in values]
+    raw = [max(-1.0, v + EXECUTION_BUFFER_BPS / 10_000) for v in values]
     raw_mean = float(np.mean(raw)) if raw else None
     raw_lower = _lower_bound(raw)
     excess_mean = float(np.mean(differences)) if differences else None

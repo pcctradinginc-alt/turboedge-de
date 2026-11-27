@@ -26,8 +26,8 @@ class ExecutionCosts:
             )
         ):
             raise ValueError("execution costs must be finite and nonnegative")
-        if self.slippage_bps_per_side >= 10_000:
-            raise ValueError("slippage must be below 100 percent")
+        if max(self.slippage_bps_per_side, self.variable_bps_per_order) >= 10_000:
+            raise ValueError("slippage and variable fees must be below 100 percent")
 
     def net_return(self, observed_return: float, notional_eur: float) -> float:
         """P&L divided by pre-cost entry notional, not a cash-budget return.
@@ -55,3 +55,11 @@ COST_SCENARIOS = {
     "stress": ExecutionCosts(10, 10, 25),
 }
 NOTIONALS_EUR = (250, 500, 1000, 2500, 5000)
+
+# Fixed ex-ante research convention, not a broker tariff or a live allocation.
+PRIMARY_SCENARIO = "medium"
+PRIMARY_NOTIONAL_EUR = 1000
+
+
+def research_net_return(observed_return: float) -> float:
+    return COST_SCENARIOS[PRIMARY_SCENARIO].net_return(observed_return, PRIMARY_NOTIONAL_EUR)

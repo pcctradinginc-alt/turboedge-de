@@ -16,13 +16,14 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from math import isfinite
 from typing import TYPE_CHECKING
 
 import numpy as np
 
+from turboedge.research.execution_costs import COST_SCENARIOS, NOTIONALS_EUR
 from turboedge.research.market_session import (
     is_research_market_session,
     observed_research_exit_is_market_quote,
@@ -58,6 +59,7 @@ class NetEVProbe:
     cost_sensitivity_lower_bound: dict[int, float | None]
     pending_days: int = 0
     invalid_entry_days: int = 0
+    notional_cost_sensitivity: list[dict[str, object]] = field(default_factory=list)
 
     @property
     def verdict(self) -> str:
@@ -222,6 +224,7 @@ def _summarize(
         pending_days=pending,
         invalid_entry_days=invalid,
         mean_net_return=mean,
+        notional_cost_sensitivity=_notional_sensitivity(values, differences),
         lower_ci_net_return=lower,
         mean_excess_over_naive=float(np.mean(differences)) if differences else None,
         lower_ci_excess_over_naive=_lower_bound(differences),
@@ -234,6 +237,48 @@ def _summarize(
             for bps in COST_SCENARIOS_BPS
         },
     )
+
+
+def _notional_sensitivity(
+    values: list[float], differences: list[float]
+) -> list[dict[str, object]]:
+    # Undo the legacy flat reserve exactly once before applying a scenario.
+    # The affine transformation permits reuse of the same block-bootstrap
+    # bounds, rather than rerunning the expensive resampling for each size.
+    raw = [v + EXECUTION_BUFFER_BPS / 10_000 for v in values]
+    raw_mean = float(np.mean(raw)) if raw else None
+    raw_lower = _lower_bound(raw)
+    excess_mean = float(np.mean(differences)) if differences else None
+    excess_lower = _lower_bound(differences)
+    result: list[dict[str, object]] = []
+    for name, costs in COST_SCENARIOS.items():
+        scale = (1 - costs.slippage_bps_per_side / 10_000) * (
+            1 - costs.variable_bps_per_order / 10_000
+        )
+        for notional in NOTIONALS_EUR:
+            result.append(
+                {
+                    "scenario": name,
+                    "notional_eur": notional,
+                    "fixed_eur_per_order": costs.fixed_eur_per_order,
+                    "variable_bps_per_order": costs.variable_bps_per_order,
+                    "slippage_bps_per_side": costs.slippage_bps_per_side,
+                    "mean_net_return": (
+                        costs.net_return(raw_mean, notional) if raw_mean is not None else None
+                    ),
+                    "lower_bound": (
+                        costs.net_return(raw_lower, notional) if raw_lower is not None else None
+                    ),
+                    "mean_excess_over_naive": (
+                        scale * excess_mean if excess_mean is not None else None
+                    ),
+                    "lower_excess_over_naive": (
+                        scale * excess_lower if excess_lower is not None else None
+                    ),
+                    "hypothetical": True,
+                }
+            )
+    return result
 
 
 # A common 60-second observation tolerance is a quote-price proxy, not a fill.

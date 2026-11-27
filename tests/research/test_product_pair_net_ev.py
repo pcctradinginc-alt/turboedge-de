@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from turboedge.research.execution_costs import ExecutionCosts
 from turboedge.research.product_pair_net_ev import probe
 from turboedge.storage.schemas import (
     Direction,
@@ -156,3 +157,29 @@ def test_missing_other_leg_is_not_complete_when_both_rules_select_same_product()
     assert result.candidate_days == 1
     assert result.missing_exit_days == 1
     assert result.verdict == "INCOMPLETE_EXITS"
+
+
+def test_execution_costs_use_both_execution_values() -> None:
+    costs = ExecutionCosts(5, 10, 0)
+    assert costs.net_return(0.1, 1000) == pytest.approx(0.0879)
+    assert costs.net_return(-1, 1000) == pytest.approx(-1.011)
+    assert costs.net_return(0.1, 500) < costs.net_return(0.1, 1000)
+
+
+def test_slippage_does_not_charge_a_second_spread() -> None:
+    assert ExecutionCosts(0, 0, 0).net_return(-0.02, 1000) == pytest.approx(-0.02)
+    assert ExecutionCosts(0, 0, 10).net_return(0.1, 1000) == pytest.approx(0.0979)
+
+
+@pytest.mark.parametrize("value", [-1.0, float("nan"), float("inf")])
+def test_invalid_costs_fail_closed(value: float) -> None:
+    with pytest.raises(ValueError):
+        ExecutionCosts(value, 0, 0)
+
+
+def test_notional_scenarios_preserve_legacy_cost_basis() -> None:
+    result = probe(sample(days=1))
+    zero = next(row for row in result.notional_cost_sensitivity if row["scenario"] == "zero")
+    assert zero["mean_net_return"] == pytest.approx(result.cost_sensitivity[0])
+    medium = [row for row in result.notional_cost_sensitivity if row["scenario"] == "medium"]
+    assert medium[0]["mean_net_return"] != medium[-1]["mean_net_return"]

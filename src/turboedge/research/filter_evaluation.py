@@ -64,8 +64,16 @@ def evaluate_filters(
                 ),
             }
         )
+    if not eligible:
+        status = "INSUFFICIENT_DATA"
+    elif missing:
+        status = "INCOMPLETE_OUTCOMES"
+    elif not any(effect["watch_minus_actionable"] is not None for effect in effects):
+        status = "NO_MATCHED_COHORTS"
+    else:
+        status = "DESCRIPTIVE_ONLY"
     return {
-        "status": "INCOMPLETE_OUTCOMES" if missing else "DESCRIPTIVE_ONLY",
+        "status": status,
         "eligible_rows": eligible,
         "missing_or_unverified_rows": missing,
         "observed_day_category_cohorts": len(cohorts),

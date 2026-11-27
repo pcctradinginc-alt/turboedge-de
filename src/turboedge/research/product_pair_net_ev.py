@@ -15,14 +15,23 @@ forward partition and a separately approved, pre-registered trial.
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from math import isfinite
+from typing import TYPE_CHECKING
 
 import numpy as np
 
+from turboedge.research.market_session import (
+    is_research_market_session,
+    observed_research_exit_is_market_quote,
+)
 from turboedge.research.product_pairs import ComparabilityCriteria, census
 from turboedge.storage.schemas import Direction, ProductSnapshot
+
+if TYPE_CHECKING:
+    from turboedge.research.data_factory import ResearchQuote
 
 MIN_INDEPENDENT_DAYS = 30
 EXECUTION_BUFFER_BPS = 10.0
@@ -47,9 +56,13 @@ class NetEVProbe:
     lower_ci_excess_over_naive: float | None
     cost_sensitivity: dict[int, float | None]
     cost_sensitivity_lower_bound: dict[int, float | None]
+    pending_days: int = 0
+    invalid_entry_days: int = 0
 
     @property
     def verdict(self) -> str:
+        if self.invalid_entry_days:
+            return "INVALID_ENTRY_COHORTS"
         if self.missing_exit_days:
             return "INCOMPLETE_EXITS"
         if self.complete_days < MIN_INDEPENDENT_DAYS:
@@ -189,12 +202,25 @@ def probe(snapshots: list[ProductSnapshot]) -> NetEVProbe:
         naive_return = left_return if naive is left else right_return
         values.append(selected_return)
         differences.append(selected_return - naive_return)
+    return _summarize(values, differences, len(entries), missing)
+
+
+def _summarize(
+    values: list[float],
+    differences: list[float],
+    candidate_days: int,
+    missing: int,
+    pending: int = 0,
+    invalid: int = 0,
+) -> NetEVProbe:
     mean = float(np.mean(values)) if values else None
     lower = _lower_bound(values)
     return NetEVProbe(
-        candidate_days=len(entries),
+        candidate_days=candidate_days,
         complete_days=len(values),
         missing_exit_days=missing,
+        pending_days=pending,
+        invalid_entry_days=invalid,
         mean_net_return=mean,
         lower_ci_net_return=lower,
         mean_excess_over_naive=float(np.mean(differences)) if differences else None,
@@ -210,4 +236,137 @@ def probe(snapshots: list[ProductSnapshot]) -> NetEVProbe:
     )
 
 
-__all__ = ["NetEVProbe", "probe"]
+# A common 60-second observation tolerance is a quote-price proxy, not a fill.
+PAIR_TOLERANCE = timedelta(seconds=60)
+
+
+def common_entry(left: ProductSnapshot, right: ProductSnapshot) -> datetime | None:
+    at = max(left.retrieved_at, right.retrieved_at)
+    for q in (left, right):
+        if (
+            not _valid_quote(q)
+            or q.knocked_out
+            or q.bid_only
+            or q.quote_timestamp is None
+            or q.underlying_price_ref_timestamp is None
+            or at - q.retrieved_at > PAIR_TOLERANCE
+            or at - q.quote_timestamp > PAIR_TOLERANCE
+            or at - q.underlying_price_ref_timestamp > timedelta(seconds=MAX_QUOTE_AGE_S)
+            or not is_research_market_session(q.quote_timestamp, entry=True)
+            or not is_research_market_session(q.retrieved_at, entry=True)
+        ):
+            return None
+    return at
+
+
+def synchronized_returns(
+    left: ProductSnapshot,
+    right: ProductSnapshot,
+    followups: Sequence[ProductSnapshot],
+    *,
+    opened: datetime,
+) -> tuple[float, float] | None:
+    """First joint observable exit, with earlier documented KO absorbing."""
+    entries = (left, right)
+    last: dict[str, ProductSnapshot] = {}
+    ko: set[str] = set()
+    for q in sorted(followups, key=lambda s: (s.retrieved_at, not s.knocked_out, s.isin)):
+        at = q.retrieved_at
+        if (
+            q.isin not in (left.isin, right.isin)
+            or not opened < at <= opened + EXIT_UNTIL
+            or q.available_at > at
+            or q.observation_time > at
+            or not is_research_market_session(at)
+        ):
+            continue
+        if q.knocked_out:
+            ko.add(q.isin)
+            last.pop(q.isin, None)
+        elif (
+            q.isin not in ko
+            and q.quote_timestamp is not None
+            and q.quote_timestamp >= opened + EXIT_AFTER
+            and _fresh_exit(q)
+            and q.ask is not None
+            and q.bid is not None
+            and q.bid <= q.ask
+            and observed_research_exit_is_market_quote(q.quote_timestamp, at)
+        ):
+            last[q.isin] = q
+        if at < opened + EXIT_AFTER:
+            continue
+        returns: list[float] = []
+        for entry in entries:
+            if entry.isin in ko:
+                returns.append(-1.0 - EXECUTION_BUFFER_BPS / 10_000)
+                continue
+            exit_quote = last.get(entry.isin)
+            if (
+                exit_quote is None
+                or exit_quote.quote_timestamp is None
+                or at - exit_quote.quote_timestamp > PAIR_TOLERANCE
+                or at - exit_quote.retrieved_at > PAIR_TOLERANCE
+            ):
+                break
+            assert entry.ask is not None and exit_quote.bid is not None
+            returns.append(exit_quote.bid / entry.ask - 1 - EXECUTION_BUFFER_BPS / 10_000)
+        if len(returns) == 2:
+            return returns[0], returns[1]
+    return None
+
+
+def probe_tape(quotes: Sequence[ResearchQuote], *, as_of: datetime) -> NetEVProbe:
+    """Evaluate frozen tape cohorts only; never reselect entries from followups."""
+    cohorts: dict[date, list[ResearchQuote]] = defaultdict(list)
+    for q in quotes:
+        if q.retrieved_at <= as_of:
+            cohorts[q.cohort_day].append(q)
+    values: list[float] = []
+    differences: list[float] = []
+    missing = pending = invalid = candidates = 0
+    prior: date | None = None
+    for day, rows in sorted(cohorts.items()):
+        entries = [q for q in rows if q.quote_role == "entry"]
+        candidates += 1
+        if len(entries) != 2:
+            invalid += 1
+            continue
+        left, right = entries
+        opened = common_entry(left, right)
+        if (
+            opened is None
+            or left.isin == right.isin
+            or left.issuer == right.issuer
+            or any(q.underlying_id != "DAX" or q.direction != Direction.LONG for q in entries)
+            or opened.astimezone(UTC).date() != day
+            or (prior is not None and (day - prior).days < 3)
+            or not census(entries, criteria=ComparabilityCriteria()).pairs
+        ):
+            invalid += 1
+            continue
+        prior = day
+        if opened + EXIT_UNTIL > as_of:
+            pending += 1
+            continue
+        result = synchronized_returns(
+            left, right, [q for q in rows if q.quote_role == "followup"], opened=opened
+        )
+        if result is None:
+            missing += 1
+            continue
+
+        def spread(q: ProductSnapshot) -> float:
+            assert q.ask is not None and q.bid is not None
+            return (q.ask - q.bid) / q.ask
+
+        selected = min(
+            range(2), key=lambda n: (spread(entries[n]), entries[n].issuer, entries[n].isin)
+        )
+        naive = min(range(2), key=lambda n: (entries[n].issuer, entries[n].isin))
+        values.append(result[selected])
+        differences.append(result[selected] - result[naive])
+    return _summarize(values, differences, candidates, missing, pending, invalid)
+
+
+__all__ = ["NetEVProbe", "probe", "probe_tape"]

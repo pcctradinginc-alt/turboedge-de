@@ -91,11 +91,11 @@ from turboedge.research.data_audit import (
     quote_freshness,
     snapshot_staleness_advantage,
 )
-from turboedge.research.data_factory import TapeCapture, audit_research_tape
+from turboedge.research.data_factory import TapeCapture, audit_research_tape, load_research_tape
 from turboedge.research.lottery_pricing import MIN_INDEPENDENT_DAYS
 from turboedge.research.lottery_pricing import evaluate as evaluate_lottery_pricing
 from turboedge.research.market_session import is_research_market_session
-from turboedge.research.product_pair_net_ev import probe as probe_product_pair_net_ev
+from turboedge.research.product_pair_net_ev import probe_tape
 from turboedge.research.product_pairs import ComparabilityCriteria, census
 from turboedge.research.step import run_research_step
 from turboedge.simulation.ko_calibration import build_ko_calibration_dataset
@@ -1026,14 +1026,15 @@ def research_product_pair_net_ev_cmd(
     pre-declared probe. Incomplete exits fail closed; no promotion or orders.
     """
     app_ctx = ctx.obj
-    with Store(app_ctx.db_path) as store:
-        store.init_schema()
-        snapshots = store.list_product_snapshots(underlying_id="DAX")
-    result = probe_product_pair_net_ev(snapshots)
+    now = datetime.now(UTC)
+    quotes = load_research_tape(app_ctx.state_dir, as_of=now)
+    result = probe_tape(quotes, as_of=now)
     payload = asdict(result)
     payload["verdict"] = result.verdict
     payload["research_stage"] = "EXPLORATORY_ONLY"
     payload["baseline"] = "NO_TRADE_0"
+    payload["data_source"] = "FROZEN_RESEARCH_TAPE"
+    payload["as_of"] = now.isoformat()
     path = Path(json_out)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")

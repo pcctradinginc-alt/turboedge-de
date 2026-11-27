@@ -27,7 +27,12 @@ from turboedge.research.market_session import (
     is_research_market_session,
     observed_research_exit_is_market_quote,
 )
-from turboedge.research.product_pair_net_ev import _fresh_exit, _valid_quote
+from turboedge.research.product_pair_net_ev import (
+    _fresh_exit,
+    _valid_quote,
+    common_entry,
+    synchronized_returns,
+)
 from turboedge.research.product_pairs import ComparabilityCriteria, census
 from turboedge.storage.schemas import Direction, ProductSnapshot
 from turboedge.storage.snapshots import write_snapshot_parquet
@@ -160,7 +165,8 @@ def _first_verified_pair(
             MAX_ENTRY_QUOTE_DIFFERENCE_SECONDS
         ):
             continue
-        return left, right
+        if common_entry(left, right) is not None:
+            return left, right
     return None
 
 
@@ -184,8 +190,9 @@ def capture_daily_research_tape(
 
     # Only entry rows own a cohort. A follow-up quote may not be mistaken
     # for a new trade entry when the discovery engine builds test sessions.
+    earliest_receipt = min((q.retrieved_at for q in products), default=cutoff)
     tracked = {
-        q.isin: q for q in entries if timedelta(0) < cutoff - q.retrieved_at <= FOLLOWUP_WINDOW
+        q.isin: q for q in entries if earliest_receipt <= q.retrieved_at + FOLLOWUP_WINDOW
     }
     new_quotes: list[ResearchQuote] = []
     for product in products:
@@ -268,30 +275,6 @@ def capture_daily_research_tape(
     )
 
 
-def _has_observed_exit(entry: ResearchQuote, history: list[ResearchQuote]) -> bool:
-    valid = [
-        s
-        for s in history
-        if s.isin == entry.isin
-        and entry.retrieved_at < s.retrieved_at <= entry.retrieved_at + FOLLOWUP_WINDOW
-        and s.quote_role == "followup"
-    ]
-    # A documented KO observed before exit counts as an observed (negative)
-    # outcome, not as a falsely "missing" winning Bid.
-    if any(s.knocked_out and is_research_market_session(s.retrieved_at) for s in valid):
-        return True
-    return any(
-        s.retrieved_at >= entry.retrieved_at + EXIT_AFTER
-        and _fresh_exit(s)
-        and s.ask is not None
-        and s.bid is not None
-        and s.bid <= s.ask
-        and s.quote_timestamp is not None
-        and observed_research_exit_is_market_quote(s.quote_timestamp, s.retrieved_at)
-        for s in valid
-    )
-
-
 def audit_research_tape(
     state_dir: Path, *, as_of: datetime, quotes: list[ResearchQuote] | None = None
 ) -> TapeHealth:
@@ -321,10 +304,16 @@ def audit_research_tape(
             missing += 1
         elif any(q.retrieved_at + FOLLOWUP_WINDOW > cutoff for q in cohort):
             pending += 1
-        elif all(_has_observed_exit(q, data) for q in cohort):
-            complete += 1
         else:
-            missing += 1
+            left, right = cohort
+            opened = common_entry(left, right)
+            followups = [
+                q for q in data if q.quote_role == "followup" and q.cohort_day == left.cohort_day
+            ]
+            if opened is not None and synchronized_returns(left, right, followups, opened=opened):
+                complete += 1
+            else:
+                missing += 1
     invalid_temporal = sum(
         q.retrieved_at > cutoff
         or q.available_at > q.retrieved_at

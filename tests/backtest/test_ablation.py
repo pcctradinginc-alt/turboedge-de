@@ -37,6 +37,7 @@ def test_mismatched_outcome_fails_closed() -> None:
 
 def test_empty_ledger_does_not_invent_economics() -> None:
     result = evaluate_filters([], as_of=datetime(2026, 11, 26, tzinfo=UTC))
+    assert result["status"] == "INSUFFICIENT_DATA"
     assert result["eligible_rows"] == 0
     assert result["effects"] == []
     assert result["causal_filter_ablation"] is False

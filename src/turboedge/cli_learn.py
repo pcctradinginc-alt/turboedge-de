@@ -1082,23 +1082,34 @@ def research_ablation_cmd(
     with Store(app_ctx.db_path) as store:
         store.init_schema()
         bars = store.latest_underlying_bars(uid, 1500)
-        aux = [store.latest_underlying_bars(x, 1500) for x in (
-            "SPX", "NDX", "VIX", "EURUSD", "TNX", "VIX9D", "VIX3M"
-        )]
-        filters = evaluate_filters(store.list_ledger_entries(underlying=uid), as_of=datetime.now(UTC))
+        aux = [
+            store.latest_underlying_bars(x, 1500)
+            for x in ("SPX", "NDX", "VIX", "EURUSD", "TNX", "VIX9D", "VIX3M")
+        ]
+        filters = evaluate_filters(
+            store.list_ledger_entries(underlying=uid), as_of=datetime.now(UTC)
+        )
     names = ("spx_ret_1d", "ndx_ret_1d", "vix_chg_1d", "eurusd_ret_1d", "tnx_chg_1d")
     reports: list[dict[str, Any]] = []
     failures: list[str] = []
 
     def run(factory: Callable[[], ForecastModel]) -> list[WalkForwardResult]:
         return walk_forward_evaluate(
-            factory, bars, fcfg.horizons,
-            min_train=fcfg.min_train, step=fcfg.step, embargo=fcfg.embargo,
+            factory,
+            bars,
+            fcfg.horizons,
+            min_train=fcfg.min_train,
+            step=fcfg.step,
+            embargo=fcfg.embargo,
         )
 
     def cross(name: str = "") -> ForecastModel:
         return CrossAssetLeadLag(
-            aux[0], aux[1], aux[2], aux[3], aux[4],
+            aux[0],
+            aux[1],
+            aux[2],
+            aux[3],
+            aux[4],
             config=CrossAssetLeadLagConfig(omit_features=(name,) if name else ()),
         )
 
@@ -1110,11 +1121,14 @@ def research_ablation_cmd(
     families: list[tuple[Callable[[], ForecastModel], dict[str, Callable[[], ForecastModel]]]] = [
         (cross, {name: (lambda name=name: cross(name)) for name in names}),
         (vix, {"vix_term_structure": lambda: vix(True)}),
-        (LowVolRegimeTrend, {
-            "low_vol_regime_gate": lambda: LowVolRegimeTrend(
-                LowVolRegimeTrendConfig(omit_regime_gate=True)
-            )
-        }),
+        (
+            LowVolRegimeTrend,
+            {
+                "low_vol_regime_gate": lambda: LowVolRegimeTrend(
+                    LowVolRegimeTrendConfig(omit_regime_gate=True)
+                )
+            },
+        ),
     ]
     tests = 2 * 7 * len(fcfg.horizons)
     for factory, variants in families:
@@ -1127,10 +1141,13 @@ def research_ablation_cmd(
             try:
                 reduced = run(reduced_factory)
                 for a, b in zip(full, reduced, strict=True):
-                    reports.append({
-                        "feature": name, "horizon": a.horizon_days,
-                        **asdict(compare(a, b, tests=tests)),
-                    })
+                    reports.append(
+                        {
+                            "feature": name,
+                            "horizon": a.horizon_days,
+                            **asdict(compare(a, b, tests=tests)),
+                        }
+                    )
             except ValueError as exc:
                 failures.append(f"{name}: {exc}")
     status = "INCOMPLETE_DATA_OR_EVALUATION" if failures else "EXPLORATORY_ONLY"
@@ -1139,8 +1156,12 @@ def research_ablation_cmd(
     path.write_text(
         json.dumps(
             {
-                "status": status, "underlying": uid, "promotion_allowed": False,
-                "planned_tests": tests, "failures": failures, "effects": reports,
+                "status": status,
+                "underlying": uid,
+                "promotion_allowed": False,
+                "planned_tests": tests,
+                "failures": failures,
+                "effects": reports,
                 "ledger_filter_diagnostics": filters,
             },
             indent=2, allow_nan=False,

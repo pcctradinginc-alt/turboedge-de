@@ -55,13 +55,15 @@ def evaluate_filters(
             if watch:
                 active = cohorts[(day, uid, h, category)]
                 matched.append((sum(active) / len(active), sum(watch) / len(watch)))
-        effects.append({
-            "horizon": horizon,
-            "matched_day_underlyings": len(matched),
-            "watch_minus_actionable": (
-                sum(b - a for a, b in matched) / len(matched) if matched else None
-            ),
-        })
+        effects.append(
+            {
+                "horizon": horizon,
+                "matched_day_underlyings": len(matched),
+                "watch_minus_actionable": (
+                    sum(b - a for a, b in matched) / len(matched) if matched else None
+                ),
+            }
+        )
     return {
         "status": "INCOMPLETE_OUTCOMES" if missing else "DESCRIPTIVE_ONLY",
         "eligible_rows": eligible,

@@ -34,7 +34,8 @@ def _interval(values: list[float], horizon: int, tests: int) -> tuple[float, flo
         starts = rng.integers(0, len(arr) - block + 1, size=(1000, count))
         indices = (starts[:, :, None] + np.arange(block)).reshape(1000, -1)
         means = arr[indices[:, : len(arr)]].mean(axis=1)
-        intervals.append((float(np.quantile(means, 0.025 / tests)), float(np.quantile(means, 1 - 0.025 / tests))))
+        tail = 0.025 / tests
+        intervals.append((float(np.quantile(means, tail)), float(np.quantile(means, 1 - tail))))
     return min(x[0] for x in intervals), max(x[1] for x in intervals)
 
 

@@ -1118,8 +1118,14 @@ def research_ablation_cmd(
             aux[2], aux[5], aux[6], config=VixTermStructureConfig(omit_term_structure=omit)
         )
 
+    def cross_without(name: str) -> Callable[[], ForecastModel]:
+        def factory() -> ForecastModel:
+            return cross(name)
+
+        return factory
+
     families: list[tuple[Callable[[], ForecastModel], dict[str, Callable[[], ForecastModel]]]] = [
-        (cross, {name: (lambda name=name: cross(name)) for name in names}),
+        (cross, {name: cross_without(name) for name in names}),
         (vix, {"vix_term_structure": lambda: vix(True)}),
         (
             LowVolRegimeTrend,

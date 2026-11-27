@@ -17,7 +17,7 @@ Exit resolution, in order:
    conservative 0.
 2. Normal horizon exit: a real product-snapshot bid quote is found --
    preferably the first one at/after `exit_due` 15:30 Europe/Berlin, else
-   the last one available within `exit_due + 2 trading days`.
+   the last available bid (marked ambiguous if before the deadline).
 3. Neither of the above: no snapshot at all in the window. Falls back to
    the last known bid (from the window, or the entry's own `entry_bid`),
    discounted by the entry's own spread (`* (1 - entry_spread)`) --
@@ -220,14 +220,27 @@ def resolve_exit(
 
     # -- KO detection: product feed flag, or bars crossing the barrier.
     ko_snapshot: ProductSnapshot | None = next((s for s in snapshots if s.knocked_out), None)
+    # Daily extrema do not identify the intraday touch time. For dynamic
+    # barriers, snapshots also do not establish a continuous effective history.
+    # Use observed barrier levels as conservative scenarios, never as proof
+    # that a particular barrier was in force at the time of a daily extremum.
     bars_touch_date: date | None = None
-    if barrier is not None and underlying_bars:
+    end_day = (
+        first_exit.quote_timestamp.date()
+        if first_exit is not None and first_exit.quote_timestamp is not None
+        else window_end_date
+    )
+    levels = [s.knockout_barrier for s in snapshots if s.knockout_barrier is not None]
+    if barrier is not None:
+        levels.append(barrier)
+    if levels and underlying_bars:
+        conservative_barrier = max(levels) if direction is Direction.LONG else min(levels)
         bars_touch_date = _barrier_touch_date(
             underlying_bars,
             direction=direction,
-            barrier=barrier,
-            start=entry_underlying_date,
-            end=exit_due,
+            barrier=conservative_barrier,
+            start=entry_quote_timestamp.date(),
+            end=end_day,
         )
     ko_hit = ko_snapshot is not None or bars_touch_date is not None
 
@@ -274,7 +287,9 @@ def resolve_exit(
             exit_reason=ExitReason.KO,
             realized_pnl=realized_pnl,
             ko_hit=True,
-            ambiguous_path=False,  # KO information here is unambiguous by construction
+            ambiguous_path=ko_snapshot is None or (
+                product_type is ProductType.MINI_FUTURE and post_ko_snapshot is None
+            ),
             time_to_ko_days=time_to_ko_days,
             mfe=mfe,
             mae=mae,
@@ -296,7 +311,7 @@ def resolve_exit(
             exit_reason=ExitReason.HORIZON,
             realized_pnl=realized_pnl,
             ko_hit=False,
-            ambiguous_path=False,
+            ambiguous_path=preferred is None,
             time_to_ko_days=None,
             mfe=mfe,
             mae=mae,

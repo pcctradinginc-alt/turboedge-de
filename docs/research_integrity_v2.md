@@ -20,3 +20,9 @@ live evidence. No risk thresholds or promotion rights changed.
 
 Production autonomous discovery also uses frozen entry cohorts and paired exit
 observations. The legacy injected-snapshot test path remains retrospective.
+
+Ledger daily-bar KO scenarios are now marked ambiguous unless the issuer
+confirms the KO. Observed barrier changes inform a conservative scenario,
+not a reconstructed effective barrier timeline. A predeadline exit bid is
+also ambiguous. Historical labels are not rewritten. Exact dynamic-barrier
+reconstruction and maturity gating remain open.

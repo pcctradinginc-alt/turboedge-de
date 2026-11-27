@@ -110,7 +110,7 @@ def test_ko_detected_via_underlying_bars_barrier_touch(
     assert label is not None
     assert label.exit_reason == ExitReason.KO
     assert label.ko_hit is True
-    assert label.ambiguous_path is False
+    assert label.ambiguous_path is True
     # turbo (default instrument lookup is None -> conservative 0 residual)
     assert label.exit_bid == 0.0
     assert label.realized_selected_pnl == pytest.approx(-1.0)
@@ -277,11 +277,10 @@ def test_entry_not_yet_due_is_not_labeled(store, make_ledger_entry) -> None:
     assert fetched.status == LedgerEntryStatus.OPEN
 
 
-def test_fallback_exit_quote_within_grace_window_is_horizon_not_ambiguous(
+def test_predeadline_exit_quote_is_ambiguous(
     store, make_ledger_entry, make_product_snapshot, make_underlying_bar
 ) -> None:
-    """No snapshot at/after the exact deadline, but one within the grace
-    window -- still a real quote, so exit_reason is HORIZON, not ambiguous."""
+    """A real but predeadline bid is not a confirmed horizon outcome."""
     entry = make_ledger_entry(
         entry_ask=4.86,
         entry_quote_timestamp=_utc(2026, 9, 1, 15, 30),
@@ -317,7 +316,7 @@ def test_fallback_exit_quote_within_grace_window_is_horizon_not_ambiguous(
     label = store.get_ledger_label(entry.entry_id)
     assert label is not None
     assert label.exit_reason == ExitReason.HORIZON
-    assert label.ambiguous_path is False
+    assert label.ambiguous_path is True
     assert label.exit_bid == 5.00
 
 
@@ -361,3 +360,21 @@ def test_later_knockout_does_not_override_horizon_exit(
 def test_grace_period_skips_good_friday_and_easter_monday() -> None:
     assert _add_trading_days(date(2026, 4, 2), 1) == date(2026, 4, 7)
     assert _add_trading_days(date(2026, 4, 2), 2) == date(2026, 4, 8)
+
+
+def test_entry_day_bar_touch_is_not_confirmed_ko(
+    store, make_ledger_entry, make_underlying_bar
+) -> None:
+    entry = make_ledger_entry(
+        entry_quote_timestamp=_utc(2026, 9, 1, 15, 30),
+        entry_underlying_timestamp=_utc(2026, 9, 1, 15, 30),
+        exit_due=date(2026, 9, 10),
+        barrier_entry=17900.0,
+        direction=Direction.LONG,
+    )
+    ForwardLedger(store).record([entry])
+    bars = _bars(make_underlying_bar, [(date(2026, 9, 1), 18000, 18100, 17800, 18050)])
+    label_due_entries(store, _utc(2026, 9, 11), price_bars_lookup=lambda u: bars)
+    label = store.get_ledger_label(entry.entry_id)
+    assert label is not None
+    assert label.ambiguous_path is True

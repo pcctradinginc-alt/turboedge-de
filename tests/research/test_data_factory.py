@@ -273,9 +273,7 @@ def test_tape_probe_requires_joint_exit_and_never_reuses_followups(
     next_day = _START + timedelta(days=1, minutes=1)
     left = _pair(make_product_snapshot, next_day, exit_bid=True)[0]
     right = _pair(make_product_snapshot, next_day + timedelta(minutes=5), exit_bid=True)[1]
-    capture_daily_research_tape(
-        root, products=[left, right], now=next_day + timedelta(minutes=6)
-    )
+    capture_daily_research_tape(root, products=[left, right], now=next_day + timedelta(minutes=6))
     cutoff = _START + timedelta(days=3)
     rows = load_research_tape(root, as_of=cutoff)
     result = probe_tape(rows, as_of=cutoff)

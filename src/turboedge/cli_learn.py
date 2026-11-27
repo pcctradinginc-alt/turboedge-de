@@ -1073,7 +1073,11 @@ def research_ablation_cmd(
         VixTermStructure,
         VixTermStructureConfig,
     )
-    from turboedge.research.filter_evaluation import evaluate_filters, evaluate_lcb
+    from turboedge.research.filter_evaluation import (
+        evaluate_filters,
+        evaluate_gate_replay,
+        evaluate_lcb,
+    )
 
     app_ctx = ctx.obj
     fcfg = app_ctx.cfg.forecast
@@ -1091,6 +1095,7 @@ def research_ablation_cmd(
         cutoff = datetime.now(UTC)
         filters = evaluate_filters(rows, as_of=cutoff)
         lcb = evaluate_lcb(rows, as_of=cutoff)
+        gate_replay = evaluate_gate_replay(rows, as_of=cutoff)
     names = ("spx_ret_1d", "ndx_ret_1d", "vix_chg_1d", "eurusd_ret_1d", "tnx_chg_1d")
     reports: list[dict[str, Any]] = []
     failures: list[str] = []
@@ -1172,6 +1177,7 @@ def research_ablation_cmd(
                 "effects": reports,
                 "ledger_filter_diagnostics": filters,
                 "lcb_diagnostics": lcb,
+                "gate_replay": gate_replay,
                 "as_of": cutoff.isoformat(),
             },
             indent=2,

@@ -2373,6 +2373,12 @@ def _run_ev_pipeline(
             "premium_over_fair": premium_by_isin.get(isin, 0.0),
             "cost_rank_score": original.cost_rank_score or 0.0,
         }
+        # Freeze final decision reasons in the immutable feature map.
+        feature_snapshot["gate_archive_v1"] = 1.0
+        feature_snapshot["gate_failure_count"] = float(
+            sum(reason != "all_gates_passed" for reason in gate_reasons)
+        )
+        feature_snapshot.update({f"gate_reason:{reason}": 1.0 for reason in gate_reasons})
         ledger_entries.append(
             LedgerEntry(
                 run_id=run_id,

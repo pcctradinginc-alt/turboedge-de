@@ -127,8 +127,10 @@ def evaluate_lcb(
                 "nonpositive_mean": mean(negative) if negative else None,
             }
         )
-    status = "INCOMPLETE_OUTCOMES" if missing else (
-        "DESCRIPTIVE_ONLY" if effects else "INSUFFICIENT_DATA"
+    status = (
+        "INCOMPLETE_OUTCOMES"
+        if missing
+        else ("DESCRIPTIVE_ONLY" if effects else "INSUFFICIENT_DATA")
     )
     return {
         "status": status,
@@ -136,4 +138,77 @@ def evaluate_lcb(
         "missing_rows": missing,
         "effects": effects,
         "formal_coverage_claim": False,
+    }
+
+
+def evaluate_gate_replay(
+    rows: Sequence[tuple[LedgerEntry, LedgerLabel | None]], *, as_of: datetime
+) -> dict[str, object]:
+    """Candidate-level LCB gate counterfactual, not a portfolio replay.
+
+    Only archived final WATCH decisions with a sole LCB failure qualify.
+    Earlier reject branches can hide later failures and are not replayed.
+    """
+    eligible = [
+        (entry, label)
+        for entry, label in rows
+        if entry.exit_due < as_of.date() and entry.prediction_time <= as_of
+    ]
+    archived = [
+        (entry, label)
+        for entry, label in eligible
+        if entry.feature_snapshot.get("gate_archive_v1") == 1.0
+    ]
+    day_returns: dict[tuple[int, str, str, str], list[float]] = defaultdict(list)
+    affected = missing = 0
+    for entry, label in archived:
+        flags = entry.feature_snapshot
+        if (
+            entry.category != Category.WATCH
+            or flags.get("gate_reason:lcb_ev_not_positive") != 1.0
+            or flags.get("gate_failure_count") != 1.0
+        ):
+            continue
+        affected += 1
+        if (
+            label is None
+            or label.labeled_at > as_of
+            or label.ambiguous_path
+            or label.exit_reason not in (ExitReason.HORIZON, ExitReason.KO)
+            or label.realized_selected_pnl is None
+            or not isfinite(label.realized_selected_pnl)
+        ):
+            missing += 1
+            continue
+        key = (
+            entry.horizon_days,
+            entry.model_hash,
+            entry.config_hash,
+            entry.prediction_time.date().isoformat(),
+        )
+        day_returns[key].append(label.realized_selected_pnl)
+    if not archived:
+        status = "NO_ARCHIVED_GATE_INPUTS"
+    elif missing:
+        status = "INCOMPLETE_OUTCOMES"
+    elif not affected:
+        status = "NO_AFFECTED_ROWS"
+    else:
+        status = "DESCRIPTIVE_ONLY"
+    return {
+        "status": status,
+        "gate": "lcb_ev_not_positive",
+        "archived_rows": len(archived),
+        "legacy_rows": len(eligible) - len(archived),
+        "affected_rows": affected,
+        "missing_outcomes": missing,
+        "observed_cohorts": len(day_returns),
+        "candidate_return_vs_no_trade": (
+            mean(mean(values) for values in day_returns.values())
+            if day_returns and not missing
+            else None
+        ),
+        "promotion_allowed": False,
+        "cost_basis": "bid_ask_proxy_before_broker_costs",
+        "scope": "archived_candidates_only_not_full_policy_replay",
     }

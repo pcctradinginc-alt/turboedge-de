@@ -239,9 +239,7 @@ def _summarize(
     )
 
 
-def _notional_sensitivity(
-    values: list[float], differences: list[float]
-) -> list[dict[str, object]]:
+def _notional_sensitivity(values: list[float], differences: list[float]) -> list[dict[str, object]]:
     # Undo the legacy flat reserve exactly once before applying a scenario.
     # The affine transformation permits reuse of the same block-bootstrap
     # bounds, rather than rerunning the expensive resampling for each size.

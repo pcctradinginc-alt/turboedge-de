@@ -8,6 +8,7 @@ from datetime import datetime
 from math import isfinite
 from statistics import mean
 
+from turboedge.research.execution_costs import COST_SCENARIOS, NOTIONALS_EUR
 from turboedge.storage.schemas import Category, ExitReason, LedgerEntry, LedgerLabel
 
 
@@ -141,14 +142,112 @@ def evaluate_lcb(
     }
 
 
+# These are research contrasts, not permission to bypass a live gate.
+# REJECT reasons are short-circuited before WATCH checks, so their outcomes
+# can describe a technical filter but cannot establish actionable status.
+_REPLAY_GATES = (
+    "lcb_ev_not_positive",
+    "spread_too_high",
+    "leverage_out_of_range",
+    "barrier_distance_too_small",
+    "no_confirmed_alpha_source",
+    "suggested_size_zero",
+)
+_NON_REPLAY_GATES = (
+    "data_quality",
+    "bid_only",
+    "knocked_out",
+    "quote_timestamp_missing",
+    "source_quote_stale",
+    "quote_age_at_decision",
+    "no_live_quote",
+    "no_ask_quote",
+    "lcb_ev_not_evaluated",
+    "p_ko_not_evaluated",
+    "cluster_risk_not_confirmed",
+    "ratio_unverified",
+    "portfolio_risk_not_confirmed",
+)
+
+
+def _gate_effect(
+    gate: str, rows: Sequence[tuple[LedgerEntry, LedgerLabel | None]], *, as_of: datetime
+) -> dict[str, object]:
+    cohorts: dict[tuple[int, str, str, str, str, str], list[float]] = defaultdict(list)
+    affected = missing = shadow = 0
+    for entry, label in rows:
+        flags = entry.feature_snapshot
+        if (
+            entry.category not in (Category.WATCH, Category.REJECT)
+            or flags.get(f"gate_reason:{gate}") != 1.0
+            or flags.get("gate_failure_count") != 1.0
+        ):
+            continue
+        affected += 1
+        shadow += int(entry.is_shadow)
+        if (
+            label is None
+            or label.labeled_at > as_of
+            or label.ambiguous_path
+            or label.exit_reason not in (ExitReason.HORIZON, ExitReason.KO)
+            or label.realized_selected_pnl is None
+            or not isfinite(label.realized_selected_pnl)
+            or label.realized_selected_pnl < -1
+        ):
+            missing += 1
+            continue
+        key = (
+            entry.horizon_days,
+            entry.model_hash,
+            entry.config_hash,
+            entry.underlying,
+            entry.direction.value,
+            entry.prediction_time.date().isoformat(),
+        )
+        cohorts[key].append(label.realized_selected_pnl)
+
+    if not rows:
+        status = "NO_ARCHIVED_GATE_INPUTS"
+    elif missing:
+        status = "INCOMPLETE_OUTCOMES"
+    elif not affected:
+        status = "NO_AFFECTED_ROWS"
+    else:
+        status = "DESCRIPTIVE_ONLY"
+    cohort_means = [mean(v) for v in cohorts.values()]
+    observed = mean(cohort_means) if cohort_means and not missing else None
+    scenarios = [
+        {
+            "scenario": name,
+            "notional_eur": notional,
+            "net_return_vs_no_trade": (
+                costs.net_return(observed, notional) if observed is not None else None
+            ),
+        }
+        for name, costs in COST_SCENARIOS.items()
+        for notional in NOTIONALS_EUR
+    ]
+    return {
+        "gate": gate,
+        "status": status,
+        "affected_rows": affected,
+        "shadow_rows": shadow,
+        "missing_outcomes": missing,
+        "observed_cohorts": len(cohorts),
+        "candidate_return_vs_no_trade": observed,
+        "cost_scenarios": scenarios,
+        "later_gates_may_be_unobserved": gate in (
+            "spread_too_high",
+            "leverage_out_of_range",
+            "barrier_distance_too_small",
+        ),
+    }
+
+
 def evaluate_gate_replay(
     rows: Sequence[tuple[LedgerEntry, LedgerLabel | None]], *, as_of: datetime
 ) -> dict[str, object]:
-    """Candidate-level LCB gate counterfactual, not a portfolio replay.
-
-    Only archived final WATCH decisions with a sole LCB failure qualify.
-    Earlier reject branches can hide later failures and are not replayed.
-    """
+    """Single-reason candidate contrasts; no inference of policy causality."""
     eligible = [
         (entry, label)
         for entry, label in rows
@@ -159,56 +258,23 @@ def evaluate_gate_replay(
         for entry, label in eligible
         if entry.feature_snapshot.get("gate_archive_v1") == 1.0
     ]
-    day_returns: dict[tuple[int, str, str, str], list[float]] = defaultdict(list)
-    affected = missing = 0
-    for entry, label in archived:
-        flags = entry.feature_snapshot
-        if (
-            entry.category != Category.WATCH
-            or flags.get("gate_reason:lcb_ev_not_positive") != 1.0
-            or flags.get("gate_failure_count") != 1.0
-        ):
-            continue
-        affected += 1
-        if (
-            label is None
-            or label.labeled_at > as_of
-            or label.ambiguous_path
-            or label.exit_reason not in (ExitReason.HORIZON, ExitReason.KO)
-            or label.realized_selected_pnl is None
-            or not isfinite(label.realized_selected_pnl)
-        ):
-            missing += 1
-            continue
-        key = (
-            entry.horizon_days,
-            entry.model_hash,
-            entry.config_hash,
-            entry.prediction_time.date().isoformat(),
-        )
-        day_returns[key].append(label.realized_selected_pnl)
+    effects = [_gate_effect(gate, archived, as_of=as_of) for gate in _REPLAY_GATES]
     if not archived:
         status = "NO_ARCHIVED_GATE_INPUTS"
-    elif missing:
+    elif any(effect["status"] == "INCOMPLETE_OUTCOMES" for effect in effects):
         status = "INCOMPLETE_OUTCOMES"
-    elif not affected:
+    elif all(effect["status"] == "NO_AFFECTED_ROWS" for effect in effects):
         status = "NO_AFFECTED_ROWS"
     else:
         status = "DESCRIPTIVE_ONLY"
     return {
         "status": status,
-        "gate": "lcb_ev_not_positive",
         "archived_rows": len(archived),
         "legacy_rows": len(eligible) - len(archived),
-        "affected_rows": affected,
-        "missing_outcomes": missing,
-        "observed_cohorts": len(day_returns),
-        "candidate_return_vs_no_trade": (
-            mean(mean(values) for values in day_returns.values())
-            if day_returns and not missing
-            else None
-        ),
+        "effects": effects,
+        "non_replayed_safety_or_missing_input_gates": list(_NON_REPLAY_GATES),
         "promotion_allowed": False,
-        "cost_basis": "bid_ask_proxy_before_broker_costs",
+        "cost_basis": "hypothetical_execution_costs_on_observed_bid_ask",
         "scope": "archived_candidates_only_not_full_policy_replay",
+        "statistical_significance_claimed": False,
     }

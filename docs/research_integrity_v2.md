@@ -26,3 +26,10 @@ confirms the KO. Observed barrier changes inform a conservative scenario,
 not a reconstructed effective barrier timeline. A predeadline exit bid is
 also ambiguous. Historical labels are not rewritten. Exact dynamic-barrier
 reconstruction and maturity gating remain open.
+
+Gate replay now reports six separate sole-reason contrasts against abstention,
+including archived shadow and rejected rows where available. Each contrast
+uses hypothetical notional-dependent costs. Safety and missing-input gates
+are not bypassed. Earlier reject branches conceal later gate results; this
+is not a full policy replay and cannot justify promotion. No statistical
+significance is claimed. Unarchived opportunities remain unidentifiable.

@@ -58,6 +58,8 @@ def test_counterfactual_computes_median_and_best_across_alternatives(
             ask=entry_ask,
             knockout_barrier=15000.0,
             observation_time=_utc(2026, 9, 1, 15, 30),
+            available_at=_utc(2026, 9, 1, 15, 30),
+            retrieved_at=_utc(2026, 9, 1, 15, 30),
             quote_timestamp=_utc(2026, 9, 1, 15, 30),
         )
         for isin, entry_bid, entry_ask in [
@@ -124,6 +126,8 @@ def test_counterfactual_skips_alternatives_with_no_entry_snapshot(
                 ask=4.06,
                 knockout_barrier=15000.0,
                 observation_time=_utc(2026, 9, 1, 15, 30),
+                available_at=_utc(2026, 9, 1, 15, 30),
+                retrieved_at=_utc(2026, 9, 1, 15, 30),
                 quote_timestamp=_utc(2026, 9, 1, 15, 30),
             ),
             make_product_snapshot(
@@ -191,6 +195,8 @@ def test_counterfactual_edge_and_regret_none_without_selected_pnl(
                 ask=4.06,
                 knockout_barrier=15000.0,
                 observation_time=_utc(2026, 9, 1, 15, 30),
+                available_at=_utc(2026, 9, 1, 15, 30),
+                retrieved_at=_utc(2026, 9, 1, 15, 30),
                 quote_timestamp=_utc(2026, 9, 1, 15, 30),
             ),
             make_product_snapshot(

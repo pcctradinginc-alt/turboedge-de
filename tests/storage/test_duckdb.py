@@ -151,7 +151,7 @@ def test_product_snapshot_field_reliability_roundtrips(
     store.append_product_snapshots([default_snap, explicit_snap])
 
     roundtripped_default = store.latest_product_snapshot_at_or_before(
-        "DE000FLDRL01", default_snap.observation_time
+        "DE000FLDRL01", default_snap.retrieved_at
     )
     assert roundtripped_default is not None
     assert roundtripped_default.ratio_reliability == FieldReliability.UNVERIFIED
@@ -159,7 +159,7 @@ def test_product_snapshot_field_reliability_roundtrips(
     assert roundtripped_default.financing_level_reliability == FieldReliability.UNVERIFIED
 
     roundtripped_explicit = store.latest_product_snapshot_at_or_before(
-        "DE000FLDRL02", explicit_snap.observation_time
+        "DE000FLDRL02", explicit_snap.retrieved_at
     )
     assert roundtripped_explicit is not None
     assert roundtripped_explicit.ratio_reliability == FieldReliability.SOURCE_REPORTED
@@ -699,7 +699,7 @@ def test_init_schema_adds_missing_column_to_old_product_snapshots_table(
         # (`_from_db_field_reliability`), same as `ProductSnapshot` itself
         # does when a field was never populated (CLAUDE.md rule 29).
         old_snapshot = store.latest_product_snapshot_at_or_before(
-            "DE000OLD0001", datetime(2026, 9, 2, tzinfo=UTC)
+            "DE000OLD0001", datetime(2026, 10, 1, tzinfo=UTC)
         )
         assert old_snapshot is not None
         assert old_snapshot.ratio_reliability == FieldReliability.UNVERIFIED
@@ -717,7 +717,7 @@ def test_init_schema_adds_missing_column_to_old_product_snapshots_table(
         assert store.table_counts()["product_snapshots"] == 2
 
         roundtripped = store.latest_product_snapshot_at_or_before(
-            "DE000NEW0001", new_snapshot.observation_time
+            "DE000NEW0001", new_snapshot.retrieved_at
         )
         assert roundtripped is not None
         assert roundtripped.ratio_reliability == FieldReliability.SOURCE_REPORTED

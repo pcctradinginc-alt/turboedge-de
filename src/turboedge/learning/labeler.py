@@ -641,6 +641,7 @@ def label_due_entries(
             ko_hit=resolution.ko_hit,
             time_to_ko_days=resolution.time_to_ko_days,
             ambiguous_path=resolution.ambiguous_path,
+            outcome_version="PIT_V2",
         )
         store.attach_ledger_label(label)
 

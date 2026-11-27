@@ -608,7 +608,8 @@ _DDL_STATEMENTS: tuple[str, ...] = (
         mae DOUBLE,
         ko_hit BOOLEAN NOT NULL,
         time_to_ko_days INTEGER,
-        ambiguous_path BOOLEAN NOT NULL
+        ambiguous_path BOOLEAN NOT NULL,
+        outcome_version VARCHAR
     )
     """,
     """
@@ -3470,6 +3471,7 @@ _LEDGER_LABEL_COLUMNS: tuple[str, ...] = (
     "ko_hit",
     "time_to_ko_days",
     "ambiguous_path",
+    "outcome_version",
 )
 
 
@@ -3491,6 +3493,7 @@ def _ledger_label_row(label: LedgerLabel) -> tuple[Any, ...]:
         label.ko_hit,
         label.time_to_ko_days,
         label.ambiguous_path,
+        label.outcome_version,
     )
 
 
@@ -3512,6 +3515,7 @@ def _row_to_ledger_label(row: tuple[Any, ...]) -> LedgerLabel:
         ko_hit=row[13],
         time_to_ko_days=row[14],
         ambiguous_path=row[15],
+        outcome_version=row[16] or "LEGACY_UNVERIFIED",
     )
 
 

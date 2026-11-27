@@ -823,6 +823,7 @@ class LedgerLabel(BaseModel):
     ko_hit: bool
     time_to_ko_days: int | None = None
     ambiguous_path: bool
+    outcome_version: str = "LEGACY_UNVERIFIED"
 
 
 class ModelRegistryEntry(BaseModel):

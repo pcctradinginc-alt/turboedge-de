@@ -236,7 +236,8 @@ def _gate_effect(
         "observed_cohorts": len(cohorts),
         "candidate_return_vs_no_trade": observed,
         "cost_scenarios": scenarios,
-        "later_gates_may_be_unobserved": gate in (
+        "later_gates_may_be_unobserved": gate
+        in (
             "spread_too_high",
             "leverage_out_of_range",
             "barrier_distance_too_small",

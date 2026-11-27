@@ -33,3 +33,9 @@ uses hypothetical notional-dependent costs. Safety and missing-input gates
 are not bypassed. Earlier reject branches conceal later gate results; this
 is not a full policy replay and cannot justify promotion. No statistical
 significance is claimed. Unarchived opportunities remain unidentifiable.
+
+CFTC canonical feature builders and names now omit the exact velocity alias
+by default; explicit legacy opt-in preserves historical compatibility.
+Weekly ablation clears old output, atomically checkpoints completed variants,
+and records GNU timeout or process failure without losing completed results.
+A hard runner cancellation cannot guarantee a final checkpoint.

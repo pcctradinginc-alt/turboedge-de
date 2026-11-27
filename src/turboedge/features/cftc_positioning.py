@@ -39,7 +39,6 @@ FEATURE_SUFFIXES: tuple[str, ...] = (
     "percentile_5y",
     "change_1w",
     "change_4w",
-    "velocity",
     "acceleration",
 )
 
@@ -93,6 +92,7 @@ def build_cftc_features(
     prediction_time: datetime,
     *,
     market: str,
+    include_legacy_alias: bool = False,
 ) -> dict[str, float | None]:
     """Positioning features for one market as of ``prediction_time``.
 
@@ -122,6 +122,8 @@ def build_cftc_features(
             or prediction_time - max(by_date) > timedelta(days=14)
         ):
             out.update({f"{base}_{suffix}": None for suffix in FEATURE_SUFFIXES})
+            if include_legacy_alias:
+                out[f"{base}_velocity"] = None
             continue
         share = list(by_date.values())
         out[f"{base}_share_of_oi"] = float(share[-1]) if share else None
@@ -134,7 +136,8 @@ def build_cftc_features(
         # share, so neither tracks book growth.
         velocity = _calendar_change(by_date, 1)
         prev_velocity = _calendar_change(by_date, 1, offset=1)
-        out[f"{base}_velocity"] = velocity
+        if include_legacy_alias:
+            out[f"{base}_velocity"] = velocity
         out[f"{base}_acceleration"] = (
             velocity - prev_velocity if velocity is not None and prev_velocity is not None else None
         )
@@ -144,12 +147,13 @@ def build_cftc_features(
 
 def independent_feature_names_for(market: str) -> list[str]:
     """Canonical model inputs, excluding the legacy alias velocity."""
-    return [name for name in feature_names_for(market) if not name.endswith("_velocity")]
+    return feature_names_for(market)
 
 
-def feature_names_for(market: str) -> list[str]:
+def feature_names_for(market: str, *, include_legacy_alias: bool = False) -> list[str]:
     prefix = market.lower()
-    return [f"cftc_{prefix}_{g}_{s}" for g in GROUPS for s in FEATURE_SUFFIXES]
+    suffixes = (*FEATURE_SUFFIXES, "velocity") if include_legacy_alias else FEATURE_SUFFIXES
+    return [f"cftc_{prefix}_{g}_{s}" for g in GROUPS for s in suffixes]
 
 
 __all__ = [

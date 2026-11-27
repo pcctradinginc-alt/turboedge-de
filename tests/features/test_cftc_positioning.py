@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import cast
 
-from turboedge.features.cftc_positioning import build_cftc_features
+from turboedge.features.cftc_positioning import build_cftc_features, feature_names_for
 from turboedge.storage.schemas import ExternalObservation
 
 
@@ -51,3 +51,14 @@ def test_newer_unmatched_report_is_not_current() -> None:
     ]
     result = build_cftc_features(rows, start + timedelta(days=8), market="SPX")
     assert result["cftc_spx_dealer_share_of_oi"] is None
+
+
+def test_canonical_features_exclude_duplicate_but_legacy_is_explicit() -> None:
+    cutoff = datetime(2026, 1, 5, tzinfo=UTC)
+    canonical = build_cftc_features([], cutoff, market="SPX")
+    legacy = build_cftc_features([], cutoff, market="SPX", include_legacy_alias=True)
+    assert set(canonical) == set(feature_names_for("SPX"))
+    assert len(canonical) == 18
+    assert len(legacy) == 21
+    assert set(legacy) == set(feature_names_for("SPX", include_legacy_alias=True))
+    assert all(not name.endswith("_velocity") for name in canonical)

@@ -827,8 +827,17 @@ jobs:
 
       - name: Exploratory ablation audit (bounded, read only)
         continue-on-error: true
-        timeout-minutes: 8
-        run: uv run turboedge --log-format json research ablation --underlying DAX
+        timeout-minutes: 9
+        run: |
+          report=reports/weekly/ablation.json
+          rm -f "$report"
+          status=0
+          timeout --kill-after=10s 450s uv run turboedge --log-format json research ablation --underlying DAX || status=$?
+          uv run python -m turboedge.research.report_checkpoint "$report" "$status"
+          if [ "$status" -ne 0 ]; then
+            echo "::warning::Research ablation exited $status; see checkpoint report."
+          fi
+          exit "$status"
 
       - name: Re-score the research queue
         run: uv run turboedge --log-format json research queue --limit 14

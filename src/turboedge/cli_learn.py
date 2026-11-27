@@ -1078,6 +1078,7 @@ def research_ablation_cmd(
         evaluate_gate_replay,
         evaluate_lcb,
     )
+    from turboedge.research.report_checkpoint import write_checkpoint
 
     app_ctx = ctx.obj
     fcfg = app_ctx.cfg.forecast
@@ -1144,11 +1145,32 @@ def research_ablation_cmd(
         ),
     ]
     tests = 2 * 7 * len(fcfg.horizons)
+    path = Path(json_out)
+
+    def checkpoint(status: str) -> None:
+        write_checkpoint(
+            path,
+            {
+                "status": status,
+                "underlying": uid,
+                "promotion_allowed": False,
+                "planned_tests": tests,
+                "failures": failures,
+                "effects": reports,
+                "ledger_filter_diagnostics": filters,
+                "lcb_diagnostics": lcb,
+                "gate_replay": gate_replay,
+                "as_of": cutoff.isoformat(),
+            },
+        )
+
+    checkpoint("PARTIAL")
     for factory, variants in families:
         try:
             full = run(factory)
         except ValueError as exc:
             failures.append(f"{factory().model_id}: {exc}")
+            checkpoint("PARTIAL")
             continue
         for name, reduced_factory in variants.items():
             try:
@@ -1163,28 +1185,9 @@ def research_ablation_cmd(
                     )
             except ValueError as exc:
                 failures.append(f"{name}: {exc}")
+            checkpoint("PARTIAL")
     status = "INCOMPLETE_DATA_OR_EVALUATION" if failures else "EXPLORATORY_ONLY"
-    path = Path(json_out)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(
-            {
-                "status": status,
-                "underlying": uid,
-                "promotion_allowed": False,
-                "planned_tests": tests,
-                "failures": failures,
-                "effects": reports,
-                "ledger_filter_diagnostics": filters,
-                "lcb_diagnostics": lcb,
-                "gate_replay": gate_replay,
-                "as_of": cutoff.isoformat(),
-            },
-            indent=2,
-            allow_nan=False,
-        ),
-        encoding="utf-8",
-    )
+    checkpoint(status)
     _write_summary("research_ablation", {"effects": len(reports)}, status=status)
 
 

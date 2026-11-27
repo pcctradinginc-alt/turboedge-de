@@ -1070,8 +1070,14 @@ def research_ablation_cmd(
         CrossAssetLeadLagConfig,
         LowVolRegimeTrend,
         LowVolRegimeTrendConfig,
+        SeasonalityTurnOfMonth,
+        SeasonalityTurnOfMonthConfig,
+        ShortHorizonReversal,
+        ShortHorizonReversalConfig,
         VixTermStructure,
         VixTermStructureConfig,
+        VolTargetedTsmom,
+        VolTargetedTsmomConfig,
     )
     from turboedge.research.filter_evaluation import (
         evaluate_filters,
@@ -1143,8 +1149,33 @@ def research_ablation_cmd(
                 )
             },
         ),
+        (
+            VolTargetedTsmom,
+            {
+                "vol_target_multiplier": lambda: VolTargetedTsmom(
+                    VolTargetedTsmomConfig(omit_vol_target=True)
+                )
+            },
+        ),
+        (
+            ShortHorizonReversal,
+            {
+                "reversal_score": lambda: ShortHorizonReversal(
+                    ShortHorizonReversalConfig(omit_reversal=True)
+                )
+            },
+        ),
+        (
+            SeasonalityTurnOfMonth,
+            {
+                "turn_of_month_bucket": lambda: SeasonalityTurnOfMonth(
+                    SeasonalityTurnOfMonthConfig(omit_calendar_bucket=True)
+                )
+            },
+        ),
     ]
-    tests = 2 * 7 * len(fcfg.horizons)
+    planned_features = [name for _, variants in families for name in variants]
+    tests = 2 * len(planned_features) * len(fcfg.horizons)
     path = Path(json_out)
 
     def checkpoint(status: str) -> None:
@@ -1155,6 +1186,8 @@ def research_ablation_cmd(
                 "underlying": uid,
                 "promotion_allowed": False,
                 "planned_tests": tests,
+                "planned_features": planned_features,
+                "completed_comparisons": len(reports),
                 "failures": failures,
                 "effects": reports,
                 "ledger_filter_diagnostics": filters,
@@ -1186,7 +1219,11 @@ def research_ablation_cmd(
             except ValueError as exc:
                 failures.append(f"{name}: {exc}")
             checkpoint("PARTIAL")
-    status = "INCOMPLETE_DATA_OR_EVALUATION" if failures else "EXPLORATORY_ONLY"
+    status = (
+        "INCOMPLETE_DATA_OR_EVALUATION"
+        if failures or len(reports) != len(planned_features) * len(fcfg.horizons)
+        else "EXPLORATORY_ONLY"
+    )
     checkpoint(status)
     _write_summary("research_ablation", {"effects": len(reports)}, status=status)
 

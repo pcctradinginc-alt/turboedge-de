@@ -305,8 +305,7 @@ def resolve_exit(
             exit_reason=ExitReason.KO,
             realized_pnl=realized_pnl,
             ko_hit=True,
-            ambiguous_path=ko_snapshot is None
-            or product_type is ProductType.MINI_FUTURE,
+            ambiguous_path=ko_snapshot is None or product_type is ProductType.MINI_FUTURE,
             time_to_ko_days=time_to_ko_days,
             mfe=mfe,
             mae=mae,

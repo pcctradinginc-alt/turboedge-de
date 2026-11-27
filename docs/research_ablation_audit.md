@@ -13,3 +13,11 @@ Remaining: other model families, actual product-level net economics, filter
 counterfactual replay including rejected products, independent forward data,
 and multiplicity-controlled confirmatory testing. Missing history must not be
 interpreted as evidence of no utility.
+
+The audit now schedules all six W9 challenger families (ten contrasts).
+Vol targeting is compared against the same trend with unit multiplier;
+short-horizon reversal against an intercept-only ridge on identical valid
+feature rows; calendar buckets against a pooled distribution with the same
+bucket sample eligibility. The multiplicity count derives from the actual
+planned contrasts. Gross directional gains are not executable product P&L.
+Incomplete checkpoints cannot be treated as full coverage.

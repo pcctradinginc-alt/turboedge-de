@@ -192,7 +192,9 @@ def capture_daily_research_tape(
     # for a new trade entry when the discovery engine builds test sessions.
     earliest_receipt = min((q.retrieved_at for q in products), default=cutoff)
     tracked = {
-        q.isin: q for q in entries if earliest_receipt <= q.retrieved_at + FOLLOWUP_WINDOW
+        q.isin: q
+        for q in entries
+        if q.retrieved_at < cutoff and earliest_receipt <= q.retrieved_at + FOLLOWUP_WINDOW
     }
     new_quotes: list[ResearchQuote] = []
     for product in products:

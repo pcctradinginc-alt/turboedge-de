@@ -14,6 +14,9 @@ Ablation intervals use at least 20 expected bootstrap tail draws per
 Bonferroni tail, batched to bound memory. Empirical coverage is not yet
 validated. Filter diagnostics distinguish empty and unmatched datasets.
 
-Remaining: dynamic ledger barriers, discovery experiment alignment, full
+Remaining: dynamic ledger barriers, full
 gate replay, fee policy, LCB calibration, further feature ablations and
 live evidence. No risk thresholds or promotion rights changed.
+
+Production autonomous discovery also uses frozen entry cohorts and paired exit
+observations. The legacy injected-snapshot test path remains retrospective.

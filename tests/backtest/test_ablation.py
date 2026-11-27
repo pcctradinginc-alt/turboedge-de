@@ -57,36 +57,3 @@ def test_gate_replay_requires_archived_decisions() -> None:
     result = evaluate_gate_replay([], as_of=datetime(2026, 11, 26, tzinfo=UTC))
     assert result["status"] == "NO_ARCHIVED_GATE_INPUTS"
     assert result["promotion_allowed"] is False
-
-
-def test_gate_replay_costs_and_missing_outcomes(make_ledger_entry) -> None:
-    from turboedge.storage.schemas import Category, ExitReason, LedgerLabel
-
-    cutoff = datetime(2026, 11, 26, tzinfo=UTC)
-    entry = make_ledger_entry(
-        prediction_time=cutoff - timedelta(days=10),
-        exit_due=(cutoff - timedelta(days=5)).date(),
-        category=Category.WATCH,
-        is_shadow=True,
-        feature_snapshot={
-            "gate_archive_v1": 1.0,
-            "gate_failure_count": 1.0,
-            "gate_reason:lcb_ev_not_positive": 1.0,
-        },
-    )
-    label = LedgerLabel(
-        entry_id=entry.entry_id,
-        labeled_at=cutoff - timedelta(days=1),
-        exit_reason=ExitReason.HORIZON,
-        realized_selected_pnl=0.1,
-        ko_hit=False,
-        ambiguous_path=False,
-    )
-    result = evaluate_gate_replay([(entry, label)], as_of=cutoff)
-    assert result["status"] == "DESCRIPTIVE_ONLY"
-    missing = evaluate_gate_replay([(entry, None)], as_of=cutoff)
-    assert missing["status"] == "INCOMPLETE_OUTCOMES"
-    multiple = entry.model_copy(
-        update={"feature_snapshot": {**entry.feature_snapshot, "gate_failure_count": 2.0}}
-    )
-    assert evaluate_gate_replay([(multiple, label)], as_of=cutoff)["status"] == "NO_AFFECTED_ROWS"

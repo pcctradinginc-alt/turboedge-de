@@ -418,3 +418,68 @@ def test_unresolved_outcome_waits_for_grace_window(store, make_ledger_entry) -> 
     result = label_due_entries(store, _utc(2026, 9, 11), price_bars_lookup=lambda u: [])
     assert result.skipped_not_due == 1
     assert store.get_ledger_label(entry.entry_id) is None
+
+
+def test_gate_replay_costs_and_missing_outcomes(make_ledger_entry) -> None:
+    from turboedge.research.filter_evaluation import evaluate_gate_replay
+    from turboedge.storage.schemas import Category, ExitReason, LedgerLabel
+
+    cutoff = datetime(2026, 11, 26, tzinfo=UTC)
+    entry = make_ledger_entry(
+        prediction_time=cutoff - timedelta(days=10),
+        exit_due=(cutoff - timedelta(days=5)).date(),
+        category=Category.WATCH,
+        is_shadow=True,
+        feature_snapshot={
+            "gate_archive_v1": 1.0,
+            "gate_failure_count": 1.0,
+            "gate_reason:lcb_ev_not_positive": 1.0,
+        },
+    )
+    label = LedgerLabel(
+        entry_id=entry.entry_id,
+        labeled_at=cutoff - timedelta(days=1),
+        exit_reason=ExitReason.HORIZON,
+        realized_selected_pnl=0.1,
+        ko_hit=False,
+        ambiguous_path=False,
+    )
+    result = evaluate_gate_replay([(entry, label)], as_of=cutoff)
+    assert result["status"] == "DESCRIPTIVE_ONLY"
+    missing = evaluate_gate_replay([(entry, None)], as_of=cutoff)
+    assert missing["status"] == "INCOMPLETE_OUTCOMES"
+    multiple = entry.model_copy(
+        update={"feature_snapshot": {**entry.feature_snapshot, "gate_failure_count": 2.0}}
+    )
+    assert evaluate_gate_replay([(multiple, label)], as_of=cutoff)["status"] == "NO_AFFECTED_ROWS"
+
+
+def test_future_available_quote_not_used(store, make_ledger_entry, make_product_snapshot) -> None:
+    entry = make_ledger_entry(barrier_entry=15000.0)
+    ForwardLedger(store).record([entry])
+    store.append_product_snapshots(
+        [
+            make_product_snapshot(
+                isin=entry.selected_isin,
+                available_at=_utc(2026, 9, 12),
+                retrieved_at=_utc(2026, 9, 12),
+            )
+        ]
+    )
+    result = label_due_entries(store, _utc(2026, 9, 11), price_bars_lookup=lambda u: [])
+    assert result.skipped_not_due == 1
+    assert store.get_ledger_label(entry.entry_id) is None
+    result = label_due_entries(store, _utc(2026, 9, 12, 16), price_bars_lookup=lambda u: [])
+    assert result.labeled == 1
+    label = store.get_ledger_label(entry.entry_id)
+    assert label is not None
+    assert label.outcome_version == "PIT_V2"
+
+
+def test_entry_snapshot_must_be_available_at_decision(store, make_product_snapshot) -> None:
+    snapshot = make_product_snapshot()
+    store.append_product_snapshots([snapshot])
+    before = store.latest_product_snapshot_at_or_before(snapshot.isin, snapshot.observation_time)
+    after = store.latest_product_snapshot_at_or_before(snapshot.isin, snapshot.retrieved_at)
+    assert before is None
+    assert after is not None

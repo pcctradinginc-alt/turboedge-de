@@ -95,7 +95,8 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
+from math import isfinite
 from time import perf_counter
 from typing import Any, Final
 from urllib.parse import urlencode
@@ -103,7 +104,7 @@ from zoneinfo import ZoneInfo
 
 import structlog
 
-from turboedge.adapters.base import AdapterError, HttpClient
+from turboedge.adapters.base import AdapterError, AdapterHttpError, HttpClient
 from turboedge.external.adapter import FetchedPayload, ParseResult, resolve_available_at
 from turboedge.external.schemas import SeriesSpec
 from turboedge.storage.schemas import ExternalObservation
@@ -248,6 +249,7 @@ def parse_series_observations(
     *,
     retrieved_at: datetime,
     vintage_aware: bool,
+    segmented: bool = False,
 ) -> ParseResult:
     """Parse one `fred/series/observations` JSON payload into `ExternalObservation`s.
 
@@ -269,6 +271,10 @@ def parse_series_observations(
     marker is the one expected shape and is skipped silently.
     """
     warnings: list[str] = []
+    if segmented:
+        warnings.append(
+            f"{spec.qualified_id}: segmented vintage history requires boundary validation"
+        )
 
     try:
         raw: Any = json.loads(content.decode("utf-8"))
@@ -337,7 +343,7 @@ def parse_series_observations(
         )
 
     rows = raw.get("observations")
-    if not isinstance(rows, list):
+    if raw.get("_bad_page") or not isinstance(rows, list):
         return ParseResult(
             observations=[],
             warnings=(
@@ -369,6 +375,8 @@ def parse_series_observations(
 
         try:
             value = float(raw_value)
+            if not isfinite(value):
+                raise ValueError("non-finite value")
         except _PARSE_ERROR_TYPES as exc:
             warnings.append(
                 f"{spec.qualified_id}: unparseable observation value {raw_value!r} "
@@ -378,7 +386,7 @@ def parse_series_observations(
 
         try:
             observation_day = date.fromisoformat(row["date"])
-            raw_realtime_start = row.get("realtime_start", row["date"])
+            raw_realtime_start = row.get("realtime_start")
             if not isinstance(raw_realtime_start, str):
                 raise ValueError(f"realtime_start is not a string: {raw_realtime_start!r}")
             realtime_start = date.fromisoformat(raw_realtime_start)
@@ -390,8 +398,13 @@ def parse_series_observations(
 
     observations: list[ExternalObservation] = []
     for observation_day, vintages in by_date.items():
-        vintages_sorted = sorted(vintages, key=lambda v: v[0])
-        if not vintage_aware and len(vintages_sorted) > 1:
+        vintages_sorted = sorted(set(vintages) if segmented else vintages, key=lambda v: v[0])
+        if segmented and len({v[0] for v in vintages_sorted}) != len(vintages_sorted):
+            warnings.append(
+                f"{spec.qualified_id}: conflicting vintages for {observation_day}; excluded"
+            )
+            continue
+        if not vintage_aware and not segmented and len(vintages_sorted) > 1:
             warnings.append(
                 f"{spec.qualified_id}: 'current values' fetch (realtime_start == "
                 f"realtime_end) returned {len(vintages_sorted)} rows for {observation_day} "
@@ -421,7 +434,7 @@ def parse_series_observations(
                     source_release_time=None,
                     vintage_time=datetime.combine(realtime_start, time(0, 0), tzinfo=UTC),
                     availability_precision=str(precision),
-                    revision_index=idx if vintage_aware else None,
+                    revision_index=idx if vintage_aware and not segmented else None,
                 )
             )
 
@@ -456,12 +469,85 @@ class FredAdapter:
         `observation_start` only -- it can only return *more* periods than
         `since` onward would need, never fewer, satisfying the protocol's
         "never return less than since onwards"."""
-        return self._fetch(
-            spec,
-            realtime_start=_EARLIEST_REALTIME_START,
-            realtime_end=_FRED_REALTIME_MAX,
-            since=since,
-            vintage_aware=True,
+        try:
+            return self._fetch(
+                spec,
+                realtime_start=_EARLIEST_REALTIME_START,
+                realtime_end=_FRED_REALTIME_MAX,
+                since=since,
+                vintage_aware=True,
+            )
+        except AdapterHttpError as exc:
+            if "maximum number of vintage dates" not in str(exc):
+                raise
+            return self._fetch_segmented(spec, since=since)
+
+    def _fetch_segmented(self, spec: SeriesSpec, *, since: date | None) -> FetchedPayload:
+        """Recover from FRED's vintage limit without claiming complete revision order."""
+        end = _fred_today()
+        pending = [(_EARLIEST_REALTIME_START, end)]
+        pages: list[Any] = []
+        retrieved_at = datetime.now(UTC)
+        started = perf_counter()
+        rows = 0
+        requests = 0
+        status = 200
+        content_type = "application/json"
+        windows: list[str] = []
+        while pending:
+            if (
+                perf_counter() - started > _PAGING_DEADLINE_SECONDS
+                or rows >= _MAX_TOTAL_ROWS
+                or requests >= _MAX_PAGES
+            ):
+                pages.append({_PAGING_STOPPED_KEY: "paging stopped at segmented series budget"})
+                break
+            start, stop = pending.pop()
+            requests += 1
+            try:
+                payload = self._fetch(
+                    spec,
+                    realtime_start=start,
+                    realtime_end=stop,
+                    since=since,
+                    vintage_aware=True,
+                    row_budget=_MAX_TOTAL_ROWS - rows,
+                    deadline=started + _PAGING_DEADLINE_SECONDS,
+                )
+            except AdapterHttpError as exc:
+                if "maximum number of vintage dates" not in str(exc) or start >= stop:
+                    raise
+                middle = start + (stop - start) // 2
+                pending.extend([(middle + timedelta(days=1), stop), (start, middle)])
+                continue
+            status = payload.http_status
+            content_type = payload.content_type
+            segment = json.loads(payload.content)
+            windows.append(f"{start.isoformat()}:{stop.isoformat()}")
+            pages.extend(segment)
+            rows += sum(
+                len(page["observations"])
+                for page in segment
+                if isinstance(page, dict) and isinstance(page.get("observations"), list)
+            )
+            if any(
+                not isinstance(page, dict) or _paging_stop_reason(page) is not None
+                for page in segment
+            ):
+                break
+        public_params = {"series_id": spec.native_identifier, "windows": ",".join(windows)}
+        if since is not None:
+            public_params["observation_start"] = since.isoformat()
+        url = _public_url(self._base_url, public_params)
+        return FetchedPayload(
+            source=_SOURCE_ID,
+            dataset=f"{spec.series_id}:segmented",
+            url=url,
+            content=json.dumps(pages).encode("utf-8"),
+            http_status=status,
+            content_type=content_type,
+            retrieved_at=retrieved_at,
+            request_fingerprint=f"SEGMENTED GET {url}",
         )
 
     def fetch_current(self, spec: SeriesSpec, *, since: date | None = None) -> FetchedPayload:
@@ -500,6 +586,8 @@ class FredAdapter:
         realtime_end: date,
         since: date | None,
         vintage_aware: bool,
+        row_budget: int | None = None,
+        deadline: float | None = None,
     ) -> FetchedPayload:
         api_key = _require_api_key()
         public_params: dict[str, str] = {
@@ -527,23 +615,27 @@ class FredAdapter:
         content_type = "application/json"
         offset = 0
         paging_started = perf_counter()
+        ceiling = _MAX_TOTAL_ROWS if row_budget is None else row_budget
         stop_reason: str | None = None
         for _page in range(_MAX_PAGES):
-            if offset >= _MAX_TOTAL_ROWS:
+            if offset >= ceiling:
                 stop_reason = (
                     f"paging stopped at {offset} rows, the per-series ceiling of "
-                    f"{_MAX_TOTAL_ROWS}; the series is larger than this adapter "
+                    f"{ceiling}; the series is larger than this adapter "
                     "will hold in memory in one run"
                 )
                 break
             elapsed = perf_counter() - paging_started
-            if elapsed > _PAGING_DEADLINE_SECONDS:
+            if elapsed > _PAGING_DEADLINE_SECONDS or (
+                deadline is not None and perf_counter() >= deadline
+            ):
                 stop_reason = (
                     f"paging stopped after {elapsed:.0f}s at offset {offset}, the "
                     f"per-series deadline of {_PAGING_DEADLINE_SECONDS:.0f}s"
                 )
                 break
             request_params["offset"] = str(offset)
+            request_params["limit"] = str(min(_MAX_PAGE_LIMIT, ceiling - offset))
             response = self._http._request("GET", self._base_url, params=request_params)
             status = response.status_code
             content_type = response.headers.get("content-type", content_type)
@@ -562,7 +654,10 @@ class FredAdapter:
             if not isinstance(rows, list) or not isinstance(total, int):
                 break
             offset += len(rows)
-            if not rows or offset >= total:
+            if not rows and offset < total:
+                stop_reason = f"paging stopped at offset {offset}: empty page before total {total}"
+                break
+            if offset >= total:
                 break
         else:
             stop_reason = (
@@ -617,5 +712,9 @@ class FredAdapter:
     def parse(self, payload: FetchedPayload, spec: SeriesSpec) -> ParseResult:
         vintage_aware = not payload.dataset.endswith(":current")
         return parse_series_observations(
-            payload.content, spec, retrieved_at=payload.retrieved_at, vintage_aware=vintage_aware
+            payload.content,
+            spec,
+            retrieved_at=payload.retrieved_at,
+            vintage_aware=vintage_aware,
+            segmented=payload.dataset.endswith(":segmented"),
         )

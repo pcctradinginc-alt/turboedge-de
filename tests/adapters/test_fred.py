@@ -19,7 +19,7 @@ import pytest
 import respx
 
 from turboedge.adapters import fred
-from turboedge.adapters.base import HttpClient
+from turboedge.adapters.base import AdapterHttpError, HttpClient
 from turboedge.adapters.fred import (
     CURATED_SERIES_IDS,
     FredAdapter,
@@ -755,3 +755,118 @@ def test_a_paging_stop_archived_in_the_older_shape_still_reparses(
 
     assert len(result.observations) == 1
     assert any("paging stopped" in w for w in result.warnings), result.warnings
+
+
+def test_segmented_history_deduplicates_without_claiming_revision_order() -> None:
+    row = {
+        "date": "2020-01-01",
+        "realtime_start": "2020-01-15",
+        "value": "1.5",
+    }
+    content = json.dumps([{"observations": [row]}, {"observations": [row]}]).encode()
+    result = parse_series_observations(
+        content, _spec(), retrieved_at=_RETRIEVED_AT, vintage_aware=True, segmented=True
+    )
+    assert len(result.observations) == 1
+    assert result.observations[0].revision_index is None
+    assert result.observations[0].vintage_time == datetime(2020, 1, 15, tzinfo=UTC)
+    assert any("boundary validation" in warning for warning in result.warnings)
+
+
+def test_vintage_limit_recovery_splits_only_failed_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FRED_API_KEY", "test-key")
+    monkeypatch.setattr(fred, "_EARLIEST_REALTIME_START", date(2020, 1, 1))
+    monkeypatch.setattr(fred, "_fred_today", lambda: date(2020, 1, 4))
+    windows: list[tuple[date, date]] = []
+    adapter = FredAdapter(HttpClient(user_agent="turboedge-test/1.0"))
+    original = adapter._fetch
+
+    def bounded_fetch(
+        spec: SeriesSpec,
+        *,
+        realtime_start: date,
+        realtime_end: date,
+        since: date | None,
+        vintage_aware: bool,
+        row_budget: int | None = None,
+        deadline: float | None = None,
+    ) -> FetchedPayload:
+        windows.append((realtime_start, realtime_end))
+        if (realtime_end - realtime_start).days > 1:
+            raise AdapterHttpError("exceeds maximum number of vintage dates")
+        return original(
+            spec,
+            realtime_start=realtime_start,
+            realtime_end=realtime_end,
+            since=since,
+            vintage_aware=vintage_aware,
+            row_budget=row_budget,
+            deadline=deadline,
+        )
+
+    monkeypatch.setattr(adapter, "_fetch", bounded_fetch)
+    with respx.mock:
+        respx.get(_BASE_URL).mock(
+            return_value=httpx.Response(200, content=_fixture_bytes("indpro_current"))
+        )
+        payload = adapter.fetch(_spec())
+    assert windows[-2:] == [
+        (date(2020, 1, 1), date(2020, 1, 2)),
+        (date(2020, 1, 3), date(2020, 1, 4)),
+    ]
+    assert payload.dataset == "INDPRO:segmented"
+    assert len(adapter.parse(payload, _spec()).observations) == 5
+
+
+def test_missing_vintage_never_falls_back_to_observation_date() -> None:
+    row = {"date": "2020-01-01", "value": "1.5"}
+    result = parse_series_observations(
+        json.dumps({"observations": [row]}).encode(),
+        _spec(),
+        retrieved_at=_RETRIEVED_AT,
+        vintage_aware=True,
+    )
+    assert not result.observations
+    assert result.warnings
+
+
+def test_nonfinite_values_are_rejected() -> None:
+    rows = [
+        {"date": "2020-01-01", "realtime_start": "2020-01-15", "value": value}
+        for value in ("NaN", "Infinity", "-Infinity")
+    ]
+    result = parse_series_observations(
+        json.dumps({"observations": rows}).encode(),
+        _spec(),
+        retrieved_at=_RETRIEVED_AT,
+        vintage_aware=True,
+    )
+    assert not result.observations
+    assert len(result.warnings) == 3
+
+
+def test_conflicting_segmented_vintages_are_excluded() -> None:
+    rows = [
+        {"date": "2020-01-01", "realtime_start": "2020-01-15", "value": value}
+        for value in ("1.5", "1.6")
+    ]
+    result = parse_series_observations(
+        json.dumps({"observations": rows}).encode(),
+        _spec(),
+        retrieved_at=_RETRIEVED_AT,
+        vintage_aware=True,
+        segmented=True,
+    )
+    assert not result.observations
+    assert any("conflicting vintages" in warning for warning in result.warnings)
+
+
+def test_malformed_archived_page_cannot_hide_missing_data() -> None:
+    content = json.dumps([{"observations": []}, {"unexpected": []}]).encode()
+    result = parse_series_observations(
+        content, _spec(), retrieved_at=_RETRIEVED_AT, vintage_aware=True
+    )
+    assert result.missing_series == ("INDPRO",)
+    assert result.warnings

@@ -1229,8 +1229,8 @@ class Store:
 
         Idempotent on ``(source, series_id, observation_time, available_at)``:
         re-fetching a full history file -- which is how these adapters work,
-        since the endpoints serve the entire series every time -- overwrites
-        the same rows instead of multiplying them.
+        since the endpoints serve the entire series every time -- preserves
+        the original rows instead of multiplying them.
 
         ``available_at`` is deliberately part of the key, not just a column.
         A revised print of the same observation arrives with a LATER
@@ -1242,32 +1242,54 @@ class Store:
         if not observations:
             return 0
         rows = [_external_observation_row(o) for o in observations]
-        self._conn.executemany(
-            """
-            INSERT INTO external_observations (
-                series_id, observation_time, value, unit, frequency, source_version,
-                available_at, retrieved_at, source_timestamp, source,
-                schema_version, parser_version, is_stale, quality_score,
-                source_release_time, vintage_time, availability_precision, revision_index
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT (source, series_id, observation_time, available_at) DO UPDATE SET
-                value = excluded.value,
-                unit = excluded.unit,
-                frequency = excluded.frequency,
-                source_version = excluded.source_version,
-                retrieved_at = excluded.retrieved_at,
-                source_timestamp = excluded.source_timestamp,
-                schema_version = excluded.schema_version,
-                parser_version = excluded.parser_version,
-                is_stale = excluded.is_stale,
-                quality_score = excluded.quality_score,
-                source_release_time = excluded.source_release_time,
-                vintage_time = excluded.vintage_time,
-                availability_precision = excluded.availability_precision,
-                revision_index = excluded.revision_index
-            """,
-            rows,
-        )
+        # A conflict anywhere in the batch must not leave a partial import.
+        self._conn.execute("BEGIN TRANSACTION")
+        try:
+            # DuckDB may evaluate expressions in ON CONFLICT SET even on
+            # fresh inserts. Validate explicitly before inserting instead.
+            self._conn.execute("""
+                CREATE TEMP TABLE external_import_batch AS
+                SELECT * FROM external_observations WHERE FALSE
+                """)
+            self._conn.executemany(
+                """
+                INSERT INTO external_import_batch (
+                    series_id, observation_time, value, unit, frequency, source_version,
+                    available_at, retrieved_at, source_timestamp, source,
+                    schema_version, parser_version, is_stale, quality_score,
+                    source_release_time, vintage_time, availability_precision, revision_index
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+            conflict = self._conn.execute("""
+                SELECT 1
+                FROM external_import_batch AS b
+                JOIN external_observations AS e
+                USING (source, series_id, observation_time, available_at)
+                WHERE b.value IS DISTINCT FROM e.value
+                   OR b.unit IS DISTINCT FROM e.unit
+                   OR b.frequency IS DISTINCT FROM e.frequency
+                UNION ALL
+                SELECT 1 FROM external_import_batch
+                GROUP BY source, series_id, observation_time, available_at
+                HAVING count(DISTINCT value) > 1
+                    OR count(DISTINCT unit) > 1
+                    OR count(DISTINCT frequency) > 1
+                LIMIT 1
+                """).fetchone()
+            if conflict is not None:
+                raise StoreError("Conflicting external observation at existing availability key")
+            self._conn.execute("""
+                INSERT INTO external_observations BY NAME
+                SELECT * FROM external_import_batch
+                ON CONFLICT (source, series_id, observation_time, available_at) DO NOTHING
+                """)
+            self._conn.execute("DROP TABLE external_import_batch")
+            self._conn.execute("COMMIT")
+        except BaseException:
+            self._conn.execute("ROLLBACK")
+            raise
         return len(rows)
 
     def list_external_observations(

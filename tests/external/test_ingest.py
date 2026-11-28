@@ -8,9 +8,9 @@ from pathlib import Path
 
 import pytest
 
-from turboedge.external.adapter import FetchedPayload, ParseResult
+from turboedge.external.adapter import FetchedPayload, ParseResult, deduplicate_observations
 from turboedge.external.catalog import ExternalDataConfig
-from turboedge.external.ingest import run_external_ingest
+from turboedge.external.ingest import _incremental_since, run_external_ingest
 from turboedge.external.readiness import ReadinessState
 from turboedge.external.schemas import (
     AvailabilityPrecision,
@@ -299,3 +299,23 @@ def test_sources_filter_limits_the_run(store: Store, tmp_path: Path) -> None:
     )
 
     assert adapter.fetch_calls == 0
+
+
+def test_fred_incremental_cutoff_does_not_hide_old_revisions(store: Store) -> None:
+    spec = _SPEC.model_copy(update={"source": "fred", "series_id": "FRED.DGS10"})
+    adapter = FakeAdapter(days=2)
+    payload = adapter.fetch(spec)
+    observations = [
+        o.model_copy(update={"source": "fred"}) for o in adapter.parse(payload, spec).observations
+    ]
+    store.append_external_observations(observations)
+    assert _incremental_since(spec, store=store) is None
+
+
+def test_conflicting_external_observations_do_not_silently_overwrite() -> None:
+    adapter = FakeAdapter(days=1)
+    observation = adapter.parse(adapter.fetch(_SPEC), _SPEC).observations[0]
+    same_key = observation.model_copy(update={"value": observation.value + 1.0})
+    with pytest.raises(ValueError, match="conflicting external observations"):
+        deduplicate_observations([observation, same_key])
+    assert len(deduplicate_observations([observation, observation])) == 1

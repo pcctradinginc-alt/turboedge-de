@@ -303,6 +303,11 @@ def _incremental_since(spec: SeriesSpec, *, store: Store) -> date | None:
     Returns `None` until something is stored, so the first run still takes
     the full backfill.
     """
+    # FRED's observation-date cutoff is not a vintage-date cutoff. An old
+    # period may receive a new revision at any time. Until a durable vintage
+    # cursor exists, a full history request is the only safe default.
+    if spec.source == "fred":
+        return None
     newest = store.latest_external_observation_time(spec.source, spec.series_id)
     if newest is None:
         return None

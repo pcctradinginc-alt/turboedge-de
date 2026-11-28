@@ -1367,9 +1367,7 @@ def test_external_observation_batch_rolls_back_on_conflict(store: Store) -> None
     store.append_external_observations([original])
     new = original.model_copy(update={"series_id": "VVIX.CLOSE"})
     conflict = original.model_copy(update={"value": 99.0})
-    with pytest.raises(
-        duckdb.InvalidInputException, match="Conflicting external observation"
-    ):
+    with pytest.raises(duckdb.InvalidInputException, match="Conflicting external observation"):
         store.append_external_observations([new, conflict])
     assert [(o.series_id, o.value) for o in store.list_external_observations()] == [
         ("VIX.CLOSE", 15.67)

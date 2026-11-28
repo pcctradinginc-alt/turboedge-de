@@ -755,3 +755,19 @@ def test_a_paging_stop_archived_in_the_older_shape_still_reparses(
 
     assert len(result.observations) == 1
     assert any("paging stopped" in w for w in result.warnings), result.warnings
+
+
+def test_segmented_history_deduplicates_without_claiming_revision_order() -> None:
+    row = {
+        "date": "2020-01-01",
+        "realtime_start": "2020-01-15",
+        "value": "1.5",
+    }
+    content = json.dumps([{"observations": [row]}, {"observations": [row]}]).encode()
+    result = parse_series_observations(
+        content, _spec(), retrieved_at=_RETRIEVED_AT, vintage_aware=True, segmented=True
+    )
+    assert len(result.observations) == 1
+    assert result.observations[0].revision_index is None
+    assert result.observations[0].vintage_time == datetime(2020, 1, 15, tzinfo=UTC)
+    assert any("boundary validation" in warning for warning in result.warnings)

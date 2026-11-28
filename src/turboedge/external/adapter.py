@@ -194,5 +194,13 @@ def deduplicate_observations(
     """
     seen: dict[tuple[str, str, datetime, datetime], ExternalObservation] = {}
     for obs in observations:
-        seen[(obs.source, obs.series_id, obs.observation_time, obs.available_at)] = obs
+        key = (obs.source, obs.series_id, obs.observation_time, obs.available_at)
+        previous = seen.get(key)
+        if previous is not None and (
+            previous.value != obs.value
+            or previous.unit != obs.unit
+            or previous.frequency != obs.frequency
+        ):
+            raise ValueError(f"conflicting external observations for {key!r}")
+        seen[key] = obs
     return sorted(seen.values(), key=lambda o: (o.series_id, o.observation_time, o.available_at))

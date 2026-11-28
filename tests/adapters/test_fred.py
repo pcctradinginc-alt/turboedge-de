@@ -19,7 +19,7 @@ import pytest
 import respx
 
 from turboedge.adapters import fred
-from turboedge.adapters.base import HttpClient
+from turboedge.adapters.base import AdapterHttpError, HttpClient
 from turboedge.adapters.fred import (
     CURATED_SERIES_IDS,
     FredAdapter,
@@ -771,3 +771,46 @@ def test_segmented_history_deduplicates_without_claiming_revision_order() -> Non
     assert result.observations[0].revision_index is None
     assert result.observations[0].vintage_time == datetime(2020, 1, 15, tzinfo=UTC)
     assert any("boundary validation" in warning for warning in result.warnings)
+
+
+def test_vintage_limit_recovery_splits_only_failed_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FRED_API_KEY", "test-key")
+    monkeypatch.setattr(fred, "_EARLIEST_REALTIME_START", date(2020, 1, 1))
+    monkeypatch.setattr(fred, "_fred_today", lambda: date(2020, 1, 4))
+    windows: list[tuple[date, date]] = []
+    adapter = FredAdapter(HttpClient(user_agent="turboedge-test/1.0"))
+    original = adapter._fetch
+
+    def bounded_fetch(
+        spec: SeriesSpec,
+        *,
+        realtime_start: date,
+        realtime_end: date,
+        since: date | None,
+        vintage_aware: bool,
+    ) -> FetchedPayload:
+        windows.append((realtime_start, realtime_end))
+        if (realtime_end - realtime_start).days > 1:
+            raise AdapterHttpError("exceeds maximum number of vintage dates")
+        return original(
+            spec,
+            realtime_start=realtime_start,
+            realtime_end=realtime_end,
+            since=since,
+            vintage_aware=vintage_aware,
+        )
+
+    monkeypatch.setattr(adapter, "_fetch", bounded_fetch)
+    with respx.mock:
+        respx.get(_BASE_URL).mock(
+            return_value=httpx.Response(200, content=_fixture_bytes("indpro_current"))
+        )
+        payload = adapter.fetch(_spec())
+    assert windows[-2:] == [
+        (date(2020, 1, 1), date(2020, 1, 2)),
+        (date(2020, 1, 3), date(2020, 1, 4)),
+    ]
+    assert payload.dataset == "INDPRO:segmented"
+    assert len(adapter.parse(payload, _spec()).observations) == 5

@@ -271,7 +271,9 @@ def parse_series_observations(
     """
     warnings: list[str] = []
     if segmented:
-        warnings.append(f"{spec.qualified_id}: segmented vintage history requires boundary validation")
+        warnings.append(
+            f"{spec.qualified_id}: segmented vintage history requires boundary validation"
+        )
 
     try:
         raw: Any = json.loads(content.decode("utf-8"))

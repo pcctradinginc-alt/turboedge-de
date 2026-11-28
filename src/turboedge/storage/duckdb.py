@@ -1245,25 +1245,47 @@ class Store:
         # A conflict anywhere in the batch must not leave a partial import.
         self._conn.execute("BEGIN TRANSACTION")
         try:
+            # DuckDB may evaluate expressions in ON CONFLICT SET even on
+            # fresh inserts. Validate explicitly before inserting instead.
+            self._conn.execute("""
+                CREATE TEMP TABLE external_import_batch AS
+                SELECT * FROM external_observations WHERE FALSE
+                """)
             self._conn.executemany(
                 """
-                INSERT INTO external_observations (
+                INSERT INTO external_import_batch (
                     series_id, observation_time, value, unit, frequency, source_version,
                     available_at, retrieved_at, source_timestamp, source,
                     schema_version, parser_version, is_stale, quality_score,
                     source_release_time, vintage_time, availability_precision, revision_index
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (source, series_id, observation_time, available_at) DO UPDATE SET
-                    value = CASE
-                        WHEN external_observations.value IS DISTINCT FROM excluded.value
-                          OR external_observations.unit IS DISTINCT FROM excluded.unit
-                          OR external_observations.frequency IS DISTINCT FROM excluded.frequency
-                        THEN error('Conflicting external observation at existing availability key')
-                        ELSE external_observations.value
-                    END
                 """,
                 rows,
             )
+            conflict = self._conn.execute("""
+                SELECT 1
+                FROM external_import_batch AS b
+                JOIN external_observations AS e
+                USING (source, series_id, observation_time, available_at)
+                WHERE b.value IS DISTINCT FROM e.value
+                   OR b.unit IS DISTINCT FROM e.unit
+                   OR b.frequency IS DISTINCT FROM e.frequency
+                UNION ALL
+                SELECT 1 FROM external_import_batch
+                GROUP BY source, series_id, observation_time, available_at
+                HAVING count(DISTINCT value) > 1
+                    OR count(DISTINCT unit) > 1
+                    OR count(DISTINCT frequency) > 1
+                LIMIT 1
+                """).fetchone()
+            if conflict is not None:
+                raise StoreError("Conflicting external observation at existing availability key")
+            self._conn.execute("""
+                INSERT INTO external_observations BY NAME
+                SELECT * FROM external_import_batch
+                ON CONFLICT (source, series_id, observation_time, available_at) DO NOTHING
+                """)
+            self._conn.execute("DROP TABLE external_import_batch")
             self._conn.execute("COMMIT")
         except BaseException:
             self._conn.execute("ROLLBACK")

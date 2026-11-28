@@ -218,13 +218,20 @@ def test_randomised_series_agree(store: Store, seed: int) -> None:
         str(AvailabilityPrecision.EXACT_TIMESTAMP),
     ]
     rows: list[ExternalObservation] = []
+    keys: set[tuple[datetime, float]] = set()
     for _i in range(300):
         day = base + timedelta(days=rng.randrange(0, 500), minutes=15 * rng.randrange(0, 4))
         for _ in range(rng.choice([1, 1, 1, 2, 3])):  # occasional revisions
+            offset = rng.choice([-12.0, 6.0, 24.0, 36.0, 120.0])
+            # Revisions require distinct publication times. Conflicting keys
+            # are tested separately by the storage regression suite.
+            if (day, offset) in keys:
+                continue
+            keys.add((day, offset))
             rows.append(
                 _obs(
                     day,
-                    available_offset_h=rng.choice([-12.0, 6.0, 24.0, 36.0, 120.0]),
+                    available_offset_h=offset,
                     precision=rng.choice(precisions),
                     source_version=rng.choice(["v1", "v1", "v1", ""]),
                     value=rng.random(),

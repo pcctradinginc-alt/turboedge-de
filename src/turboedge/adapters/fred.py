@@ -482,12 +482,20 @@ class FredAdapter:
         retrieved_at = datetime.now(UTC)
         started = perf_counter()
         rows = 0
+        requests = 0
+        status = 200
+        content_type = "application/json"
         windows: list[str] = []
         while pending:
-            if perf_counter() - started > _PAGING_DEADLINE_SECONDS or rows >= _MAX_TOTAL_ROWS:
+            if (
+                perf_counter() - started > _PAGING_DEADLINE_SECONDS
+                or rows >= _MAX_TOTAL_ROWS
+                or requests >= _MAX_PAGES
+            ):
                 pages.append({_PAGING_STOPPED_KEY: "paging stopped at segmented series budget"})
                 break
             start, stop = pending.pop()
+            requests += 1
             try:
                 payload = self._fetch(
                     spec,
@@ -495,6 +503,8 @@ class FredAdapter:
                     realtime_end=stop,
                     since=since,
                     vintage_aware=True,
+                    row_budget=_MAX_TOTAL_ROWS - rows,
+                    deadline=started + _PAGING_DEADLINE_SECONDS,
                 )
             except AdapterHttpError as exc:
                 if "maximum number of vintage dates" not in str(exc) or start >= stop:
@@ -502,6 +512,8 @@ class FredAdapter:
                 middle = start + (stop - start) // 2
                 pending.extend([(middle + timedelta(days=1), stop), (start, middle)])
                 continue
+            status = payload.http_status
+            content_type = payload.content_type
             segment = json.loads(payload.content)
             windows.append(f"{start.isoformat()}:{stop.isoformat()}")
             pages.extend(segment)
@@ -517,8 +529,8 @@ class FredAdapter:
             dataset=f"{spec.series_id}:segmented",
             url=url,
             content=json.dumps(pages).encode("utf-8"),
-            http_status=200,
-            content_type="application/json",
+            http_status=status,
+            content_type=content_type,
             retrieved_at=retrieved_at,
             request_fingerprint=f"SEGMENTED GET {url}",
         )
@@ -559,6 +571,8 @@ class FredAdapter:
         realtime_end: date,
         since: date | None,
         vintage_aware: bool,
+        row_budget: int | None = None,
+        deadline: float | None = None,
     ) -> FetchedPayload:
         api_key = _require_api_key()
         public_params: dict[str, str] = {
@@ -586,23 +600,27 @@ class FredAdapter:
         content_type = "application/json"
         offset = 0
         paging_started = perf_counter()
+        ceiling = _MAX_TOTAL_ROWS if row_budget is None else row_budget
         stop_reason: str | None = None
         for _page in range(_MAX_PAGES):
-            if offset >= _MAX_TOTAL_ROWS:
+            if offset >= ceiling:
                 stop_reason = (
                     f"paging stopped at {offset} rows, the per-series ceiling of "
-                    f"{_MAX_TOTAL_ROWS}; the series is larger than this adapter "
+                    f"{ceiling}; the series is larger than this adapter "
                     "will hold in memory in one run"
                 )
                 break
             elapsed = perf_counter() - paging_started
-            if elapsed > _PAGING_DEADLINE_SECONDS:
+            if elapsed > _PAGING_DEADLINE_SECONDS or (
+                deadline is not None and perf_counter() >= deadline
+            ):
                 stop_reason = (
                     f"paging stopped after {elapsed:.0f}s at offset {offset}, the "
                     f"per-series deadline of {_PAGING_DEADLINE_SECONDS:.0f}s"
                 )
                 break
             request_params["offset"] = str(offset)
+            request_params["limit"] = str(min(_MAX_PAGE_LIMIT, ceiling - offset))
             response = self._http._request("GET", self._base_url, params=request_params)
             status = response.status_code
             content_type = response.headers.get("content-type", content_type)

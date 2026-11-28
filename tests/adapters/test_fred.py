@@ -790,6 +790,8 @@ def test_vintage_limit_recovery_splits_only_failed_windows(
         realtime_end: date,
         since: date | None,
         vintage_aware: bool,
+        row_budget: int | None = None,
+        deadline: float | None = None,
     ) -> FetchedPayload:
         windows.append((realtime_start, realtime_end))
         if (realtime_end - realtime_start).days > 1:
@@ -800,6 +802,8 @@ def test_vintage_limit_recovery_splits_only_failed_windows(
             realtime_end=realtime_end,
             since=since,
             vintage_aware=vintage_aware,
+            row_budget=row_budget,
+            deadline=deadline,
         )
 
     monkeypatch.setattr(adapter, "_fetch", bounded_fetch)

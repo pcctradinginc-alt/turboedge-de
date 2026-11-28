@@ -96,6 +96,7 @@ from __future__ import annotations
 import json
 import os
 from datetime import UTC, date, datetime, time, timedelta
+from math import isfinite
 from time import perf_counter
 from typing import Any, Final
 from urllib.parse import urlencode
@@ -342,7 +343,7 @@ def parse_series_observations(
         )
 
     rows = raw.get("observations")
-    if not isinstance(rows, list):
+    if raw.get("_bad_page") or not isinstance(rows, list):
         return ParseResult(
             observations=[],
             warnings=(
@@ -374,6 +375,8 @@ def parse_series_observations(
 
         try:
             value = float(raw_value)
+            if not isfinite(value):
+                raise ValueError("non-finite value")
         except _PARSE_ERROR_TYPES as exc:
             warnings.append(
                 f"{spec.qualified_id}: unparseable observation value {raw_value!r} "
@@ -383,7 +386,7 @@ def parse_series_observations(
 
         try:
             observation_day = date.fromisoformat(row["date"])
-            raw_realtime_start = row.get("realtime_start", row["date"])
+            raw_realtime_start = row.get("realtime_start")
             if not isinstance(raw_realtime_start, str):
                 raise ValueError(f"realtime_start is not a string: {raw_realtime_start!r}")
             realtime_start = date.fromisoformat(raw_realtime_start)
@@ -396,6 +399,11 @@ def parse_series_observations(
     observations: list[ExternalObservation] = []
     for observation_day, vintages in by_date.items():
         vintages_sorted = sorted(set(vintages) if segmented else vintages, key=lambda v: v[0])
+        if segmented and len({v[0] for v in vintages_sorted}) != len(vintages_sorted):
+            warnings.append(
+                f"{spec.qualified_id}: conflicting vintages for {observation_day}; excluded"
+            )
+            continue
         if not vintage_aware and not segmented and len(vintages_sorted) > 1:
             warnings.append(
                 f"{spec.qualified_id}: 'current values' fetch (realtime_start == "
@@ -517,8 +525,15 @@ class FredAdapter:
             segment = json.loads(payload.content)
             windows.append(f"{start.isoformat()}:{stop.isoformat()}")
             pages.extend(segment)
-            rows += sum(len(page.get("observations", [])) for page in segment)
-            if any(_paging_stop_reason(page) is not None for page in segment):
+            rows += sum(
+                len(page["observations"])
+                for page in segment
+                if isinstance(page, dict) and isinstance(page.get("observations"), list)
+            )
+            if any(
+                not isinstance(page, dict) or _paging_stop_reason(page) is not None
+                for page in segment
+            ):
                 break
         public_params = {"series_id": spec.native_identifier, "windows": ",".join(windows)}
         if since is not None:
@@ -639,7 +654,10 @@ class FredAdapter:
             if not isinstance(rows, list) or not isinstance(total, int):
                 break
             offset += len(rows)
-            if not rows or offset >= total:
+            if not rows and offset < total:
+                stop_reason = f"paging stopped at offset {offset}: empty page before total {total}"
+                break
+            if offset >= total:
                 break
         else:
             stop_reason = (

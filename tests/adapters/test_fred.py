@@ -818,3 +818,55 @@ def test_vintage_limit_recovery_splits_only_failed_windows(
     ]
     assert payload.dataset == "INDPRO:segmented"
     assert len(adapter.parse(payload, _spec()).observations) == 5
+
+
+def test_missing_vintage_never_falls_back_to_observation_date() -> None:
+    row = {"date": "2020-01-01", "value": "1.5"}
+    result = parse_series_observations(
+        json.dumps({"observations": [row]}).encode(),
+        _spec(),
+        retrieved_at=_RETRIEVED_AT,
+        vintage_aware=True,
+    )
+    assert not result.observations
+    assert result.warnings
+
+
+def test_nonfinite_values_are_rejected() -> None:
+    rows = [
+        {"date": "2020-01-01", "realtime_start": "2020-01-15", "value": value}
+        for value in ("NaN", "Infinity", "-Infinity")
+    ]
+    result = parse_series_observations(
+        json.dumps({"observations": rows}).encode(),
+        _spec(),
+        retrieved_at=_RETRIEVED_AT,
+        vintage_aware=True,
+    )
+    assert not result.observations
+    assert len(result.warnings) == 3
+
+
+def test_conflicting_segmented_vintages_are_excluded() -> None:
+    rows = [
+        {"date": "2020-01-01", "realtime_start": "2020-01-15", "value": value}
+        for value in ("1.5", "1.6")
+    ]
+    result = parse_series_observations(
+        json.dumps({"observations": rows}).encode(),
+        _spec(),
+        retrieved_at=_RETRIEVED_AT,
+        vintage_aware=True,
+        segmented=True,
+    )
+    assert not result.observations
+    assert any("conflicting vintages" in warning for warning in result.warnings)
+
+
+def test_malformed_archived_page_cannot_hide_missing_data() -> None:
+    content = json.dumps([{"observations": []}, {"unexpected": []}]).encode()
+    result = parse_series_observations(
+        content, _spec(), retrieved_at=_RETRIEVED_AT, vintage_aware=True
+    )
+    assert result.missing_series == ("INDPRO",)
+    assert result.warnings

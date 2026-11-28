@@ -1229,8 +1229,8 @@ class Store:
 
         Idempotent on ``(source, series_id, observation_time, available_at)``:
         re-fetching a full history file -- which is how these adapters work,
-        since the endpoints serve the entire series every time -- overwrites
-        the same rows instead of multiplying them.
+        since the endpoints serve the entire series every time -- preserves
+        the original rows instead of multiplying them.
 
         ``available_at`` is deliberately part of the key, not just a column.
         A revised print of the same observation arrives with a LATER
@@ -1251,20 +1251,13 @@ class Store:
                 source_release_time, vintage_time, availability_precision, revision_index
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (source, series_id, observation_time, available_at) DO UPDATE SET
-                value = excluded.value,
-                unit = excluded.unit,
-                frequency = excluded.frequency,
-                source_version = excluded.source_version,
-                retrieved_at = excluded.retrieved_at,
-                source_timestamp = excluded.source_timestamp,
-                schema_version = excluded.schema_version,
-                parser_version = excluded.parser_version,
-                is_stale = excluded.is_stale,
-                quality_score = excluded.quality_score,
-                source_release_time = excluded.source_release_time,
-                vintage_time = excluded.vintage_time,
-                availability_precision = excluded.availability_precision,
-                revision_index = excluded.revision_index
+                value = CASE
+                    WHEN external_observations.value IS DISTINCT FROM excluded.value
+                      OR external_observations.unit IS DISTINCT FROM excluded.unit
+                      OR external_observations.frequency IS DISTINCT FROM excluded.frequency
+                    THEN error('Conflicting external observation at existing availability key')
+                    ELSE external_observations.value
+                END
             """,
             rows,
         )

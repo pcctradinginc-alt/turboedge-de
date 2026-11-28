@@ -1342,3 +1342,16 @@ def test_init_schema_creates_phase2_tables_on_a_pre_phase2_database(tmp_path: Pa
         assert store.list_successful_research_patterns() == []
         # The pre-existing row must survive the migration.
         assert store._conn.execute("SELECT run_id FROM runs").fetchall() == [("pre-phase2",)]
+
+
+def test_external_observation_conflict_preserves_first_value(store: Store) -> None:
+    original = _external_obs(
+        "VIX.CLOSE",
+        datetime(2026, 9, 24, tzinfo=UTC),
+        datetime(2026, 9, 25, tzinfo=UTC),
+        15.67,
+    )
+    store.append_external_observations([original])
+    with pytest.raises(Exception, match="Conflicting external observation"):
+        store.append_external_observations([original.model_copy(update={"value": 99.0})])
+    assert [o.value for o in store.list_external_observations()] == [15.67]

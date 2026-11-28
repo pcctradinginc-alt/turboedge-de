@@ -1352,6 +1352,26 @@ def test_external_observation_conflict_preserves_first_value(store: Store) -> No
         15.67,
     )
     store.append_external_observations([original])
-    with pytest.raises(Exception, match="Conflicting external observation"):
+    with pytest.raises(duckdb.InvalidInputException, match="Conflicting external observation"):
         store.append_external_observations([original.model_copy(update={"value": 99.0})])
     assert [o.value for o in store.list_external_observations()] == [15.67]
+
+
+def test_external_observation_batch_rolls_back_on_conflict(store: Store) -> None:
+    original = _external_obs(
+        "VIX.CLOSE",
+        datetime(2026, 9, 24, tzinfo=UTC),
+        datetime(2026, 9, 25, tzinfo=UTC),
+        15.67,
+    )
+    store.append_external_observations([original])
+    new = original.model_copy(update={"series_id": "VVIX.CLOSE"})
+    conflict = original.model_copy(update={"value": 99.0})
+    with pytest.raises(
+        duckdb.InvalidInputException, match="Conflicting external observation"
+    ):
+        store.append_external_observations([new, conflict])
+    assert [(o.series_id, o.value) for o in store.list_external_observations()] == [
+        ("VIX.CLOSE", 15.67)
+    ]
+    assert store.append_external_observations([new]) == 1

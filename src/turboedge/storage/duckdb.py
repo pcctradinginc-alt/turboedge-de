@@ -1242,25 +1242,32 @@ class Store:
         if not observations:
             return 0
         rows = [_external_observation_row(o) for o in observations]
-        self._conn.executemany(
-            """
-            INSERT INTO external_observations (
-                series_id, observation_time, value, unit, frequency, source_version,
-                available_at, retrieved_at, source_timestamp, source,
-                schema_version, parser_version, is_stale, quality_score,
-                source_release_time, vintage_time, availability_precision, revision_index
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT (source, series_id, observation_time, available_at) DO UPDATE SET
-                value = CASE
-                    WHEN external_observations.value IS DISTINCT FROM excluded.value
-                      OR external_observations.unit IS DISTINCT FROM excluded.unit
-                      OR external_observations.frequency IS DISTINCT FROM excluded.frequency
-                    THEN error('Conflicting external observation at existing availability key')
-                    ELSE external_observations.value
-                END
-            """,
-            rows,
-        )
+        # A conflict anywhere in the batch must not leave a partial import.
+        self._conn.execute("BEGIN TRANSACTION")
+        try:
+            self._conn.executemany(
+                """
+                INSERT INTO external_observations (
+                    series_id, observation_time, value, unit, frequency, source_version,
+                    available_at, retrieved_at, source_timestamp, source,
+                    schema_version, parser_version, is_stale, quality_score,
+                    source_release_time, vintage_time, availability_precision, revision_index
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (source, series_id, observation_time, available_at) DO UPDATE SET
+                    value = CASE
+                        WHEN external_observations.value IS DISTINCT FROM excluded.value
+                          OR external_observations.unit IS DISTINCT FROM excluded.unit
+                          OR external_observations.frequency IS DISTINCT FROM excluded.frequency
+                        THEN error('Conflicting external observation at existing availability key')
+                        ELSE external_observations.value
+                    END
+                """,
+                rows,
+            )
+            self._conn.execute("COMMIT")
+        except BaseException:
+            self._conn.execute("ROLLBACK")
+            raise
         return len(rows)
 
     def list_external_observations(
